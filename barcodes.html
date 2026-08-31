@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>테스트용 바코드 - 더퓨어랩 주문접수시스템</title>
+<link rel="icon" href="icons/icon.svg">
+<link rel="stylesheet" href="assets/css/app.css">
+<style>
+  body { background: #fff; padding: 24px; }
+  .sheet { max-width: 900px; margin: 0 auto; }
+  .sheet h1 { font-size: 20px; margin-bottom: 6px; }
+  .sheet__desc { color: var(--gray-500); font-size: 13px; margin: 0 0 20px; line-height: 1.7; }
+  .bc-group { margin-bottom: 26px; }
+  .bc-group h2 { font-size: 15px; margin-bottom: 10px; }
+  .bc-list { display: flex; flex-wrap: wrap; gap: 14px; }
+  .bc {
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    padding: 10px 12px 6px;
+    text-align: center;
+    background: #fff;
+  }
+  .bc__cap { font-size: 11px; color: var(--gray-500); margin-bottom: 4px; }
+  @media print {
+    .no-print { display: none; }
+    body { padding: 0; }
+    .bc { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>테스트용 바코드</h1>
+  <p class="sheet__desc">
+    출고주문처리(주문번호)와 검수(파렛트 바코드) 화면 테스트에 쓰는 Code128 바코드입니다.<br>
+    화면에 띄운 뒤 휴대폰으로 스캔하거나, 인쇄해서 사용하세요.
+    현재 저장된 샘플 데이터 기준으로 생성됩니다.
+  </p>
+  <div class="btn-row no-print" style="margin-bottom:20px">
+    <button class="btn" onclick="window.print()" type="button">인쇄</button>
+    <a class="btn" href="app.html">시스템으로 돌아가기</a>
+  </div>
+  <div id="out"></div>
+</div>
+
+<script type="module">
+import { code128Svg } from './assets/js/barcode.js';
+import * as db from './assets/js/db.js';
+import { esc } from './assets/js/util.js';
+
+const out = document.getElementById('out');
+
+/** 바코드 카드 1개 */
+const card = (code, caption) => `
+<div class="bc">
+  <div class="bc__cap">${esc(caption)}</div>
+  ${code128Svg(code, { height: 60, moduleWidth: 2 })}
+</div>`;
+
+const orders = await db.listOrders({});
+const active = orders.filter((o) => !o.canceled_at);
+
+const groups = [`
+<div class="bc-group">
+  <h2>주문번호 <span class="tag tag--gray">${active.length}건</span></h2>
+  <p class="sheet__desc" style="margin-bottom:10px">
+    출고주문처리의 출고작업 · 검수작업 · 조정요청 탭에서 스캔합니다.
+    <b>당일상차리스트 → 검수 화면</b>에서도 같은 바코드를 파렛트마다 한 번씩 스캔합니다
+    (주문처리현황에서 출력하는 상차라벨에 인쇄되는 바코드와 같습니다).
+  </p>
+  <div class="bc-list">
+    ${active.map((o) => card(o.order_no, `${o.customer} · ${o.seq}차수`)).join('')}
+  </div>
+</div>`];
+
+for (const o of active) {
+    const pallets = await db.listPallets(o.id);
+    if (!pallets.length) continue;
+    groups.push(`
+<div class="bc-group">
+  <h2>파렛트 - ${esc(o.order_no)} <span class="tag tag--gray">${pallets.length}장</span></h2>
+  <p class="sheet__desc" style="margin-bottom:10px">
+    파렛트 개별 바코드입니다. 상차라벨 도입 전 방식이며 검수 화면에서 그대로 인식됩니다.
+    (${esc(o.customer)})
+  </p>
+  <div class="bc-list">
+    ${pallets.map((p) => card(p.barcode, p.scanned_at ? '검수완료' : '미검수')).join('')}
+  </div>
+</div>`);
+}
+
+out.innerHTML = groups.join('');
+</script>
+</body>
+</html>

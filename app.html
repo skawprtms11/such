@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f2d4a">
+<title>더퓨어랩 주문접수시스템</title>
+<link rel="icon" href="icons/icon.svg">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<div class="layout">
+
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar__brand">
+      <img src="icons/icon.svg" alt="" width="32" height="32">
+      <div>
+        <strong>더퓨어랩</strong>
+        <small>주문접수시스템</small>
+      </div>
+    </div>
+    <nav class="sidebar__nav" id="side-nav"></nav>
+    <div class="sidebar__foot">
+      <div class="me" id="side-me"></div>
+      <button class="btn btn--ghost btn--sm" id="btn-logout" type="button">로그아웃</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="topbar__menu" id="btn-menu" type="button" aria-label="메뉴"></button>
+      <h1 class="topbar__title" id="page-title">주문정보등록</h1>
+      <div class="topbar__right">
+        <span class="badge badge--live" id="live-badge" title="실시간 동기화 중">● 실시간</span>
+        <span class="me me--sm" id="top-me"></span>
+        <button class="topbar__logout" id="btn-top-logout" type="button" aria-label="로그아웃"
+                title="로그아웃"></button>
+      </div>
+    </header>
+
+    <main class="view" id="view"></main>
+
+    <nav class="tabbar" id="tabbar"></nav>
+  </div>
+</div>
+
+<script type="module" src="assets/js/app.js"></script>
+</body>
+</html>

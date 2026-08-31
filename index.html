@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f2d4a">
+<title>더퓨어랩 주문접수시스템 - 로그인</title>
+<link rel="icon" href="icons/icon.svg">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body class="login-body">
+<main class="login">
+  <div class="login__brand">
+    <img src="icons/icon.svg" alt="" width="56" height="56">
+    <h1>더퓨어랩<br><span>주문접수시스템</span></h1>
+    <p class="login__desc">주문 등록부터 상차 확인까지 실시간으로 관리합니다.</p>
+  </div>
+
+  <form class="login__form" id="login-form">
+    <label class="field">
+      <span class="field__label">사용자 선택</span>
+      <select id="user-select" required></select>
+    </label>
+    <label class="check">
+      <input type="checkbox" id="keep-login"> 로그인 상태 유지
+    </label>
+    <button class="btn btn--primary btn--block" type="submit">로그인</button>
+    <p class="login__note">
+      서버(Supabase) 연동 전 임시 로그인 화면입니다.<br>
+      계정을 선택하면 해당 권한으로 시스템을 사용할 수 있습니다.
+    </p>
+  </form>
+</main>
+
+<script type="module">
+import { listUsers } from './assets/js/db.js';
+import { signIn, currentUser, roleLabel } from './assets/js/auth.js';
+import { esc, toast } from './assets/js/util.js';
+
+if (currentUser()) location.replace('app.html');
+
+const sel = document.getElementById('user-select');
+const users = await listUsers();
+sel.innerHTML = users
+    .map((u) => `<option value="${u.id}">${esc(u.name)} (${esc(roleLabel(u.role))}) - ${esc(u.company)}</option>`)
+    .join('');
+
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+        await signIn(sel.value, document.getElementById('keep-login').checked);
+        location.href = 'app.html';
+    } catch (err) {
+        toast(err.message, 'error');
+    }
+});
+</script>
+</body>
+</html>
