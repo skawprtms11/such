@@ -95,6 +95,8 @@ thefurerap/
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     └─ pages/           화면 모듈 6개
 ├─ public/icons/          PWA 아이콘 (해시 없이 그대로 복사됨)
+│                        icon.svg(파비콘) · icon-192/512.png(설치)
+│                        icon-maskable-512.png(안드로이드) · apple-touch-icon.png(iOS)
 ├─ supabase/schema.sql    Supabase 구축 시 실행할 DDL (테이블·트리거·RLS)
 └─ vite.config.js         빌드 설정 + 개발용 서비스워커 정리 플러그인
 ```

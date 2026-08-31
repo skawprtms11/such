@@ -86,7 +86,10 @@ export default defineConfig({
             // 새 버전 배포 시 서비스워커를 자동 갱신하고, 등록 스크립트를 HTML 에 주입한다
             registerType: 'autoUpdate',
             injectRegister: 'auto',
-            includeAssets: ['icons/icon.svg'],
+            includeAssets: [
+                'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png',
+                'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
+            ],
             manifest: {
                 name: '더퓨어랩 주문접수시스템',
                 short_name: '더퓨어랩',
@@ -98,13 +101,18 @@ export default defineConfig({
                 orientation: 'portrait',
                 background_color: '#0f2d4a',
                 theme_color: '#0f2d4a',
+                // 홈화면 설치용 아이콘. iOS 는 SVG 를 쓰지 못해 PNG 가 반드시 필요하다.
                 icons: [
+                    { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+                    { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
                     {
-                        src: 'icons/icon.svg',
-                        sizes: 'any',
-                        type: 'image/svg+xml',
-                        purpose: 'any maskable',
+                        // 안드로이드가 가장자리를 잘라내므로 여백을 둔 별도 아이콘을 쓴다
+                        src: 'icons/icon-maskable-512.png',
+                        sizes: '512x512',
+                        type: 'image/png',
+                        purpose: 'maskable',
                     },
+                    { src: 'icons/icon.svg', sizes: 'any', type: 'image/svg+xml' },
                 ],
                 shortcuts: [
                     { name: '당일상차리스트', url: 'app.html#/loading' },
@@ -112,7 +120,7 @@ export default defineConfig({
                 ],
             },
             workbox: {
-                globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+                globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
                 navigateFallback: null,
             },
             devOptions: {
