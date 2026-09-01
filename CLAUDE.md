@@ -45,11 +45,13 @@
 | 언어 | 순수 ES 모듈 JavaScript (프레임워크 없음) |
 | 스타일 | 단일 CSS 파일 + CSS 변수 (`assets/css/app.css`) |
 | PWA | vite-plugin-pwa — 폰 홈화면 설치, 오프라인 캐시 |
-| 서버 | Supabase (예정, 현재 미구축) |
+| 서버 | Supabase (구축 완료 — Postgres · Auth · Realtime · RLS) |
 | 검사 | ESLint 10 (flat config) |
 
 프레임워크를 쓰지 않는 이유는 **구현·배포 속도** 때문이다.
-정적 파일만 올리면 어디서든 뜨고, 빌드 산출물이 gzip 25KB 수준이다.
+정적 파일만 올리면 어디서든 뜬다. 화면 코드 자체는 gzip 25KB 수준이고,
+여기에 Supabase 클라이언트가 더해져 첫 로드가 gzip 65KB 정도다.
+(카메라 스캔용 ZXing 은 내장 인식기가 없는 기기에서만 따로 내려받는다)
 이 전제를 깨는 라이브러리 추가는 신중히 판단한다.
 
 ### 명령어
@@ -87,11 +89,13 @@ thefurerap/
 │     ├─ config.js        권한 매트릭스, 처리 단계, 메뉴 정의 등 모든 상수
 │     ├─ auth.js          로그인 세션 · 권한 판정 can()
 │     ├─ db.js            데이터 접근 계층 (화면은 이 모듈만 호출)
+│     ├─ store.js         저장소 계층 (localStorage / Supabase 를 가른다)
+│     ├─ supabase.js      Supabase 클라이언트 (싱글턴)
 │     ├─ icons.js        단색 라인 SVG 아이콘 (currentColor 기반)
 │     ├─ steps.js        출고 처리 단계 계산 (여러 화면이 공유)
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
-│     ├─ mock-data.js     Supabase 구축 전 샘플 데이터
+│     ├─ mock-data.js     mock 모드용 샘플 데이터
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     └─ pages/           화면 모듈 6개
 ├─ public/icons/          PWA 아이콘 (해시 없이 그대로 복사됨)
@@ -216,18 +220,33 @@ thefurerap/
 정책은 `config.js` 의 `ORDER_POLICY`, 판정은 `auth.js` 의 `allow()` 가 한다.
 소속은 자유 입력이 아니라 `COMPANY` 목록에서 고른다.
 
-### 5. 데이터 계층
+### 5. 데이터 계층 🔑
 
 화면 코드는 **`db.js` 의 함수만** 호출한다. 저장소가 무엇인지 알지 못한다.
 
 ```
-pages/*.js  →  db.js  →  localStorage (현재)
-                      →  Supabase     (예정, config.DATA_SOURCE 로 전환)
+pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock)
+              (업무 규칙)  (저장소)  →  Supabase      (VITE_DATA_SOURCE=supabase)
 ```
 
-`db.subscribe(callback)` 로 실시간 갱신을 구독한다. 현재는 5초 폴링 +
-다른 탭의 `storage` 이벤트로 구현되어 있고, Supabase 전환 시 Realtime 채널로 교체한다.
-**화면 코드는 이 교체의 영향을 받지 않아야 한다.**
+**업무 규칙은 `db.js` 한 곳에만 둔다.** 차수 계산·이력 기록·단계 동기화·검증은
+저장소가 무엇이든 같은 코드를 쓴다. `store.js` 는 읽고 쓰는 방법만 안다.
+
+`store.js` 가 Supabase 모드에서 하는 일은 세 가지다.
+
+| 하는 일 | 방법 |
+|---|---|
+| 읽기 | 테이블 6개를 한 번에 조회해 `{users, orders, pallets, history, restores, issues}` 로 만든다. 0.7초 캐시로 연속 호출을 묶는다 |
+| 쓰기 | 읽은 시점의 스냅샷과 비교해 **바뀐 행만** 반영한다. 통째로 덮어쓰지 않아 남의 변경을 지우지 않는다 |
+| 실시간 | Realtime 채널을 구독한다. 끊김에 대비해 느슨한 폴링(15초)도 함께 돈다 |
+
+- ⚠️ **신규 등록(insert)과 수정(update)을 반드시 나눈다.** `upsert` 는 INSERT 로
+  취급되어 등록 권한을 요구하는데, 남이 만든 주문의 단계를 처리하는 것은 수정이지
+  등록이 아니다. 이걸 합치면 RLS 정책에 걸린다
+- 서버로 보낼 컬럼은 `store.js` 의 **화이트리스트**로 추린다. 화면이 임시로 붙인
+  값(예: 파렛트의 `label`)이 섞여도 저장이 깨지지 않는다
+- `db.subscribe(callback)` 로 실시간 갱신을 구독한다.
+  **화면 코드는 저장소가 무엇인지에 영향받지 않는다**
 
 ---
 
@@ -279,10 +298,14 @@ pages/*.js  →  db.js  →  localStorage (현재)
 발송에는 서버(Supabase Edge Function 등)가 필요하다.
 조정 사유 목록(`config.js` 의 `RESTORE_REASONS`)도 실제 업무 사유로 확정되지 않은 임시값이다.
 
-### 4. 로그인 임시 🟡
+### 4. 로그인 — 해결됨 ✅
 
-Supabase Auth 연동 전이라 계정 목록에서 선택하는 방식이다.
-비밀번호 검증이 없으므로 **외부에 배포하지 않는다.**
+Supabase Auth(이메일 + 비밀번호)로 연동했다. 권한은 서버의 RLS 가 강제한다.
+`VITE_DATA_SOURCE=mock` 일 때만 예전의 계정 선택 방식으로 동작한다.
+
+- **사용자 추가는 화면에서 할 수 없다.** 로그인 계정(`auth.users`)이 함께 필요하므로
+  Supabase 대시보드(Authentication → Users)에서 만든 뒤 `profiles` 행을 넣는다
+- 초기 비밀번호는 계정마다 같게 넣어두었다. 각자 바꾸도록 안내한다
 
 ---
 

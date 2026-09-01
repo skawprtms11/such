@@ -23,5 +23,8 @@ npm-debug.log*
 # 테스트 도구
 .playwright-mcp/
 
+# 부장 톡방 로컬 DB (대화 기록은 공유하지 않는다)
+.harness/
+
 # Claude Code 개인 로컬 설정 (에이전트 정의는 공유한다)
 .claude/settings.local.json

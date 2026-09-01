@@ -18,38 +18,65 @@
   </div>
 
   <form class="login__form" id="login-form">
-    <label class="field">
-      <span class="field__label">사용자 선택</span>
-      <select id="user-select" required></select>
-    </label>
+    <div id="login-fields"></div>
     <label class="check">
       <input type="checkbox" id="keep-login"> 로그인 상태 유지
     </label>
     <button class="btn btn--primary btn--block" type="submit">로그인</button>
-    <p class="login__note">
-      서버(Supabase) 연동 전 임시 로그인 화면입니다.<br>
-      계정을 선택하면 해당 권한으로 시스템을 사용할 수 있습니다.
-    </p>
+    <p class="login__note" id="login-note"></p>
   </form>
 </main>
 
 <script type="module">
 import { listUsers } from './assets/js/db.js';
 import { signIn, currentUser, roleLabel } from './assets/js/auth.js';
+import { isSupabase } from './assets/js/store.js';
 import { esc, toast } from './assets/js/util.js';
 
 if (currentUser()) location.replace('app.html');
 
-const sel = document.getElementById('user-select');
-const users = await listUsers();
-sel.innerHTML = users
-    .map((u) => `<option value="${u.id}">${esc(u.name)} (${esc(roleLabel(u.role))}) - ${esc(u.company)}</option>`)
-    .join('');
+const fields = document.getElementById('login-fields');
+const note = document.getElementById('login-note');
+
+if (isSupabase) {
+    // Supabase Auth - 이메일 + 비밀번호
+    fields.innerHTML = `
+    <label class="field">
+      <span class="field__label">이메일</span>
+      <input type="email" id="login-email" autocomplete="username" required
+             placeholder="name@thepurelab.co.kr">
+    </label>
+    <label class="field" style="margin-top:10px">
+      <span class="field__label">비밀번호</span>
+      <input type="password" id="login-pw" autocomplete="current-password" required>
+    </label>`;
+    note.innerHTML = '비밀번호를 잊었으면 관리자에게 문의하세요.';
+} else {
+    // 임시 로그인 - 계정 목록에서 고른다
+    fields.innerHTML = `
+    <label class="field">
+      <span class="field__label">사용자 선택</span>
+      <select id="user-select" required></select>
+    </label>`;
+    const users = await listUsers();
+    document.getElementById('user-select').innerHTML = users
+        .map((u) => `<option value="${u.id}">${esc(u.name)} (${esc(roleLabel(u.role))}) - ${esc(u.company)}</option>`)
+        .join('');
+    note.innerHTML = '서버(Supabase) 연동 전 임시 로그인 화면입니다.<br>'
+        + '계정을 선택하면 해당 권한으로 시스템을 사용할 수 있습니다.';
+}
 
 document.getElementById('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const keepLogin = document.getElementById('keep-login').checked;
     try {
-        await signIn(sel.value, document.getElementById('keep-login').checked);
+        await signIn(isSupabase
+            ? {
+                email: document.getElementById('login-email').value,
+                password: document.getElementById('login-pw').value,
+                keepLogin,
+            }
+            : { userId: document.getElementById('user-select').value, keepLogin });
         location.href = 'app.html';
     } catch (err) {
         toast(err.message, 'error');

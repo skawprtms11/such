@@ -123,8 +123,20 @@ if (!user.active) throw new Error('사용이 중지된 계정입니다. 관리�
 | 권한 | `role` | ✅ | |
 
 `active: true` 로 생성된다. **비밀번호 항목이 없다.**
-현재 로그인이 계정 선택 방식이기 때문이며, Supabase Auth 연동 시
-초대 메일 발송 방식으로 바뀌어야 한다.
+
+⚠️ **Supabase 모드에서는 이 화면으로 사용자를 만들 수 없다** (`db.createUser()` 가 막는다).
+로그인 계정(`auth.users`)이 함께 있어야 하기 때문이다. 다음 순서로 만든다.
+
+1. Supabase 대시보드 → Authentication → Users → `Add user` (이메일·비밀번호 입력)
+2. SQL Editor 에서 `profiles` 행 추가 — 만든 계정의 `id` 를 그대로 쓴다
+
+```sql
+insert into public.profiles (id, name, email, company, role, phone)
+values ('<auth 에서 만든 uuid>', '홍길동', 'hong@example.com', '고객사', 'shipper_sales', '');
+```
+
+권한·소속 변경과 사용중지는 이 화면에서 그대로 할 수 있다.
+초대 메일 발송 방식은 서버(Edge Function)가 필요해 아직 붙이지 않았다.
 
 ---
 
