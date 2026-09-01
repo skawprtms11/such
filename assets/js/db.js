@@ -8,10 +8,11 @@ import {
     LOCATION_FORMAT, formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
-import { SEED_USERS, SEED_ORDERS, SEED_ISSUES, makePallets } from './mock-data.js';
+import { makePallets } from './mock-data.js';
+import {
+    loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase,
+} from './store.js';
 import { uid, today } from './util.js';
-
-const KEY = 'tpl_order_db_v1';
 
 /**
  * 기능이 추가되면서 생긴 새 필드를 기존 저장 데이터에 채워 넣는다.
@@ -62,36 +63,22 @@ function normalize(db) {
     return db;
 }
 
-/** localStorage 에서 전체 데이터를 읽는다. 없으면 시드 데이터로 초기화한다. */
+/**
+ * 전체 데이터를 읽는다. 어디에 저장되어 있는지는 `store.js` 가 안다.
+ * 읽은 뒤 `normalize()` 로 누락 필드를 채운다.
+ */
 function load() {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-        try {
-            return normalize(JSON.parse(raw));
-        } catch (err) {
-            console.warn('저장 데이터 파싱 실패, 초기화합니다.', err);
-        }
-    }
-    const seeded = {
-        users: SEED_USERS,
-        orders: SEED_ORDERS,
-        issues: SEED_ISSUES,
-        pallets: SEED_ORDERS.flatMap(makePallets),
-        history: [],
-        restores: [],
-    };
-    localStorage.setItem(KEY, JSON.stringify(seeded));
-    return seeded;
+    return loadDb(normalize);
 }
 
+/** 변경사항을 저장한다 */
 function save(db) {
-    localStorage.setItem(KEY, JSON.stringify(db));
+    return saveDb(db);
 }
 
-/** 저장 데이터를 시드 상태로 되돌린다 */
-export function resetDb() {
-    localStorage.removeItem(KEY);
-    load();
+/** 저장 데이터를 시드 상태로 되돌린다 (mock 모드 전용) */
+export async function resetDb() {
+    return storeReset();
 }
 
 /**
@@ -135,48 +122,59 @@ function addHistory(db, orderId, field, before, after, user, memo = '', rev = 0)
 /* ---------------------------------- 사용자 ---------------------------------- */
 
 export async function listUsers() {
-    return load().users;
+    return (await load()).users;
 }
 
 export async function getUser(id) {
-    return load().users.find((u) => u.id === id) ?? null;
+    return (await load()).users.find((u) => u.id === id) ?? null;
 }
 
 /** 사용자 권한 변경 (관리자 전용 화면에서 호출) */
 export async function updateUserRole(id, role) {
-    const db = load();
+    const db = (await load());
     const u = db.users.find((x) => x.id === id);
     if (!u) throw new Error('사용자를 찾을 수 없습니다.');
     u.role = role;
-    save(db);
+    await save(db);
     return u;
 }
 
 /** 사용자 소속 변경 (주문정보등록 화면의 권한이 소속에 따라 달라진다) */
 export async function updateUserCompany(id, company) {
-    const db = load();
+    const db = (await load());
     const u = db.users.find((x) => x.id === id);
     if (!u) throw new Error('사용자를 찾을 수 없습니다.');
     u.company = company;
-    save(db);
+    await save(db);
     return u;
 }
 
 /** 사용자 사용여부 토글 */
 export async function toggleUserActive(id) {
-    const db = load();
+    const db = (await load());
     const u = db.users.find((x) => x.id === id);
     if (!u) throw new Error('사용자를 찾을 수 없습니다.');
     u.active = !u.active;
-    save(db);
+    await save(db);
     return u;
 }
 
+/**
+ * 사용자 신규 등록.
+ * ⚠️ Supabase 모드에서는 로그인 계정(auth.users)이 함께 있어야 하므로
+ *    화면에서 만들 수 없다. Supabase 대시보드에서 계정을 만든 뒤 프로필이 생긴다.
+ */
 export async function createUser(payload) {
-    const db = load();
+    if (isSupabase) {
+        throw new Error(
+            '사용자 추가는 Supabase 대시보드에서 계정을 만든 뒤 처리합니다. '
+            + '(Authentication → Users)',
+        );
+    }
+    const db = (await load());
     const row = { id: uid('u'), active: true, ...payload };
     db.users.push(row);
-    save(db);
+    await save(db);
     return row;
 }
 
@@ -188,7 +186,7 @@ export async function createUser(payload) {
  *          shipDate?:string, minStage?:number}} f 필터
  */
 export async function listOrders(f = {}) {
-    const db = load();
+    const db = (await load());
     let rows = [...db.orders];
     if (f.createdBy) rows = rows.filter((o) => o.created_by === f.createdBy);
     if (f.from) rows = rows.filter((o) => o.reg_date >= f.from);
@@ -208,7 +206,7 @@ export async function listOrders(f = {}) {
  * 주문번호별로 최신 차수 정보만 돌려준다.
  */
 export async function listOpenOrderNos(f = {}) {
-    const db = load();
+    const db = (await load());
     const map = new Map();
     db.orders
         .filter((o) => !o.closed_at && !o.canceled_at)
@@ -232,7 +230,7 @@ export async function listOpenOrderNos(f = {}) {
 }
 
 export async function getOrder(id) {
-    return load().orders.find((o) => o.id === id) ?? null;
+    return (await load()).orders.find((o) => o.id === id) ?? null;
 }
 
 /**
@@ -240,7 +238,7 @@ export async function getOrder(id) {
  * 동일 주문번호가 이미 존재하면 차수를 자동으로 +1 한다.
  */
 export async function createOrder(payload, user) {
-    const db = load();
+    const db = (await load());
     // 차수는 '추가주문' 으로 등록할 때만 올라간다.
     // 같은 주문번호라고 자동으로 올리지 않는다 (등록 화면에서 명시적으로 고른다).
     const { addition, base_no: baseNo, ...rest } = payload;
@@ -282,13 +280,13 @@ export async function createOrder(payload, user) {
     db.orders.push(row);
     db.pallets.push(...makePallets(row));
     addHistory(db, row.id, '등록', '', `${row.order_no} (${seq}차수)`, user);
-    save(db);
+    await save(db);
     return row;
 }
 
 /** 주문 변동사항 수정 - 변경된 항목마다 히스토리를 남긴다 */
 export async function updateOrder(id, patch, user, memo = '') {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     const labels = {
@@ -309,18 +307,18 @@ export async function updateOrder(id, patch, user, memo = '') {
     }
     // 파렛트 수가 바뀌면 검수 바코드를 재생성한다
     if ('pallet_count' in patch) rebuildPallets(db, o);
-    save(db);
+    await save(db);
     return o;
 }
 
 export async function deleteOrder(id, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) return;
     db.orders = db.orders.filter((x) => x.id !== id);
     db.pallets = db.pallets.filter((p) => p.order_id !== id);
     addHistory(db, id, '삭제', o.order_no, '', user);
-    save(db);
+    await save(db);
 }
 
 /* ------------------------------ 출고 처리 단계 ------------------------------ */
@@ -347,13 +345,13 @@ const STEP_DONE_FIELD = {
 export async function recordWorker(orderId, step, user) {
     const field = WORKER_FIELD[step];
     if (!field || !user?.name) return null;
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === orderId);
     if (!o) return null;
     if (o[STEP_DONE_FIELD[step]]) return o;   // 완료된 단계는 그대로 둔다
     if (o[field] === user.name) return o;
     o[field] = user.name;
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -367,7 +365,7 @@ function fillWorker(o, step, user) {
 export async function findOrdersByNo(orderNo) {
     const key = String(orderNo).trim().toUpperCase();
     if (!key) return [];
-    return load().orders
+    return (await load()).orders
         .filter((o) => o.order_no.toUpperCase() === key && !o.canceled_at)
         .sort((a, b) => a.seq - b.seq);
 }
@@ -380,7 +378,7 @@ function setStepAt(db, o, field, label, done, user, memo = '') {
 
 /** 출고작업 시작 */
 export async function startShipWork(id, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
@@ -388,13 +386,13 @@ export async function startShipWork(id, user) {
     o.ship_started_at = new Date().toISOString();
     fillWorker(o, 'ship', user);
     addHistory(db, id, '출고작업', '', '작업시작', user);
-    save(db);
+    await save(db);
     return o;
 }
 
 /** 출고작업 완료 / 완료 취소 */
 export async function setShipWorkDone(id, done, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
@@ -408,7 +406,7 @@ export async function setShipWorkDone(id, done, user) {
     if (done) fillWorker(o, 'ship', user);
     setStepAt(db, o, 'ship_done_at', '출고작업', done, user);
     if (!done) o.ship_started_at = null;
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -418,7 +416,7 @@ export async function setShipWorkDone(id, done, user) {
  * @param {{reqWork:boolean, packing:boolean}} checks 요청작업·패킹리스트 확인 여부
  */
 export async function setInspectDone(id, done, checks, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
@@ -461,13 +459,13 @@ export async function setInspectDone(id, done, checks, user) {
     if (hasExtra) setStepAt(db, o, 'req_work_at', '요청작업', done, user);
     o.packing_at = done ? new Date().toISOString() : null;
     setStepAt(db, o, 'inspect_done_at', '검수작업', done, user);
-    save(db);
+    await save(db);
     return o;
 }
 
 /** 추가작업 완료 / 완료 취소 */
 export async function setExtraWorkDone(id, done, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
@@ -477,7 +475,7 @@ export async function setExtraWorkDone(id, done, user) {
     if (!done && o.loaded_at) throw new Error('상차완료된 주문은 추가작업을 취소할 수 없습니다.');
     if (done) fillWorker(o, 'extra', user);
     setStepAt(db, o, 'extra_done_at', '추가작업', done, user);
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -489,7 +487,7 @@ export async function setExtraWorkDone(id, done, user) {
  * @returns {Array<{id, source, created_at, content, due_date, order}>}
  */
 export async function listRequestTasks() {
-    const db = load();
+    const db = (await load());
     const byNo = {};
     db.orders.forEach((o) => {
         (byNo[o.order_no] ??= []).push(o);
@@ -536,7 +534,7 @@ export async function listRequestTasks() {
  * @returns {Array} 요청 + 연결된 주문 정보
  */
 export async function listExtraTasks() {
-    const db = load();
+    const db = (await load());
     const byNo = {};
     db.orders.forEach((o) => {
         (byNo[o.order_no] ??= []).push(o);
@@ -558,7 +556,7 @@ function extraTaskNoSet(db) {
 
 /** 주문번호별 추가작업 요청 여부 { 주문번호: true } */
 export async function extraTaskMap() {
-    const set = extraTaskNoSet(load());
+    const set = extraTaskNoSet((await load()));
     return Object.fromEntries([...set].map((no) => [no, true]));
 }
 
@@ -567,7 +565,7 @@ export async function extraTaskMap() {
  * 물류 담당자가 주문 내용을 확인했음을 표시한다. 체크를 해제할 수도 있다.
  */
 export async function toggleOrderConfirm(id, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.confirmed_at) {
@@ -581,7 +579,7 @@ export async function toggleOrderConfirm(id, user) {
         o.confirmed_by_name = user.name;
         addHistory(db, id, '접수확인', '미확인', '접수확인', user);
     }
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -590,7 +588,7 @@ export async function toggleOrderConfirm(id, user) {
  * 취소하면 수정·조정요청을 할 수 없고 진행상태가 '취소' 로 바뀐다.
  */
 export async function cancelOrder(id, user, reason = '') {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('이미 취소된 주문입니다.');
@@ -598,7 +596,7 @@ export async function cancelOrder(id, user, reason = '') {
     o.canceled_by = user.id;
     o.canceled_by_name = user.name;
     addHistory(db, id, '취소', '', '취소 처리', user, reason);
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -609,7 +607,7 @@ export async function cancelOrder(id, user, reason = '') {
  *            restores:number, restoresLeft:number}}}
  */
 export async function checkStats() {
-    const db = load();
+    const db = (await load());
     const map = {};
     const get = (id) => (map[id] ??= { edits: 0, editsLeft: 0, restores: 0, restoresLeft: 0 });
 
@@ -648,10 +646,10 @@ function applyChecked(rows, checked, user) {
  * 확인 시에는 새로 등록된(아직 미확인인) 수정만 처리한다.
  */
 export async function setAllHistoryChecked(orderId, checked, user) {
-    const db = load();
+    const db = (await load());
     const rows = db.history.filter((h) => h.order_id === orderId && h.rev > 0);
     const count = applyChecked(rows, checked, user);
-    save(db);
+    await save(db);
     return count;
 }
 
@@ -660,10 +658,10 @@ export async function setAllHistoryChecked(orderId, checked, user) {
  * 확인 시에는 새로 등록된(아직 미확인인) 요청만 처리한다.
  */
 export async function setAllRestoresChecked(orderId, checked, user) {
-    const db = load();
+    const db = (await load());
     const rows = db.restores.filter((r) => r.order_id === orderId);
     const count = applyChecked(rows, checked, user);
-    save(db);
+    await save(db);
     return count;
 }
 
@@ -672,7 +670,7 @@ export async function setAllRestoresChecked(orderId, checked, user) {
  * 담당자가 변경 내용을 확인했는지 표시하는 용도이며, 잘못 누르면 다시 눌러 해제한다.
  */
 export async function toggleHistoryCheck(historyId, user) {
-    const db = load();
+    const db = (await load());
     const h = db.history.find((x) => x.id === historyId);
     if (!h) throw new Error('이력을 찾을 수 없습니다.');
     if (h.checked_at) {
@@ -684,13 +682,13 @@ export async function toggleHistoryCheck(historyId, user) {
         h.checked_by = user.id;
         h.checked_by_name = user.name;
     }
-    save(db);
+    await save(db);
     return h;
 }
 
 /** 주문별 변동사항 히스토리 */
 export async function listHistory(orderId) {
-    return load().history
+    return (await load()).history
         .filter((h) => h.order_id === orderId)
         .sort((a, b) => (b.changed_at > a.changed_at ? 1 : -1));
 }
@@ -702,7 +700,7 @@ export async function listHistory(orderId) {
  * @param {string} [orderId] 주어지면 해당 주문의 요청만 반환
  */
 export async function listRestores(orderId) {
-    const rows = load().restores;
+    const rows = (await load()).restores;
     const filtered = orderId ? rows.filter((r) => r.order_id === orderId) : rows;
     return [...filtered].sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
 }
@@ -712,7 +710,7 @@ export async function listRestores(orderId) {
  * 변동 이력의 수정확인과 동작 방식이 같다.
  */
 export async function toggleRestoreCheck(restoreId, user) {
-    const db = load();
+    const db = (await load());
     const r = db.restores.find((x) => x.id === restoreId);
     if (!r) throw new Error('조정요청을 찾을 수 없습니다.');
     if (r.checked_at) {
@@ -724,7 +722,7 @@ export async function toggleRestoreCheck(restoreId, user) {
         r.checked_by = user.id;
         r.checked_by_name = user.name;
     }
-    save(db);
+    await save(db);
     return r;
 }
 
@@ -735,7 +733,7 @@ export async function toggleRestoreCheck(restoreId, user) {
  */
 export async function adjustMap() {
     const map = {};
-    load().restores.forEach((r) => {
+    (await load()).restores.forEach((r) => {
         const m = (map[r.order_id] ??= { has: true, done: true });
         if (!r.checked_at) m.done = false;
     });
@@ -745,7 +743,7 @@ export async function adjustMap() {
 /** 주문별 조정요청 건수를 { 주문ID: 건수 } 형태로 반환한다 */
 export async function countRestores() {
     const map = {};
-    load().restores.forEach((r) => {
+    (await load()).restores.forEach((r) => {
         map[r.order_id] = (map[r.order_id] ?? 0) + 1;
     });
     return map;
@@ -757,7 +755,7 @@ export async function countRestores() {
  * 주문 이력에도 함께 기록해 변동사항 히스토리에서 확인할 수 있게 한다.
  */
 export async function createRestore(payload, user) {
-    const db = load();
+    const db = (await load());
     const order = db.orders.find((o) => o.id === payload.order_id);
     if (!order) throw new Error('주문을 찾을 수 없습니다.');
 
@@ -778,7 +776,7 @@ export async function createRestore(payload, user) {
 
     const label = row.type === RESTORE_TYPE.EMAIL ? '이메일 발송' : '직접 작성';
     addHistory(db, order.id, '조정요청', '', `${label} · ${row.reason}`, user);
-    save(db);
+    await save(db);
     return row;
 }
 
@@ -789,7 +787,7 @@ export async function createRestore(payload, user) {
  * 상차 이외의 모든 작업(패킹리스트까지)이 완료된 주문만 대상으로 한다.
  */
 export async function listLoading(shipDate) {
-    const db = load();
+    const db = (await load());
     const tasks = extraTaskNoSet(db);
     const adjust = {};
     db.restores.forEach((r) => {
@@ -848,11 +846,11 @@ function groupOf(db, orderId) {
 
 /** 상차 단위 조회 (화면용) */
 export async function getLoadGroup(orderId) {
-    return groupOf(load(), orderId);
+    return groupOf((await load()), orderId);
 }
 
 export async function listPallets(orderId) {
-    return load().pallets.filter((p) => p.order_id === orderId);
+    return (await load()).pallets.filter((p) => p.order_id === orderId);
 }
 
 /**
@@ -864,7 +862,7 @@ export async function listPallets(orderId) {
  * 검수작업이 끝난 주문만 적치할 수 있고, 전량 입력되면 `stow_done_at` 이 자동으로 채워진다.
  */
 export async function setPalletLocation(palletId, location) {
-    const db = load();
+    const db = (await load());
     const p = db.pallets.find((x) => x.id === palletId);
     if (!p) throw new Error('파렛트를 찾을 수 없습니다.');
     const o = db.orders.find((x) => x.id === p.order_id);
@@ -878,20 +876,20 @@ export async function setPalletLocation(palletId, location) {
     }
     p.location = value;
     syncStowDone(db, o);
-    save(db);
+    await save(db);
     return o;
 }
 
 /** 로케이션 지우기 (잘못 입력한 경우) */
 export async function clearPalletLocation(palletId) {
-    const db = load();
+    const db = (await load());
     const p = db.pallets.find((x) => x.id === palletId);
     if (!p) throw new Error('파렛트를 찾을 수 없습니다.');
     const o = db.orders.find((x) => x.id === p.order_id);
     if (o?.loaded_at) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
     p.location = '';
     if (o) syncStowDone(db, o);
-    save(db);
+    await save(db);
     return o;
 }
 
@@ -908,25 +906,25 @@ function syncStowDone(db, o) {
  * 상차완료된 주문은 더 이상 바꾸지 않는다.
  */
 export async function setPalletPicked(palletId, done) {
-    const db = load();
+    const db = (await load());
     const p = db.pallets.find((x) => x.id === palletId);
     if (!p) throw new Error('파렛트를 찾을 수 없습니다.');
     const o = db.orders.find((x) => x.id === p.order_id);
     if (o?.loaded_at) throw new Error('상차완료된 주문은 변경할 수 없습니다.');
     if (done && !p.location) throw new Error('적치 로케이션이 없는 파렛트입니다.');
     p.picked_at = done ? new Date().toISOString() : null;
-    save(db);
+    await save(db);
     return p;
 }
 
 /** 주문별 적치 진행 수 { done, total } */
 export async function stowCount(orderId) {
-    const mine = load().pallets.filter((p) => p.order_id === orderId);
+    const mine = (await load()).pallets.filter((p) => p.order_id === orderId);
     return { done: mine.filter((p) => p.location).length, total: mine.length };
 }
 
 export async function scanPallet(orderId, barcode, user) {
-    const db = load();
+    const db = (await load());
     const code = String(barcode).trim().toUpperCase();
     const o = db.orders.find((x) => x.id === orderId);
     if (!o) return { ok: false, msg: '주문을 찾을 수 없습니다.' };
@@ -967,13 +965,13 @@ export async function scanPallet(orderId, barcode, user) {
         }
     });
     const done = mine.filter((p) => p.scanned_at).length;
-    save(db);
+    await save(db);
     return { ok: true, msg: `검수 완료 (${done}/${mine.length})`, order: o };
 }
 
 /** 검수 취소 (전체 초기화) */
 export async function resetInspection(orderId, user) {
-    const db = load();
+    const db = (await load());
     const group = groupOf(db, orderId);
     const ids = new Set(group.rows.map((r) => r.id));
     db.pallets.filter((p) => ids.has(p.order_id)).forEach((p) => { p.scanned_at = null; });
@@ -982,13 +980,13 @@ export async function resetInspection(orderId, user) {
         r.load_status = LOAD_STATUS.WAIT;
         addHistory(db, r.id, '검수', '검수완료', '대기', user);
     });
-    save(db);
+    await save(db);
     return group.head;
 }
 
 /** 상차완료 처리 */
 export async function completeLoading(orderId, user) {
-    const db = load();
+    const db = (await load());
     const group = groupOf(db, orderId);
     if (!group) throw new Error('주문을 찾을 수 없습니다.');
     // 추가주문까지 함께 실리므로 차수 전체가 검수되어야 상차완료할 수 있다
@@ -1001,7 +999,7 @@ export async function completeLoading(orderId, user) {
         r.loaded_at = at;
         addHistory(db, r.id, '상차작업', '', '완료', user);
     });
-    save(db);
+    await save(db);
     return group.head;
 }
 
@@ -1011,7 +1009,7 @@ export async function completeLoading(orderId, user) {
  * 완료처리된 주문은 주문처리현황의 `현재진행` 탭에서 빠지고 `출고완료` 탭으로 간다.
  */
 export async function closeOrder(id, done, user) {
-    const db = load();
+    const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
@@ -1020,19 +1018,19 @@ export async function closeOrder(id, done, user) {
     }
     o.closed_at = done ? new Date().toISOString() : null;
     addHistory(db, id, '출고완료', done ? '진행' : '완료', done ? '완료' : '진행', user);
-    save(db);
+    await save(db);
     return o;
 }
 
 /** 전체 조정요청 (상세검색에서 본문을 훑을 때 쓴다) */
 export async function listAllRestores() {
-    return [...load().restores];
+    return [...(await load()).restores];
 }
 
 /* ----------------------------------- 이슈 ----------------------------------- */
 
 export async function listIssues(f = {}) {
-    const db = load();
+    const db = (await load());
     let rows = [...db.issues];
     if (f.createdBy) rows = rows.filter((i) => i.created_by === f.createdBy);
     if (f.status) rows = rows.filter((i) => i.status === f.status);
@@ -1045,7 +1043,7 @@ export async function listIssues(f = {}) {
 }
 
 export async function createIssue(payload, user) {
-    const db = load();
+    const db = (await load());
     const row = {
         id: uid('i'),
         created_at: new Date().toISOString(),
@@ -1054,16 +1052,16 @@ export async function createIssue(payload, user) {
         ...payload,
     };
     db.issues.push(row);
-    save(db);
+    await save(db);
     return row;
 }
 
 export async function updateIssue(id, patch) {
-    const db = load();
+    const db = (await load());
     const i = db.issues.find((x) => x.id === id);
     if (!i) throw new Error('이슈를 찾을 수 없습니다.');
     Object.assign(i, patch);
-    save(db);
+    await save(db);
     return i;
 }
 
@@ -1071,17 +1069,12 @@ export async function updateIssue(id, patch) {
 
 /**
  * 데이터 변경 구독.
- * mock 모드에서는 다른 탭의 localStorage 변경과 주기적 폴링으로 대체한다.
- * Supabase 전환 시 realtime 채널 구독으로 교체한다.
+ *   mock     : 다른 탭의 localStorage 변경 + 주기적 폴링
+ *   supabase : Realtime 채널 (끊김 대비 폴링 병행)
+ * **화면 코드는 어느 쪽인지 알 필요가 없다.**
  */
 export function subscribe(callback, intervalMs = 5000) {
-    const onStorage = (e) => { if (e.key === KEY) callback(); };
-    window.addEventListener('storage', onStorage);
-    const timer = setInterval(callback, intervalMs);
-    return () => {
-        window.removeEventListener('storage', onStorage);
-        clearInterval(timer);
-    };
+    return subscribeStore(callback, intervalMs);
 }
 
 export const dataSource = DATA_SOURCE;

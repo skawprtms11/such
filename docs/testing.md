@@ -96,13 +96,17 @@ npm run dev:https
 
 ## 샘플 데이터 초기화
 
-테스트로 데이터가 어질러지면 브라우저 콘솔에서 되돌린다.
+**mock 모드에서만** 브라우저 콘솔로 되돌릴 수 있다.
 
 ```js
 const db = await import('/assets/js/db.js');
-db.resetDb();
+await db.resetDb();
 location.reload();
 ```
+
+Supabase 모드(`VITE_DATA_SOURCE=supabase`)는 실제 서버 데이터라 이 방법이 막혀 있다.
+정리가 필요하면 Supabase SQL Editor 에서 직접 지운다.
+서버 없이 화면만 확인하려면 `.env.local` 의 `VITE_DATA_SOURCE` 를 `mock` 으로 바꾼다.
 
 ---
 

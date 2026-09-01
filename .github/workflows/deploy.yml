@@ -30,7 +30,14 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
+
+      # Supabase 접속 설정. 저장소 Variables 에 넣어두고 빌드 때 주입한다.
+      # (공개 키라 secret 이 아니다. 실제 접근 제어는 서버의 RLS 가 한다)
       - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_DATA_SOURCE: ${{ vars.VITE_DATA_SOURCE }}
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

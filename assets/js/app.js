@@ -4,7 +4,7 @@ import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
 import { esc } from './util.js';
 
-const user = requireLogin();
+const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
 
 /** 라우트 정의 - 화면 모듈은 필요할 때 동적 import 한다 */
@@ -106,8 +106,8 @@ async function render() {
 }
 
 /** 로그아웃 - 사이드바(PC)와 상단바(모바일) 두 버튼이 공유한다 */
-function logout() {
-    signOut();
+async function logout() {
+    await signOut();
     location.replace('index.html');
 }
 

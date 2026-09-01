@@ -99,9 +99,17 @@ export async function render(root, { user, params }) {
 
 ---
 
-## 3. 데이터 계층 (`db.js`)
+## 3. 데이터 계층 (`db.js` → `store.js`)
 
 화면 코드는 **`db.js` 의 함수만** 호출한다. localStorage 나 Supabase 를 직접 다루지 않는다.
+
+```
+pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock)
+              (업무 규칙)  (저장소)  →  Supabase      (VITE_DATA_SOURCE=supabase)
+```
+
+**업무 규칙은 `db.js` 한 곳에만 둔다.** 저장소를 바꿔도 규칙은 그대로다.
+자세한 동작은 [CLAUDE.md 의 데이터 계층](../CLAUDE.md#5-데이터-계층-) 참고.
 
 ### 주문
 
@@ -137,14 +145,18 @@ return db.subscribe(reload);          // 기본 5초 폴링
 return db.subscribe(refresh, 8000);   // 간격 조정 가능
 ```
 
-다른 탭의 `storage` 이벤트 + 주기적 폴링으로 구현되어 있다.
-Supabase 전환 시 Realtime 채널로 교체되며, **화면 코드는 바뀌지 않아야 한다.**
+mock 은 다른 탭의 `storage` 이벤트 + 폴링, Supabase 는 Realtime 채널을 쓴다.
+어느 쪽이든 **화면 코드는 똑같다.**
 
 ### 저장소
 
-- localStorage 키: `tpl_order_db_v1`
-- 첫 실행 시 `mock-data.js` 의 시드가 적재된다
-- `db.resetDb()` 로 시드 상태로 되돌린다 (개발 중 콘솔에서 사용)
+| 모드 | 저장 위치 | 로그인 |
+|---|---|---|
+| `mock` | localStorage 키 `tpl_order_db_v1`. 첫 실행 시 `mock-data.js` 시드 적재 | 계정 선택 (임시) |
+| `supabase` | Postgres 테이블 6개 (`supabase/schema.sql`) | 이메일 + 비밀번호 |
+
+- `db.resetDb()` 는 **mock 모드에서만** 동작한다. Supabase 는 SQL 로 직접 정리한다
+- `db.createUser()` 도 mock 전용이다. Supabase 는 로그인 계정이 함께 필요하다
 
 ---
 

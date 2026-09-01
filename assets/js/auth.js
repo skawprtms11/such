@@ -1,6 +1,16 @@
-/** 로그인 세션 및 권한 판정 */
+/**
+ * 로그인 세션 및 권한 판정.
+ *
+ *   mock     : 계정 목록에서 고르는 임시 로그인 (비밀번호 검증 없음)
+ *   supabase : Supabase Auth 의 이메일 + 비밀번호 로그인
+ *
+ * 로그인한 사용자의 프로필(`profiles` 행)을 세션 저장소에 담아두고,
+ * 화면은 `currentUser()` 로만 읽는다.
+ */
 import { PERMISSION, ROLE_LABEL } from './config.js';
 import { listUsers } from './db.js';
+import { isSupabase } from './store.js';
+import { supabase } from './supabase.js';
 
 const SESSION_KEY = 'tpl_session_user';
 
@@ -16,28 +26,86 @@ export function currentUser() {
     }
 }
 
-/** 로그인 처리 - 현재는 계정 선택 방식(Supabase Auth 연동 시 교체) */
-export async function signIn(userId, keepLogin = false) {
-    const users = await listUsers();
-    const user = users.find((u) => u.id === userId);
-    if (!user) throw new Error('사용자를 찾을 수 없습니다.');
-    if (!user.active) throw new Error('사용이 중지된 계정입니다. 관리자에게 문의하세요.');
+function keepUser(user, keepLogin) {
     const store = keepLogin ? localStorage : sessionStorage;
     store.setItem(SESSION_KEY, JSON.stringify(user));
-    return user;
 }
 
-export function signOut() {
+function clearUser() {
     sessionStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(SESSION_KEY);
 }
 
-/** 로그인 상태가 아니면 로그인 화면으로 보낸다 */
-export function requireLogin() {
+/**
+ * 로그인 처리.
+ * @param {{userId?:string, email?:string, password?:string, keepLogin?:boolean}} opt
+ *   mock 은 `userId`, supabase 는 `email` + `password` 를 쓴다.
+ */
+export async function signIn({ userId, email, password, keepLogin = false }) {
+    if (!isSupabase) {
+        const users = await listUsers();
+        const user = users.find((u) => u.id === userId);
+        if (!user) throw new Error('사용자를 찾을 수 없습니다.');
+        if (!user.active) throw new Error('사용이 중지된 계정입니다. 관리자에게 문의하세요.');
+        keepUser(user, keepLogin);
+        return user;
+    }
+
+    const sb = supabase();
+    const { data, error } = await sb.auth.signInWithPassword({
+        email: String(email ?? '').trim(),
+        password: password ?? '',
+    });
+    if (error) {
+        throw new Error(error.message === 'Invalid login credentials'
+            ? '이메일 또는 비밀번호가 맞지 않습니다.'
+            : `로그인에 실패했습니다: ${error.message}`);
+    }
+
+    const { data: profile, error: perr } = await sb
+        .from('profiles').select('*').eq('id', data.user.id).single();
+    if (perr || !profile) {
+        await sb.auth.signOut();
+        throw new Error('사용자 프로필이 없습니다. 관리자에게 문의하세요.');
+    }
+    if (!profile.active) {
+        await sb.auth.signOut();
+        throw new Error('사용이 중지된 계정입니다. 관리자에게 문의하세요.');
+    }
+
+    keepUser(profile, keepLogin);
+    return profile;
+}
+
+export async function signOut() {
+    clearUser();
+    if (isSupabase) {
+        try {
+            await supabase().auth.signOut();
+        } catch (err) {
+            console.warn('Supabase 로그아웃 실패', err);
+        }
+    }
+}
+
+/**
+ * 로그인 상태가 아니면 로그인 화면으로 보낸다.
+ * Supabase 모드에서는 **서버 세션이 살아 있는지도 확인한다.**
+ * (토큰이 만료되면 프로필만 남아 있어도 데이터를 읽을 수 없다)
+ */
+export async function requireLogin() {
     const user = currentUser();
     if (!user) {
         location.replace('index.html');
         return null;
+    }
+    if (isSupabase) {
+        const { data } = await supabase().auth.getSession();
+        if (!data.session) {
+            clearUser();
+            location.replace('index.html');
+            return null;
+        }
     }
     return user;
 }
