@@ -39,6 +39,8 @@ function normalize(db) {
         o.box_count = o.box_count ?? 0;
         // 상차까지 끝난 뒤 용마담당자가 찍는 최종 완료처리
         o.closed_at = o.closed_at ?? null;
+        // 추가주문 묶음의 기준 번호 (1차수는 자기 주문번호와 같다)
+        o.base_no = o.base_no ?? o.order_no;
         // 출고적치 - 파렛트 로케이션을 전량 입력하면 채워진다
         o.stow_done_at = o.stow_done_at ?? null;
         // 단계별 작업자 이름 (웹에서 직접 입력하거나 모바일 처리 시 자동으로 채워진다)
@@ -200,6 +202,35 @@ export async function listOrders(f = {}) {
     return rows;
 }
 
+/**
+ * 추가주문을 붙일 수 있는 주문번호 목록.
+ * **종결된 주문(완료처리·취소)은 제외한다.**
+ * 주문번호별로 최신 차수 정보만 돌려준다.
+ */
+export async function listOpenOrderNos(f = {}) {
+    const db = load();
+    const map = new Map();
+    db.orders
+        .filter((o) => !o.closed_at && !o.canceled_at)
+        .filter((o) => !f.createdBy || o.created_by === f.createdBy)
+        .forEach((o) => {
+            const base = o.base_no ?? o.order_no;
+            const cur = map.get(base);
+            if (!cur || o.seq > cur.seq) {
+                map.set(base, {
+                    base_no: base,
+                    order_no: base,             // 목록에는 기준(1차수) 번호를 보여준다
+                    next_no: `${base}-${o.seq}`, // 다음 차수에 붙일 주문번호 제안
+                    customer: o.customer,
+                    seq: o.seq,
+                    vehicle_type: o.vehicle_type,
+                    ship_req_date: o.ship_req_date,
+                });
+            }
+        });
+    return [...map.values()].sort((a, b) => a.order_no.localeCompare(b.order_no));
+}
+
 export async function getOrder(id) {
     return load().orders.find((o) => o.id === id) ?? null;
 }
@@ -210,8 +241,16 @@ export async function getOrder(id) {
  */
 export async function createOrder(payload, user) {
     const db = load();
-    const same = db.orders.filter((o) => o.order_no === payload.order_no);
-    const seq = same.length ? Math.max(...same.map((o) => o.seq)) + 1 : 1;
+    // 차수는 '추가주문' 으로 등록할 때만 올라간다.
+    // 같은 주문번호라고 자동으로 올리지 않는다 (등록 화면에서 명시적으로 고른다).
+    const { addition, base_no: baseNo, ...rest } = payload;
+    // 추가주문은 기준 번호(1차수 주문번호)로 묶는다. 주문번호 자체는 `a11111-1` 처럼 따로 붙는다.
+    const base = addition ? (baseNo || rest.order_no) : rest.order_no;
+    const same = db.orders.filter((o) => o.base_no === base);
+    if (addition && !same.length) {
+        throw new Error('추가주문할 기존 주문번호를 찾을 수 없습니다.');
+    }
+    const seq = addition ? Math.max(...same.map((o) => o.seq)) + 1 : 1;
     const row = {
         id: uid('o'),
         reg_date: today(),
@@ -237,7 +276,8 @@ export async function createOrder(payload, user) {
         extra_worker: '',
         created_by: user.id,
         created_at: new Date().toISOString(),
-        ...payload,
+        base_no: base,
+        ...rest,
     };
     db.orders.push(row);
     db.pallets.push(...makePallets(row));
@@ -397,8 +437,12 @@ export async function setInspectDone(id, done, checks, user) {
     if (done) {
         const pallet = Number(checks.palletCount);
         const box = Number(checks.boxCount);
-        if (!Number.isInteger(pallet) || pallet < 1) {
-            throw new Error('총 파렛트수를 1 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.');
+        // 추가건(2차수 이상)은 기존 차수 파렛트에 혼적할 수 있어 0파렛트를 허용한다
+        const minPallet = o.seq > 1 ? 0 : 1;
+        if (!Number.isInteger(pallet) || pallet < minPallet) {
+            throw new Error(o.seq > 1
+                ? '총 파렛트수를 0 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.'
+                : '총 파렛트수를 1 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.');
         }
         if (!Number.isInteger(box) || box < 1) {
             throw new Error('총 박스수를 1 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.');
@@ -408,8 +452,11 @@ export async function setInspectDone(id, done, checks, user) {
         o.pallet_count = pallet;
         o.box_count = box;
         if (changed || !db.pallets.some((x) => x.order_id === o.id)) rebuildPallets(db, o);
+        // 혼적 추가건(0파렛트)은 적치할 파렛트가 없다. 출고적치 단계를 함께 끝낸다.
+        o.stow_done_at = pallet === 0 ? new Date().toISOString() : o.stow_done_at;
     }
 
+    if (!done && !o.pallet_count) o.stow_done_at = null;   // 혼적 건은 적치도 함께 되돌린다
     if (done) fillWorker(o, 'inspect', user);
     if (hasExtra) setStepAt(db, o, 'req_work_at', '요청작업', done, user);
     o.packing_at = done ? new Date().toISOString() : null;
@@ -749,11 +796,59 @@ export async function listLoading(shipDate) {
         const m = (adjust[r.order_id] ??= { has: true, done: true });
         if (!r.checked_at) m.done = false;
     });
-    return db.orders
+    const ready = db.orders
         .filter((o) => o.ship_req_date === shipDate
             && !o.canceled_at
-            && readyToLoad(o, { task: tasks.has(o.order_no), adjust: adjust[o.id] }))
+            && readyToLoad(o, { task: tasks.has(o.order_no), adjust: adjust[o.id] }));
+
+    // 추가주문은 1차수와 함께 배송되므로 주문번호별로 묶어 대표 1건만 보여준다
+    const byNo = new Map();
+    ready.forEach((o) => {
+        const base = o.base_no ?? o.order_no;
+        const cur = byNo.get(base);
+        if (!cur || o.seq < cur.seq) byNo.set(base, o);
+    });
+    return [...byNo.values()]
+        .map((head) => {
+            const g = groupOf(db, head.id);
+            return {
+                ...head,
+                group_count: g.rows.length,
+                group_pallets: g.pallets.length,
+                group_inspected: g.pallets.filter((p) => p.scanned_at).length,
+            };
+        })
         .sort((a, b) => (a.order_no > b.order_no ? 1 : -1));
+}
+
+/**
+ * 같은 주문번호의 차수들을 묶은 상차 단위.
+ * 추가주문은 1차수와 함께 한 거래처로 배송되므로 검수·상차를 묶어서 본다.
+ *
+ * @returns {{head:object, rows:object[], pallets:object[]}}
+ *   head    - 대표(1차수) 주문
+ *   rows    - 취소되지 않은 차수 전체 (차수 오름차순)
+ *   pallets - 모든 차수의 파렛트 (차수 → 파렛트 번호 순, seq/label 이 붙는다)
+ */
+function groupOf(db, orderId) {
+    const o = db.orders.find((x) => x.id === orderId);
+    if (!o) return null;
+    const rows = db.orders
+        .filter((x) => (x.base_no ?? x.order_no) === (o.base_no ?? o.order_no) && !x.canceled_at)
+        .sort((a, b) => a.seq - b.seq);
+    const pallets = rows.flatMap((r) => db.pallets
+        .filter((p) => p.order_id === r.id)
+        .map((p, i) => ({
+            ...p,
+            seq: r.seq,
+            label: `${r.order_no}-${String(i + 1).padStart(2, '0')}`,
+        })));
+    return { head: rows[0] ?? o, rows, pallets };
+}
+
+/** 상차 단위 조회 (화면용) */
+export async function getLoadGroup(orderId) {
+    return groupOf(load(), orderId);
 }
 
 export async function listPallets(orderId) {
@@ -836,7 +931,10 @@ export async function scanPallet(orderId, barcode, user) {
     const o = db.orders.find((x) => x.id === orderId);
     if (!o) return { ok: false, msg: '주문을 찾을 수 없습니다.' };
 
-    const mine = db.pallets.filter((p) => p.order_id === orderId);
+    // 추가주문까지 한 번에 검수한다 (같은 주문번호의 모든 차수)
+    const group = groupOf(db, orderId);
+    const ids = new Set(group.rows.map((r) => r.id));
+    const mine = db.pallets.filter((p) => ids.has(p.order_id));
     if (!mine.length) {
         return {
             ok: false,
@@ -860,40 +958,51 @@ export async function scanPallet(orderId, barcode, user) {
     if (target.scanned_at) return { ok: false, msg: '이미 검수된 파렛트입니다.' };
 
     target.scanned_at = new Date().toISOString();
-    o.inspected = db.pallets.filter((p) => p.order_id === orderId && p.scanned_at).length;
-    if (o.inspected >= o.pallet_count && o.load_status === LOAD_STATUS.WAIT) {
-        o.load_status = LOAD_STATUS.INSPECTED;
-        addHistory(db, orderId, '검수', '대기', '검수완료', user);
-    }
+    // 차수별 검수 수를 각각 갱신하고, 그 차수가 다 차면 검수 상태로 올린다
+    group.rows.forEach((r) => {
+        r.inspected = db.pallets.filter((p) => p.order_id === r.id && p.scanned_at).length;
+        if (r.inspected >= r.pallet_count && r.load_status === LOAD_STATUS.WAIT) {
+            r.load_status = LOAD_STATUS.INSPECTED;
+            addHistory(db, r.id, '검수', '대기', '검수완료', user);
+        }
+    });
+    const done = mine.filter((p) => p.scanned_at).length;
     save(db);
-    return { ok: true, msg: `검수 완료 (${o.inspected}/${o.pallet_count})`, order: o };
+    return { ok: true, msg: `검수 완료 (${done}/${mine.length})`, order: o };
 }
 
 /** 검수 취소 (전체 초기화) */
 export async function resetInspection(orderId, user) {
     const db = load();
-    db.pallets.filter((p) => p.order_id === orderId).forEach((p) => { p.scanned_at = null; });
-    const o = db.orders.find((x) => x.id === orderId);
-    o.inspected = 0;
-    o.load_status = LOAD_STATUS.WAIT;
-    addHistory(db, orderId, '검수', '검수완료', '대기', user);
+    const group = groupOf(db, orderId);
+    const ids = new Set(group.rows.map((r) => r.id));
+    db.pallets.filter((p) => ids.has(p.order_id)).forEach((p) => { p.scanned_at = null; });
+    group.rows.forEach((r) => {
+        r.inspected = 0;
+        r.load_status = LOAD_STATUS.WAIT;
+        addHistory(db, r.id, '검수', '검수완료', '대기', user);
+    });
     save(db);
-    return o;
+    return group.head;
 }
 
 /** 상차완료 처리 */
 export async function completeLoading(orderId, user) {
     const db = load();
-    const o = db.orders.find((x) => x.id === orderId);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.load_status !== LOAD_STATUS.INSPECTED) {
+    const group = groupOf(db, orderId);
+    if (!group) throw new Error('주문을 찾을 수 없습니다.');
+    // 추가주문까지 함께 실리므로 차수 전체가 검수되어야 상차완료할 수 있다
+    if (group.rows.some((r) => r.load_status !== LOAD_STATUS.INSPECTED)) {
         throw new Error('검수가 완료된 건만 상차완료 처리할 수 있습니다.');
     }
-    o.load_status = LOAD_STATUS.DONE;
-    o.loaded_at = new Date().toISOString();
-    addHistory(db, orderId, '상차작업', '', '완료', user);
+    const at = new Date().toISOString();
+    group.rows.forEach((r) => {
+        r.load_status = LOAD_STATUS.DONE;
+        r.loaded_at = at;
+        addHistory(db, r.id, '상차작업', '', '완료', user);
+    });
     save(db);
-    return o;
+    return group.head;
 }
 
 /**

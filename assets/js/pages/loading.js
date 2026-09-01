@@ -1,7 +1,14 @@
 /** 당일상차리스트 - 모바일 사용을 우선한 화면. 검수와 상차완료를 처리한다 */
 import {
-    LOAD_STATUS, palletLabel, stowStatus, STOW_STATUS, formatLocation, compareLocation,
+    LOAD_STATUS, stowStatus, STOW_STATUS, formatLocation, compareLocation,
 } from '../config.js';
+
+/** 추가주문 건수 배지 - 대표 주문번호 옆에 `+2건` 으로 붙인다 */
+function addBadge(count) {
+    return count > 1
+        ? ` <span class="tag tag--amber" title="추가주문 ${count - 1}건 포함">+${count - 1}건</span>`
+        : '';
+}
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import {
@@ -131,7 +138,7 @@ export async function render(root, { user }) {
 
 /** 상단 요약 - 출고건수 / 파렛트수 / 상차완료 / 진행률 */
 function drawSummary(root, rows) {
-    const pallets = rows.reduce((a, o) => a + Number(o.pallet_count || 0), 0);
+    const pallets = rows.reduce((a, o) => a + Number(o.group_pallets ?? o.pallet_count ?? 0), 0);
     const done = rows.filter((o) => o.load_status === LOAD_STATUS.DONE).length;
     const pct = rate(done, rows.length);
     root.querySelector('#summary').innerHTML = `
@@ -183,17 +190,17 @@ function drawTable(root, rows, editable, user, reload) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td>${esc(o.order_no)}</td>
+  <td>${esc(o.order_no)}${addBadge(o.group_count)}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
-  <td class="num">${num(o.pallet_count)}</td>
+  <td class="num">${num(o.group_pallets)}</td>
   <td class="num">${o.box_count ? num(o.box_count) : '<span class="muted">-</span>'}</td>
   <td class="center">
     <button class="btn btn--sm" data-loc="${o.id}" type="button">확인</button>
   </td>
   <td class="center">
     <button class="btn btn--sm" data-inspect="${o.id}" type="button">
-      검수 ${o.inspected}/${o.pallet_count}
+      검수 ${o.group_inspected}/${o.group_pallets}
     </button>
   </td>
   <td class="center">${statusTag(o.load_status)}</td>
@@ -217,14 +224,14 @@ function drawCards(root, rows, editable, user, reload) {
     box.innerHTML = rows.map((o) => `
 <div class="load-card">
   <div class="load-card__top">
-    <span class="load-card__no">${esc(o.order_no)}</span>
+    <span class="load-card__no">${esc(o.order_no)}${addBadge(o.group_count)}</span>
     ${statusTag(o.load_status)}
   </div>
   <div class="load-card__cust">${esc(o.customer)}</div>
   <div class="load-card__meta">
     <span>출고일 <b>${o.ship_req_date}</b></span>
     <span>차량 <b>${esc(o.vehicle_type)}</b></span>
-    <span>파렛트 <b>${o.inspected}/${o.pallet_count}</b></span>
+    <span>파렛트 <b>${o.group_inspected}/${o.group_pallets}</b></span>
     <span>박스 <b>${o.box_count ? num(o.box_count) : '-'}</b></span>
   </div>
   <div class="load-card__actions">
@@ -256,11 +263,12 @@ async function openLocationModal(orderId, user, reload) {
     const body = locModal.body.querySelector('#loc-body');
 
     async function draw() {
-        const o = await db.getOrder(orderId);
-        const pallets = await db.listPallets(orderId);
-        if (!o) return;
+        const g = await db.getLoadGroup(orderId);
+        if (!g) return;
+        const o = g.head;
+        const pallets = g.pallets;
         // 창고를 도는 순서대로 보여준다 (구역 → 행 → 열 → 단)
-        const list = sortByLocation(o, pallets);
+        const list = sortByLocation(pallets);
         const stowed = pallets.filter((p) => p.location).length;
         const picked = pallets.filter((p) => p.picked_at).length;
         const st = stowStatus(stowed, pallets.length);
@@ -268,7 +276,7 @@ async function openLocationModal(orderId, user, reload) {
         body.innerHTML = `
 <div class="toolbar" style="margin-bottom:10px">
   <div>
-    <b>${esc(o.order_no)}</b> · ${esc(o.customer)}
+    <b>${esc(o.order_no)}</b>${addBadge(g.rows.length)} · ${esc(o.customer)}
   </div>
   <div class="toolbar__spacer"></div>
   <span class="tag ${st === STOW_STATUS.DONE ? 'tag--green' : 'tag--gray'}">${st}</span>
@@ -282,6 +290,7 @@ ${editable && !o.loaded_at ? `
 <div class="pallet-list">
   ${list.length ? list.map((p) => `
   <label class="pallet ${p.picked_at ? 'is-scanned' : ''}">
+    <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
     <span class="pallet__code">${esc(p.label)}</span>
     <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>`
@@ -313,10 +322,8 @@ ${editable && !o.loaded_at ? `
  * 파렛트에 표시 이름을 붙이고 로케이션 순으로 정렬한다.
  * 이름은 **원래 파렛트 번호**를 유지해야 하므로 정렬 전에 붙인다.
  */
-function sortByLocation(order, pallets) {
-    return pallets
-        .map((p, i) => ({ ...p, label: palletLabel(order.order_no, i) }))
-        .sort((a, b) => compareLocation(a.location, b.location));
+function sortByLocation(pallets) {
+    return [...pallets].sort((a, b) => compareLocation(a.location, b.location));
 }
 
 /**
@@ -326,7 +333,8 @@ function sortByLocation(order, pallets) {
 async function openLoadedDetail(orderId) {
     const o = await db.getOrder(orderId);
     if (!o) return;
-    const pallets = sortByLocation(o, await db.listPallets(orderId));
+    const g = await db.getLoadGroup(orderId);
+    const pallets = sortByLocation(g.pallets);
     const row = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
     const dash = '<span class="muted">-</span>';
     locModal?.close();
@@ -335,9 +343,11 @@ async function openLoadedDetail(orderId) {
   ${row('거래처명', esc(o.customer))}
   ${row('출고일자', `<b>${o.ship_req_date}</b>`)}
   ${row('차량구분', esc(o.vehicle_type))}
-  ${row('파렛트수', o.pallet_count ? `${num(o.pallet_count)} PLT` : dash)}
+  ${row('차수', `${g.rows.length}개 차수${g.rows.length > 1
+        ? ` (추가주문 ${g.rows.length - 1}건 포함)` : ''}`)}
+  ${row('파렛트수', pallets.length ? `${num(pallets.length)} PLT` : dash)}
   ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
-  ${row('검수', `${o.inspected}/${o.pallet_count}`)}
+  ${row('검수', `${pallets.filter((p) => p.scanned_at).length}/${pallets.length}`)}
   ${row('검수완료', o.inspect_done_at ? fmtDateTime(o.inspect_done_at) : dash)}
   ${row('출고적치', o.stow_done_at ? fmtDateTime(o.stow_done_at) : dash)}
   ${row('상차완료', o.loaded_at ? `<b>${fmtDateTime(o.loaded_at)}</b>` : dash)}
@@ -347,7 +357,7 @@ async function openLoadedDetail(orderId) {
 <div class="pallet-list">
   ${pallets.length ? pallets.map((p) => `
   <div class="pallet ${p.picked_at ? 'is-scanned' : ''}">
-    <span class="pallet__mark">${p.picked_at ? '✅' : '⬜'}</span>
+    <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
     <span class="pallet__code">${esc(p.label)}</span>
     <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>` : dash}</span>

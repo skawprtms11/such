@@ -165,9 +165,21 @@ thefurerap/
 
 ### 3. 차수 (seq)
 
-같은 주문번호로 다시 등록하면 자동으로 차수가 올라간다.
-`db.createOrder()` 가 동일 `order_no` 의 `max(seq) + 1` 을 계산한다.
-사용자가 직접 입력하지 않는다. 표에서 2차수 이상은 주황색으로 구분 표시한다.
+등록 화면에서 **신규주문 / 추가주문**을 고르고, **추가주문일 때만 차수가 올라간다.**
+`db.createOrder()` 가 `addition` 플래그를 받아 `max(seq) + 1` 을 계산한다.
+사용자가 차수를 직접 입력하지는 않는다. 표에서 2차수 이상은 주황색으로 구분 표시한다.
+
+- ⚠️ **같은 주문번호라고 자동으로 차수를 올리지 않는다.** 예전에는 그렇게 했지만
+  신규 주문이 2차수로 들어가는 문제가 있어 없앴다 (`trg_set_order_seq` 트리거도 제거)
+- 추가주문 대상은 `db.listOpenOrderNos()` 가 준다. **종결된 주문(완료처리·취소)은 빠진다**
+- 🔑 **추가주문은 주문번호가 `a11111` → `a11111-1` → `a11111-2` 로 뻗는다.**
+  묶음 판정은 주문번호가 아니라 **기준 번호 `base_no`** 로 한다 (1차수는 자기 번호와 같다)
+- 일괄등록은 신규주문으로만 들어간다
+
+**상차는 차수를 묶어서 처리한다 🔑** — 추가주문은 1차수와 함께 한 거래처로 배송되므로,
+상차대기·당일상차리스트·상차검수는 **같은 `base_no` 의 모든 차수를 하나로 본다**
+(`db.getLoadGroup()`). 목록에는 대표(가장 낮은 차수)만 나오고 옆에 `+2건` 배지가 붙는다.
+검수·상차완료도 그룹 전체에 적용된다.
 
 ### 4. 권한
 
@@ -226,7 +238,7 @@ pages/*.js  →  db.js  →  localStorage (현재)
 | 테이블 | 용도 | 주요 필드 |
 |---|---|---|
 | `profiles` | 사용자 | `name` `email` `company`(고객사/용마로지스) `role` `active` |
-| `orders` | 주문 | `order_no` `seq` `customer` `ship_req_date` `vehicle_type` `extra_works` `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
+| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date` `vehicle_type` `extra_works` `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
 | `order_history` | 변동사항 이력 | `order_id` `rev` `field` `before_val` `after_val` `memo` `changed_by` `checked_at` |
 | `restore_requests` | 조정요청 | `order_id` `type` `reason` `product_code` `qty` `created_by` `checked_at` |
 | `pallets` | 검수 바코드 · 적치 로케이션 | `order_id` `barcode` `scanned_at` `location` `picked_at` |

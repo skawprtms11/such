@@ -86,16 +86,21 @@ export async function render(root, { user, params }) {
 
     /** 헤더 요약과 파렛트 목록을 다시 그린다 */
     async function refresh() {
-        const o = await db.getOrder(orderId);
-        const pallets = await db.listPallets(orderId);
-        const pct = rate(o.inspected, o.pallet_count);
+        // 추가주문은 1차수와 함께 실리므로 같은 주문번호의 모든 차수를 한 번에 검수한다
+        const g = await db.getLoadGroup(orderId);
+        const o = g.head;
+        const pallets = g.pallets;
+        const done = pallets.filter((p) => p.scanned_at).length;
+        const pct = rate(done, pallets.length);
 
         root.querySelector('#scan-head').innerHTML = `
-<h2>${esc(o.order_no)} <span class="tag tag--blue">${o.seq}차수</span></h2>
+<h2>${esc(o.order_no)} <span class="tag tag--blue">${g.rows.length}개 차수</span></h2>
 <p>${esc(o.customer)} · ${esc(o.vehicle_type)} · 출고 ${o.ship_req_date}</p>
+${g.rows.length > 1 ? `
+<p class="field__label">추가주문 ${g.rows.length - 1}건이 함께 검수됩니다.</p>` : ''}
 <div class="scan-stats">
-  <div><span>총 파렛트</span><strong>${num(o.pallet_count)}</strong></div>
-  <div><span>검수 파렛트</span><strong>${num(o.inspected)}</strong></div>
+  <div><span>총 파렛트</span><strong>${num(pallets.length)}</strong></div>
+  <div><span>검수 파렛트</span><strong>${num(done)}</strong></div>
   <div><span>진행률</span><strong>${pct}%</strong></div>
 </div>
 <div class="bar" style="margin-top:10px">
@@ -106,6 +111,7 @@ export async function render(root, { user, params }) {
         root.querySelector('#pallets').innerHTML = pallets.length ? pallets.map((p, i) => `
 <div class="pallet ${p.scanned_at ? 'is-scanned' : ''}">
   <span class="pallet__mark">${p.scanned_at ? '✅' : '⬜'}</span>
+  <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
   <span class="pallet__code" title="${esc(p.barcode)}">
     파렛트 ${i + 1} <small>/ ${pallets.length}</small>
   </span>
@@ -115,11 +121,13 @@ export async function render(root, { user, params }) {
 </div>`).join('') : '<div class="empty">등록된 파렛트가 없습니다. 주문의 파렛트수를 입력하세요.</div>';
 
         const loadBtn = root.querySelector('#btn-load');
-        if (loadBtn) loadBtn.hidden = o.load_status !== LOAD_STATUS.INSPECTED;
-        if (o.load_status !== LOAD_STATUS.WAIT) stopCamera();
+        // 차수 전체가 검수돼야 상차완료할 수 있다
+        const allInspected = g.rows.every((r) => r.load_status === LOAD_STATUS.INSPECTED);
+        if (loadBtn) loadBtn.hidden = !allInspected;
+        if (done >= pallets.length) stopCamera();
         // 스캐너로 연속 입력하는 중이면 커서를 입력창에 남겨 둔다
         if (keepFocus) root.querySelector('#manual')?.focus();
-        return o;
+        return { order: o, total: pallets.length, done };
     }
 
     /** 바코드 1건 처리 */
@@ -128,8 +136,8 @@ export async function render(root, { user, params }) {
         const res = await db.scanPallet(orderId, code, user);
         toast(res.msg, res.ok ? 'success' : 'error');
         if (res.ok && navigator.vibrate) navigator.vibrate(60);
-        const o = await refresh();
-        if (res.ok && o.inspected >= o.pallet_count) {
+        const { total, done } = await refresh();
+        if (res.ok && done >= total) {
             stopCamera();
             toast('모든 파렛트 검수가 완료되었습니다.', 'success');
         }

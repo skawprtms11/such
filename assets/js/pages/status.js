@@ -567,12 +567,14 @@ function openDetail(o, opt, ctx) {
  * 검수작업에서 파렛트수를 입력한 뒤에만 출력할 수 있다 (라벨에 총 파렛트수가 들어간다).
  */
 function labelCell(o) {
-    if (!o.inspect_done_at || !o.pallet_count) {
+    // 추가건이 혼적(0파렛트)이면 파렛트가 없어도 라벨 1장분(앞뒤 2장)을 뽑는다
+    const mixed = o.seq > 1 && !o.pallet_count;
+    if (!o.inspect_done_at || (!o.pallet_count && !mixed)) {
         return '<span class="muted" title="검수작업을 완료하면 출력할 수 있습니다">-</span>';
     }
-    const sheets = o.pallet_count * 2;
+    const sheets = labelPages(o).length;
     return `<button class="btn btn--sm" data-label="${o.id}" type="button"
-        title="총 ${sheets}장 (${o.pallet_count}파렛트 × 앞뒤 2장)">출력</button>`;
+        title="총 ${sheets}장 (${mixed ? '혼적' : `${o.pallet_count}파렛트`} × 앞뒤 2장)">출력</button>`;
 }
 
 /**
@@ -593,7 +595,8 @@ function printLoadLabel(o) {
 
 /** 라벨 페이지 목록 - 파렛트 1장당 앞뒤 2매를 뽑는다 ('10/1' = 10장 중 1번째) */
 function labelPages(o) {
-    const total = o.pallet_count;
+    // 혼적 추가건은 파렛트가 없어도 라벨 1장분을 만든다
+    const total = o.pallet_count || (o.seq > 1 ? 1 : 0);
     const pages = [];
     for (let i = 1; i <= total; i += 1) pages.push(`${total}/${i}`, `${total}/${i}`);
     return pages;
@@ -636,16 +639,20 @@ function labelHtml(o) {
   .barcode svg { width: 100%; height: auto; max-height: 60mm; }
   .barcode__no { margin-top: 3mm; font-family: monospace; font-size: 22pt; letter-spacing: 4px; }
   .seq { text-align: right; font-size: 14pt; font-weight: 700; }
+  /* 추가건(2차수 이상)임을 라벨 오른쪽 위에 알린다 */
+  .add-mark { text-align: right; font-size: 20pt; font-weight: 800; margin-bottom: 3mm; }
 </style></head>
 <body onload="window.print()">
 ${labelPages(o).map((seq) => `
   <div class="label">
+    ${o.seq > 1 ? `<div class="add-mark">추가건 - ${o.seq}차수</div>` : ''}
     <table>
       ${row('출고일자', esc(o.ship_req_date), 'xl')}
       ${row('주문번호', esc(o.order_no), 'xl')}
       ${row('거래처명', esc(o.customer), 'xl')}
       ${row('주문일자', esc(o.reg_date), 'lg')}
-      ${row('총 파렛트수', `${num(o.pallet_count)} PLT`, 'lg')}
+      ${row('총 파렛트수', o.pallet_count
+        ? `${num(o.pallet_count)} PLT` : '기존차수에 혼적적재', 'lg')}
       ${row('박스수', '', 'blank')}
     </table>
     <div class="barcode">
