@@ -1,0 +1,13 @@
+# Netlify 배포 설정 (유일한 배포처)
+# 대시보드 설정보다 이 파일이 우선한다. 빌드 방법을 코드로 남겨 재현 가능하게 한다.
+
+[build]
+  # 검사까지 여기서 돌린다. lint 가 실패하면 배포되지 않는다
+  command = "npm run lint && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Supabase 접속 설정(VITE_*)은 Netlify 사이트 환경변수에 있다.
+# 키를 이 파일에 넣지 않는다. (.env.example 참고)
