@@ -146,21 +146,11 @@ create index orders_created_by_idx    on public.orders (created_by);
 create unique index orders_no_seq_idx on public.orders (order_no, seq);
 
 -- 동일 주문번호가 이미 있으면 차수를 자동으로 증가시킨다
-create or replace function public.set_order_seq()
-returns trigger
-language plpgsql
-as $$
-begin
-    select coalesce(max(seq), 0) + 1 into new.seq
-      from public.orders
-     where order_no = new.order_no;
-    return new;
-end;
-$$;
-
-create trigger trg_set_order_seq
-    before insert on public.orders
-    for each row execute function public.set_order_seq();
+-- 차수는 등록 화면에서 '추가주문' 을 골랐을 때만 올라간다.
+-- 같은 주문번호라고 자동으로 올리면 신규주문이 2차수로 들어가므로 트리거를 두지 않는다.
+-- (예전의 trg_set_order_seq 는 제거했다. 이미 적용한 DB 라면 아래로 지운다)
+--   drop trigger if exists trg_set_order_seq on public.orders;
+--   drop function if exists public.set_order_seq();
 
 -- ========================= 4. 변동사항 히스토리 =========================
 

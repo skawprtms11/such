@@ -517,10 +517,23 @@ function checkedMeta(row) {
  */
 function openForm(o, user, reload) {
     const isEdit = Boolean(o);
+    let baseNo = '';        // 추가주문으로 고른 묶음의 기준 번호 (등록 시 함께 넘긴다)
     const v = (k, d = '') => esc(o?.[k] ?? d);
     const m = openModal(isEdit ? `주문 수정 - ${o.order_no}` : '주문 등록', `
 <p class="req-note"><span class="req">*</span> 표시는 필수 입력 항목입니다.</p>
 <form id="order-form">
+  ${isEdit ? '' : `
+  <div class="checks" id="order-kind" style="margin-bottom:14px">
+    <label class="check check--inline">
+      <input type="radio" name="kind" value="new" checked> 신규주문
+    </label>
+    <label class="check check--inline">
+      <input type="radio" name="kind" value="add"> 추가주문
+    </label>
+  </div>
+  <p class="form-note" id="kind-note" style="margin:0 0 14px" hidden>
+    기존 주문번호를 고르면 다음 차수로 등록됩니다. (종결된 주문번호는 나오지 않습니다)
+  </p>`}
   <div class="form-grid">
     <label class="field">
       <span class="field__label">전송일자<span class="req">*</span></span>
@@ -528,7 +541,10 @@ function openForm(o, user, reload) {
     </label>
     <label class="field">
       <span class="field__label">주문번호<span class="req">*</span></span>
-      <input type="text" name="order_no" required placeholder="PO-00000000" value="${v('order_no')}">
+      <input type="text" name="order_no" required placeholder="PO-00000000"
+             autocomplete="off" list="${isEdit ? '' : 'open-order-nos'}" value="${v('order_no')}">
+      ${isEdit ? '' : '<datalist id="open-order-nos"></datalist>'}
+      <span class="field__label" id="order-no-hint"></span>
     </label>
     <label class="field">
       <span class="field__label">거래처명<span class="req">*</span></span>
@@ -578,6 +594,63 @@ function openForm(o, user, reload) {
 
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
 
+    // 신규/추가 선택 - 추가주문이면 기존 주문번호를 고르고, 그 정보를 채워 준다
+    if (!isEdit) {
+        const kindBox = m.body.querySelector('#order-kind');
+        const note = m.body.querySelector('#kind-note');
+        const noInput = m.body.querySelector('[name="order_no"]');
+        const hint = m.body.querySelector('#order-no-hint');
+        const list = m.body.querySelector('#open-order-nos');
+        let opens = [];
+
+        /** 고른 주문번호가 실제 대상인지 확인하고 안내를 갱신한다 */
+        const syncHint = () => {
+            const add = kindBox.querySelector('[name="kind"]:checked').value === 'add';
+            if (!add) {
+                hint.textContent = '';
+                return;
+            }
+            const val = noInput.value.trim();
+            // 목록에서 고른 경우: 기준 번호(a11111) 또는 제안 번호(a11111-1)
+            const picked = opens.find((x) => x.base_no === val || x.next_no === val);
+            if (picked) {
+                baseNo = picked.base_no;
+                // 기준 번호를 골랐으면 다음 연번을 붙여 준다 (a11111 → a11111-1)
+                if (val === picked.base_no) noInput.value = picked.next_no;
+                const cust = m.body.querySelector('[name="customer"]');
+                if (!cust.value) cust.value = picked.customer;
+            } else if (val && baseNo && !val.startsWith(baseNo)) {
+                // 기준 번호와 아예 다른 값을 넣으면 선택을 푼다
+                baseNo = '';
+            }
+            // ⚠️ 연번은 차수와 무관하게 붙을 수 있다(a11111-3 등).
+            //    번호를 직접 고쳐도 한 번 고른 기준 번호는 유지한다.
+            const base = opens.find((x) => x.base_no === baseNo);
+            hint.textContent = base
+                ? `${base.customer} · ${base.base_no} 묶음 · 현재 ${base.seq}차수 `
+                  + `→ ${base.seq + 1}차수로 등록`
+                : '목록에 있는 기존 주문번호를 고르세요.';
+            hint.style.color = base ? 'var(--green)' : 'var(--red)';
+        };
+
+        kindBox.addEventListener('change', async () => {
+            const add = kindBox.querySelector('[name="kind"]:checked').value === 'add';
+            note.hidden = !add;
+            noInput.placeholder = add ? '기존 주문번호 선택' : 'PO-00000000';
+            if (add && !opens.length) {
+                opens = await db.listOpenOrderNos({
+                    createdBy: can(user, 'viewAll') ? undefined : user.id,
+                });
+                list.innerHTML = opens.map((x) => `
+<option value="${esc(x.base_no)}">${esc(x.customer)} · 현재 ${x.seq}차수 → ${esc(x.next_no)}</option>`)
+                    .join('');
+            }
+            syncHint();
+        });
+
+        noInput.addEventListener('input', syncHint);
+    }
+
     m.body.querySelector('#btn-del')?.addEventListener('click', async () => {
         if (!await confirmDialog('해당 주문을 삭제하시겠습니까?')) return;
         await db.deleteOrder(o.id, user);
@@ -594,12 +667,17 @@ function openForm(o, user, reload) {
         fd.extra_works = form.getAll('extra_works');
         const memo = fd.memo ?? '';
         delete fd.memo;
+        // 추가주문이면 차수를 올려 등록한다 (kind 는 저장 필드가 아니다)
+        const addition = fd.kind === 'add';
+        delete fd.kind;
         try {
             if (isEdit) {
                 await db.updateOrder(o.id, fd, user, memo);
                 toast('수정되었습니다.', 'success');
             } else {
-                const created = await db.createOrder(fd, user);
+                const created = await db.createOrder(
+                    { ...fd, addition, base_no: addition ? baseNo : undefined }, user,
+                );
                 toast(`${created.seq}차수로 등록되었습니다.`, 'success');
             }
             m.close();
