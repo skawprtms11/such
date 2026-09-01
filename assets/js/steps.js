@@ -21,13 +21,18 @@ function norm(opt = {}) {
 
 /**
  * 해당 주문에서 화면에 보여야 할 단계 목록.
+ *
+ * `current` 는 **지금 진행중인 단계**(아직 끝나지 않은 첫 단계)다.
+ * 화면에서 노란색으로 표시한다. 취소된 주문과 전부 끝난 주문에는 없다.
+ *
  * @param {object} order 주문
  * @param {StepOpt} opt 조건부 단계 판단에 쓰는 값
- * @returns {Array<{key:string, label:string, done:boolean, doneAt:string|null}>}
+ * @returns {Array<{key:string, label:string, done:boolean, doneAt:string|null,
+ *                  current:boolean}>}
  */
 export function visibleSteps(order, opt = {}) {
     const { task, adjust } = norm(opt);
-    return WORK_STEPS
+    const steps = WORK_STEPS
         .filter((s) => {
             if (s.cond === 'extra') return (order.extra_works ?? []).length > 0;
             if (s.cond === 'adjust') return adjust.has;
@@ -46,6 +51,9 @@ export function visibleSteps(order, opt = {}) {
                 doneAt: order[s.at] ?? null,
             };
         });
+
+    const next = order.canceled_at ? -1 : steps.findIndex((s) => !s.done);
+    return steps.map((s, i) => ({ ...s, current: i === next }));
 }
 
 /** 상차작업을 제외한 모든 단계가 끝났는지 (당일상차리스트 진입 조건) */
