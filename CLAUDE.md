@@ -71,6 +71,19 @@ npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 `npm run dev` 는 `Network:` 주소도 출력한다. 같은 와이파이의 휴대폰에서 그 주소로
 접속하면 모바일 화면과 바코드 스캔을 실기기에서 확인할 수 있다.
 
+### 배포 🔑
+
+**두 곳에 자동 배포된다.** main 에 반영되면 양쪽이 각각 새로 빌드한다.
+
+| 배포처 | 주소 | 접속 설정을 넣는 곳 |
+|---|---|---|
+| **Netlify** (`suchool`) | https://suchool.netlify.app | Netlify 사이트 환경변수 |
+| GitHub Pages | https://skawprtms11.github.io/such/ | 저장소 Variables + `.github/workflows/deploy.yml` |
+
+⚠️ **Supabase 접속 설정(`VITE_*`)은 양쪽 모두에 넣어야 한다.**
+한쪽에만 넣으면 그쪽은 실서버, 다른 쪽은 mock 으로 떠서 같은 코드인데 화면이 달라 보인다.
+Netlify 는 PR 마다 deploy preview 도 만들며 같은 환경변수를 쓴다.
+
 ---
 
 ## 폴더 구조
