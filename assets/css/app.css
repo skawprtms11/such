@@ -727,8 +727,45 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 }
 
 .work-head__meta b { opacity: 1; font-weight: 600; }
+
+/* 접었을 때는 주문번호와 거래처명만 한 줄로 보여준다 */
+.work-head__cust-inline {
+    display: none;
+    font-size: 14px;
+    opacity: .9;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.work-head.is-folded .work-head__body { display: none; }
+.work-head.is-folded .work-head__top .tag { display: none; }
+.work-head.is-folded .work-head__cust-inline { display: block; }
+.work-head.is-folded { padding: 12px 16px; }
+
+/* 카드 하단의 접기/펼치기 손잡이 */
+.work-head__fold {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    margin: 10px 0 -6px;
+    padding: 6px 0 0;
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, .15);
+    background: none;
+    color: #cfe0f0;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.work-head.is-folded .work-head__fold { margin: 8px 0 -4px; }
+.work-head__fold:hover { color: #fff; }
 .work-head .step { background: rgba(255, 255, 255, .14); color: #cfe0f0; }
 .work-head .step.is-done { background: var(--green); color: #fff; }
+.work-head .step.is-current { background: #f6c453; color: #4a2d05; border-color: #f6c453; }
 .work-head .steps__arrow { color: rgba(255, 255, 255, .4); }
 
 /* 확인 체크 묶음 (검수작업 탭) */
@@ -744,7 +781,13 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 
 .task-detail p { margin: 6px 0 8px; white-space: pre-wrap; font-size: 14px; }
 
-.step.is-current { background: var(--blue); color: #fff; font-weight: 600; }
+/* 지금 진행중인 단계 - 노란색으로 눈에 띄게 한다 */
+.step.is-current {
+    background: var(--amber-soft);
+    color: var(--amber);
+    border-color: #f0c987;
+    font-weight: 700;
+}
 .step.is-clickable { cursor: pointer; }
 .step.is-clickable:hover { border-color: var(--blue); }
 
@@ -1013,7 +1056,7 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 .scan-stats span { display: block; font-size: 11px; opacity: .8; }
 .scan-stats strong { font-size: 20px; }
 
-#scan-video {
+#scan-video, #loc-video {
     width: 100%;
     max-height: 320px;
     background: #000;
@@ -1023,7 +1066,7 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 }
 
 /* hidden 속성이 위 display:block 에 덮이지 않게 한다 */
-#scan-video[hidden] { display: none; }
+#scan-video[hidden], #loc-video[hidden] { display: none; }
 
 .pallet-list { display: grid; gap: 8px; margin-top: 14px; }
 
@@ -1072,27 +1115,158 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 
 .pallet__check:disabled { cursor: default; }
 
+/* 세그먼트 버튼 (연속이동/건별이동, 구역코드 자동/수기) */
+.seg {
+    display: inline-flex;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    background: var(--gray-100);
+}
+
+.seg--block { display: flex; width: 100%; }
+
+.seg__btn {
+    flex: 1;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    font: inherit;
+    font-weight: 600;
+    color: var(--gray-500);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.seg__btn.is-active { background: #fff; color: var(--navy); box-shadow: var(--shadow); }
+.seg--sm .seg__btn { padding: 6px 12px; font-size: 13px; }
+
+/* 입력 패널을 화면 위에 붙여 목록을 훑는 동안에도 계속 보이게 한다 */
+.stow-bar {
+    position: sticky;
+    top: -12px;
+    z-index: 5;
+    padding-top: 12px;
+    background: var(--bg);
+}
+
+/* 숫자 자판을 펼치면 패널이 화면을 다 덮으므로 고정을 푼다 */
+.stow-bar.is-tall { position: static; }
+
+/* 이동 방식은 카드 머리에 넣어 높이를 줄인다 */
+.stow-bar .card__head .seg { flex: 1; }
+
+/* 구역코드 줄 - 라벨 · 자동/수기 · 코드 입력칸 */
+.stow-zone {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.stow-zone .seg { flex: 1; }
+.stow-zone .seg__btn { min-width: 72px; }
+
+.stow-zone__code {
+    width: 72px;
+    flex: 0 0 72px;
+    text-align: center;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+
+.stow-zone__code:disabled { background: var(--gray-100); color: var(--gray-300); }
+.stow-note { margin: 6px 0 0; }
+.form-note.is-warn { color: var(--amber); font-weight: 600; }
+
+/* 지금 로케이션이 들어갈 파렛트 */
+.stow-target {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--blue);
+    border-radius: 10px;
+    background: var(--blue-soft);
+    font-size: 15px;
+}
+
+.stow-target b { font-variant-numeric: tabular-nums; }
+.stow-target__label { font-size: 12px; color: var(--gray-500); font-weight: 600; }
+.stow-target__rest { margin-left: auto; font-size: 12px; color: var(--gray-500); }
+.stow-target.is-done { border-color: #9fd9c4; background: var(--green-soft); color: var(--green); }
+
+.stow-target.is-wait {
+    border-color: var(--gray-200);
+    background: var(--gray-100);
+    color: var(--gray-500);
+    font-size: 13px;
+}
+
+/* 로케이션 입력칸 + 저장 버튼 */
+.stow-input { display: flex; gap: 8px; margin-top: 10px; }
+
+.stow-input input {
+    flex: 1;
+    min-height: 50px;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.stow-input .btn { flex: 0 0 84px; }
+
+/* 카메라·자판 버튼 - 입력칸과 겹쳐 보이지 않게 선으로 나누고 오른쪽에 모은다 */
+.stow-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--gray-200);
+}
+
+.stow-tool { min-height: 46px; padding: 0 16px; font-size: 14px; font-weight: 600; }
+.stow-tool__ico { font-size: 20px; line-height: 1; margin-right: 6px; }
+
+/* 지우기는 잘못 누르지 않게 반대쪽 끝으로 떨어뜨린다 */
+#loc-clear { margin-right: auto; }
+
+/* 다음 차례인 파렛트 */
+.pallet.is-target {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, .15);
+}
+
 /* 입력 중인 로케이션을 크게 보여준다 */
 .loc-preview {
-    margin: 12px 0;
-    padding: 14px;
+    margin: 10px 0;
+    padding: 10px;
     border: 2px dashed var(--gray-300);
     border-radius: 10px;
     background: var(--gray-100);
     text-align: center;
-    font-size: 28px;
+    font-size: 24px;
     font-weight: 800;
     letter-spacing: 2px;
     font-variant-numeric: tabular-nums;
 }
 
-.loc-preview.is-empty { color: var(--gray-300); font-weight: 600; }
+.loc-preview[hidden] { display: none; }
 
 /* 형식이 다 채워지면 초록으로 알려준다 */
 .loc-preview.is-ready { border-color: var(--green); border-style: solid; color: var(--green); }
 
 /* 계산기와 같은 숫자 배열 (7 8 9 / 4 5 6 / 1 2 3 / - 0 ←) */
 .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.keypad[hidden] { display: none; }
 
 .keypad__key {
     padding: 16px 0;
@@ -1175,10 +1349,14 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
     .tab__icon { width: 22px; height: 22px; }
     .tab.is-active { color: var(--blue); font-weight: 700; }
 
-    .summary { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    /* 요약 구역은 목록에 자리를 내주도록 낮게 잡는다 */
+    .summary { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
     .summary--3 { grid-template-columns: repeat(3, 1fr); }
-    .stat { padding: 11px 12px; }
-    .stat__value { font-size: 19px; }
+    .stat { padding: 7px 10px; }
+    .stat__label { font-size: 11px; line-height: 1.4; }
+    .stat__value { font-size: 17px; margin-top: 2px; line-height: 1.35; }
+    .stat__value small { font-size: 11px; }
+    .bar { height: 5px; margin-top: 5px; }
     .form-grid { grid-template-columns: 1fr; }
     .detail-grid { grid-template-columns: 1fr; }
     .toolbar > .field { flex: 1 1 140px; }

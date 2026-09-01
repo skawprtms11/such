@@ -178,30 +178,58 @@ function mountScanBox(box, onSubmit) {
 
 /* --------------------------------- 공통 조각 -------------------------------- */
 
-/** 주문 요약 카드 (단계 표시 포함) */
-function orderSummary(o, opt, { steps: showSteps = true } = {}) {
-    const steps = showSteps ? visibleSteps(o, opt) : [];
+/** 요약 카드를 접어둔 상태인지 - 화면을 다시 그려도 유지한다 */
+let headFolded = false;
+
+/**
+ * 주문 요약 카드 (단계 표시 포함).
+ * `fold: true` 면 카드 하단에 접기/펼치기 손잡이가 붙고,
+ * 접으면 **주문번호와 거래처명만 한 줄로** 남는다. `bindOrderHead()` 로 동작을 연결한다.
+ */
+function orderSummary(o, opt, { fold = false } = {}) {
+    const steps = visibleSteps(o, opt);
+    const folded = fold && headFolded;
     return `
-<div class="work-head">
+<div class="work-head ${folded ? 'is-folded' : ''}" data-head>
   <div class="work-head__top">
     <strong>${esc(o.order_no)}</strong>
     <span class="tag tag--blue">${o.seq}차수</span>
+    <span class="work-head__cust-inline">${esc(o.customer)}</span>
   </div>
-  <div class="work-head__cust">${esc(o.customer)}</div>
-  <div class="work-head__meta">
-    <span>출고요청일 <b>${o.ship_req_date}</b></span>
-    <span>차량 <b>${esc(o.vehicle_type)}</b></span>
-    <span>파렛트 <b>${num(o.pallet_count)}</b></span>
+  <div class="work-head__body">
+    <div class="work-head__cust">${esc(o.customer)}</div>
+    <div class="work-head__meta">
+      <span>출고요청일 <b>${o.ship_req_date}</b></span>
+      <span>차량 <b>${esc(o.vehicle_type)}</b></span>
+      <span>파렛트 <b>${num(o.pallet_count)}</b></span>
+    </div>
+    ${steps.length ? `
+    <div class="steps steps--flow">
+      ${steps.map((s, i) => `
+      ${i ? '<span class="steps__arrow">→</span>' : ''}
+      <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
+            title="${s.doneAt ? fmtDateTime(s.doneAt) : s.current ? '진행중' : '미완료'}">
+        ${s.label}
+      </span>`).join('')}
+    </div>` : ''}
   </div>
-  ${steps.length ? `
-  <div class="steps steps--flow">
-    ${steps.map((s, i) => `
-    ${i ? '<span class="steps__arrow">→</span>' : ''}
-    <span class="step ${s.done ? 'is-done' : ''}" title="${s.doneAt ? fmtDateTime(s.doneAt) : ''}">
-      ${s.label}
-    </span>`).join('')}
-  </div>` : ''}
+  ${fold ? `
+  <button class="work-head__fold" type="button" data-fold>
+    ${folded ? '∨ 펼치기' : '∧ 접기'}
+  </button>` : ''}
 </div>`;
+}
+
+/** 요약 카드의 접기/펼치기 손잡이를 연결한다 */
+function bindOrderHead(root) {
+    const btn = root.querySelector('[data-fold]');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+        headFolded = !headFolded;
+        const head = root.querySelector('[data-head]');
+        head.classList.toggle('is-folded', headFolded);
+        btn.textContent = headFolded ? '∨ 펼치기' : '∧ 접기';
+    });
 }
 
 /** 주문번호로 조회해 1건을 고른다. 여러 차수면 선택 목록을 보여준다 */
@@ -247,10 +275,10 @@ async function renderWorkTab(pane, user, editable, mode) {
         const o = await db.getOrder(orderId);
         if (!o) return;
         const opt = { task: Boolean(tasks[o.order_no]), adjust: (await db.adjustMap())[o.id] };
-        // 검수작업 탭은 검수에 집중하도록 상단 진행현황을 감춘다
         workBox.innerHTML = `
-${orderSummary(o, opt, { steps: mode !== 'inspect' })}
+${orderSummary(o, opt, { fold: true })}
 <div class="card"><div class="card__body" id="work-body"></div></div>`;
+        bindOrderHead(workBox);
         const body = workBox.querySelector('#work-body');
 
         if (mode === 'ship') drawShip(body, o, user, editable, () => draw(orderId));
@@ -286,8 +314,7 @@ ${editable ? `
   <button class="btn btn--success btn--lg" id="btn-done" type="button">작업완료</button>
   <button class="btn btn--danger btn--lg" id="btn-reset" type="button">시작 취소</button>`
             : `
-  <button class="btn btn--primary btn--lg" id="btn-start" type="button">작업시작</button>
-  <button class="btn btn--success btn--lg" id="btn-done" type="button">바로 작업완료</button>`}
+  <button class="btn btn--primary btn--lg" id="btn-start" type="button">작업시작</button>`}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
 
     const run = async (fn, msg) => {
@@ -562,6 +589,24 @@ function monthDay(iso) {
 
 /* -------------------------------- 출고적치 탭 -------------------------------- */
 
+/** 이동 방식 - 연속이동은 목록 순서대로, 건별이동은 고른 파렛트만 처리한다 */
+const STOW_MODES = [
+    { key: 'seq', label: '연속이동' },
+    { key: 'one', label: '건별이동' },
+];
+
+/** 구역코드 입력 방식 - 자동은 앞자리를 따라붙이고, 수기는 넣은 값을 그대로 쓴다 */
+const ZONE_MODES = [
+    { key: 'auto', label: '자동' },
+    { key: 'manual', label: '수기' },
+];
+
+/** 스캐너가 같은 값을 연달아 보내는 것을 무시하는 시간(ms) */
+const STOW_REPEAT_MS = 2500;
+
+/** 적치 입력 설정 - 탭을 다시 열어도 유지한다 */
+const stowPrefs = { mode: 'seq', zoneMode: 'auto', zone: '', keypad: false };
+
 function stowTag(done, total) {
     const st = stowStatus(done, total);
     const cls = st === STOW_STATUS.DONE ? 'tag--green'
@@ -587,103 +632,36 @@ function addBadge(count) {
 
 /**
  * 모바일 출고적치 탭.
- * 주문번호를 스캔하면 파렛트 목록이 나오고, 한 건씩 로케이션을 입력한다.
+ * 주문번호를 스캔하면 파렛트 목록이 나오고, 상단에 고정된 입력 패널에서 로케이션을 넣는다.
  */
 async function renderStowTab(pane, user, editable) {
     pane.innerHTML = '<div id="scan-box"></div><div id="stow-box"></div>';
     const box = pane.querySelector('#stow-box');
-    let locCleanup = null;
+    let panelCleanup = null;
 
-    /** 파렛트 목록을 그린다 */
-    async function draw(orderId, openPalletId = null) {
-        if (typeof locCleanup === 'function') locCleanup();
-        locCleanup = null;
+    /** 주문 1건의 적치 화면을 그린다 */
+    async function draw(orderId) {
+        if (typeof panelCleanup === 'function') panelCleanup();
+        panelCleanup = null;
 
         const o = await db.getOrder(orderId);
         if (!o) return;
         if (!o.inspect_done_at) {
             box.innerHTML = `
-${orderSummary(o, {})}
+${orderSummary(o, {}, { fold: true })}
 <div class="empty">
   검수작업이 완료되지 않은 주문입니다.<br>
   검수작업 탭에서 먼저 완료 처리하세요.
 </div>`;
+            bindOrderHead(box);
             return;
         }
 
-        const pallets = await db.listPallets(o.id);
-        const done = pallets.filter((p) => p.location).length;
-        box.innerHTML = `
-${orderSummary(o, {})}
-<div class="card">
-  <div class="card__head">
-    <h2>적치 로케이션</h2>
-    ${stowTag(done, pallets.length)}
-    <div class="toolbar__spacer"></div>
-    <span class="field__label">${done}/${pallets.length} 완료</span>
-  </div>
-  <div class="card__body">
-    ${pallets.length ? `
-    <div class="pallet-list">
-      ${pallets.map((p, i) => `
-      <button class="pallet ${p.location ? 'is-scanned' : ''} ${
-    p.id === openPalletId ? 'is-open' : ''}"
-              data-pallet="${p.id}" type="button" ${editable ? '' : 'disabled'}>
-        <span class="pallet__mark">${p.location ? '✅' : '⬜'}</span>
-        <span class="pallet__code">${esc(palletLabel(o.order_no, i))}</span>
-        <span class="pallet__loc">${p.location
-        ? `<b>${esc(formatLocation(p.location))}</b>`
-        : '<span class="muted">로케이션 미지정</span>'}</span>
-      </button>`).join('')}
-    </div>` : `
-    <div class="empty">
-      파렛트가 없습니다.<br>검수작업에서 파렛트수를 입력하세요.
-    </div>`}
-    ${editable ? '' : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}
-  </div>
-</div>
-<div id="loc-panel"></div>`;
-
-        box.querySelectorAll('[data-pallet]').forEach((el) => {
-            el.addEventListener('click', () => openLocPanel(el.dataset.pallet));
-        });
-
-        /** 파렛트 1개의 로케이션 입력 패널 */
-        function openLocPanel(palletId) {
-            if (typeof locCleanup === 'function') locCleanup();
-            const idx = pallets.findIndex((p) => p.id === palletId);
-            const target = pallets[idx];
-            locCleanup = mountLocationPanel(
-                box.querySelector('#loc-panel'),
-                { order: o, pallet: target, label: palletLabel(o.order_no, idx) },
-                async (value) => {
-                    try {
-                        await db.setPalletLocation(target.id, value);
-                        toast(`${palletLabel(o.order_no, idx)} → ${formatLocation(value)}`,
-                            'success');
-                        if (navigator.vibrate) navigator.vibrate(60);
-                        // 다음 미지정 파렛트를 바로 이어서 입력할 수 있게 연다
-                        const next = pallets.find((p, i) => i > idx && !p.location);
-                        draw(orderId, next?.id ?? null);
-                    } catch (err) {
-                        toast(err.message, 'error');
-                    }
-                },
-                async () => {
-                    try {
-                        await db.clearPalletLocation(target.id);
-                        toast('로케이션을 지웠습니다.', 'success');
-                        draw(orderId, target.id);
-                    } catch (err) {
-                        toast(err.message, 'error');
-                    }
-                },
-            );
-            box.querySelector('#loc-panel')
-                .scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-
-        if (openPalletId) openLocPanel(openPalletId);
+        box.innerHTML = `${orderSummary(o, {}, { fold: true })}<div id="stow-panel"></div>`;
+        bindOrderHead(box);
+        panelCleanup = await mountStowPanel(
+            box.querySelector('#stow-panel'), { order: o, editable },
+        );
     }
 
     const cleanup = mountScanBox(pane.querySelector('#scan-box'), async (no) => {
@@ -693,136 +671,447 @@ ${orderSummary(o, {})}
 
     return () => {
         cleanup();
-        if (typeof locCleanup === 'function') locCleanup();
+        if (typeof panelCleanup === 'function') panelCleanup();
     };
 }
 
 /**
- * 로케이션 입력 패널.
- * 2D 바코드 스캔과 수기입력 중 하나를 고른다. 수기입력 자판은 계산기 배열이다.
- * @returns {Function} 정리 함수 (카메라 정지)
+ * 적치 로케이션 입력 패널 + 파렛트 목록.
+ *
+ * 입력 패널은 화면 위에 **고정(sticky)** 되어 목록을 훑는 동안에도 계속 보인다.
+ * 한 건 저장할 때마다 입력칸을 비우고 커서를 되돌려 스캐너로 연속 입력할 수 있다.
+ *
+ * @param {Element} host 그릴 위치
+ * @param {{order:object, editable:boolean}} ctx
+ * @returns {Promise<Function>} 정리 함수 (카메라 정지)
  */
-function mountLocationPanel(host, { pallet, label }, onSave, onClear) {
+async function mountStowPanel(host, { order, editable }) {
     // 계산기와 같은 배열 - 위가 7 8 9, 아래가 0
     const KEYS = ['7', '8', '9', '4', '5', '6', '1', '2', '3', 'clr', '0', 'del'];
-    let zone = '';
-    let digits = '';
+
+    let pallets = await db.listPallets(order.id);
+    let selectedId = null;      // 건별이동에서 고른 파렛트
+    let moved = [];             // 이번 화면에서 이동 처리한 파렛트 id (먼저 넣은 것이 앞)
+    let lastValue = '';         // 스캐너 중복 발사를 막기 위한 직전 입력값
+    let lastAt = 0;
 
     host.innerHTML = `
-<div class="card loc-panel">
+<div class="stow-bar">
+  <div class="card">
+    <div class="card__head">${editable ? `
+      <div class="seg seg--block" id="seg-mode" role="group" aria-label="이동 방식">
+        ${STOW_MODES.map((m) => `
+        <button class="seg__btn" data-mode="${m.key}" type="button">${m.label}</button>`).join('')}
+      </div>` : '<h2>적치 로케이션</h2><div class="toolbar__spacer"></div>'}
+      <span id="stow-state"></span>
+    </div>
+    <div class="card__body">${!editable ? `
+      <p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>` : `
+      <div class="stow-zone" style="margin-top:0">
+        <span class="field__label">구역코드</span>
+        <div class="seg seg--sm" id="seg-zone" role="group" aria-label="구역코드 방식">
+          ${ZONE_MODES.map((z) => `
+          <button class="seg__btn" data-zone="${z.key}" type="button">${z.label}</button>`).join('')}
+        </div>
+        <input type="text" id="zone-code" class="stow-zone__code" placeholder="IF"
+               autocomplete="off" maxlength="2" aria-label="구역코드">
+      </div>
+      <p class="form-note stow-note" id="zone-note"></p>
+
+      <div class="stow-target" id="stow-target"></div>
+
+      <div class="stow-input">
+        <input type="text" id="loc-input" placeholder="010203" autocomplete="off"
+               enterkeyhint="done" aria-label="로케이션 입력">
+        <button class="btn btn--success btn--lg" id="loc-save" type="button">저장</button>
+      </div>
+      <div class="loc-preview" id="loc-preview">-</div>
+
+      <div class="stow-tools">
+        <button class="btn btn--danger stow-tool" id="loc-clear" type="button" hidden>지우기</button>
+        <button class="btn stow-tool" id="loc-cam" type="button">
+          <span class="stow-tool__ico">📷</span>카메라</button>
+        <button class="btn stow-tool" id="loc-pad" type="button">
+          <span class="stow-tool__ico">⌨</span>자판</button>
+      </div>
+      <video id="loc-video" playsinline muted hidden></video>
+      <div id="loc-cam-note"></div>
+
+      <div class="keypad" id="keypad" hidden>
+        ${KEYS.map((k) => `
+        <button class="keypad__key ${k === 'del' || k === 'clr' ? 'keypad__key--del' : ''}"
+                data-k="${k}" type="button">${
+    k === 'del' ? '←' : k === 'clr' ? 'C' : k}</button>`).join('')}
+      </div>`}
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <div class="card__head">
-    <h2>${esc(label)}</h2>
-    <div class="toolbar__spacer"></div>
-    ${pallet.location
-        ? `<span class="tag tag--green">${esc(formatLocation(pallet.location))}</span>` : ''}
+    <h2>파렛트</h2>
   </div>
   <div class="card__body">
-    <div class="btn-row" style="margin-bottom:12px">
-      <button class="btn btn--primary" id="loc-cam" type="button">📷 2D 바코드 스캔</button>
-    </div>
-    <video id="loc-video" playsinline muted hidden></video>
-    <div id="loc-cam-note"></div>
-
-    <label class="field" style="margin-top:14px">
-      <span class="field__label">구역코드 (영문 2자리)</span>
-      <input type="text" id="loc-zone" placeholder="IF" autocomplete="off"
-             inputmode="text" maxlength="2" value="">
-    </label>
-
-    <div class="loc-preview" id="loc-preview">-</div>
-    <p class="form-note" style="margin:0 0 10px">
-      숫자 6자리를 누르면 <b>${LOCATION_FORMAT}</b> 형식으로 자동으로 끊어집니다.
-    </p>
-
-    <div class="keypad">
-      ${KEYS.map((k) => `
-      <button class="keypad__key ${k === 'del' || k === 'clr' ? 'keypad__key--del' : ''}"
-              data-k="${k}" type="button">${
-    k === 'del' ? '←' : k === 'clr' ? 'C' : k}</button>`).join('')}
-    </div>
-
-    <div class="btn-row" style="margin-top:14px">
-      <button class="btn btn--success btn--lg" id="loc-save" type="button">로케이션 저장</button>
-      ${pallet.location
-        ? '<button class="btn btn--danger btn--lg" id="loc-clear" type="button">지우기</button>'
-        : ''}
-    </div>
+    <div class="pallet-list" id="pallet-list"></div>
   </div>
 </div>`;
 
-    const preview = host.querySelector('#loc-preview');
-    const zoneInput = host.querySelector('#loc-zone');
+    const $ = (sel) => host.querySelector(sel);
+    const list = $('#pallet-list');
+    const input = $('#loc-input');
 
-    /** 입력 중인 값을 형식에 맞춰 실시간으로 보여준다 */
-    const value = () => formatLocation(`${zone}${digits}`);
-    const sync = () => {
-        const v = value();
-        preview.textContent = v || '-';
-        preview.classList.toggle('is-empty', !v);
-        preview.classList.toggle('is-ready', isValidLocation(v));
-    };
+    /* ------------------------------ 대상 계산 ------------------------------ */
 
-    zoneInput.addEventListener('input', () => {
-        // 구역코드는 영문 2자리만 받는다
-        zoneInput.value = zoneInput.value.replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 2);
-        zone = zoneInput.value;
-        sync();
-    });
-
-    host.querySelectorAll('[data-k]').forEach((el) => {
-        el.addEventListener('click', () => {
-            const k = el.dataset.k;
-            if (k === 'del') digits = digits.slice(0, -1);
-            else if (k === 'clr') digits = '';
-            else if (digits.length < 6) digits += k;      // 2자리 × 3묶음까지만
-            sync();
-        });
-    });
-
-    host.querySelector('#loc-save').addEventListener('click', () => {
-        const v = value();
-        if (!isValidLocation(v)) {
-            toast(`로케이션은 ${LOCATION_FORMAT} 형식으로 입력하세요.`, 'error');
-            return;
+    /** 지금 로케이션을 넣을 파렛트 (연속이동은 첫 미지정, 건별이동은 고른 것) */
+    function target() {
+        if (stowPrefs.mode === 'one') {
+            return pallets.find((p) => p.id === selectedId) ?? null;
         }
-        onSave(v);
-    });
-    host.querySelector('#loc-clear')?.addEventListener('click', onClear);
-
-    // 2D 바코드(QR 등) 스캔 - 인식된 값을 그대로 로케이션으로 쓴다
-    const video = host.querySelector('#loc-video');
-    const scanner = createScanner(video, (code) => {
-        const v = formatLocation(code);
-        if (!isValidLocation(v)) {
-            toast(`읽은 값이 ${LOCATION_FORMAT} 형식이 아닙니다: ${code}`, 'error');
-            return;
-        }
-        scanner.stop();
-        onSave(v);
-    });
-
-    if (!scanSupported()) {
-        host.querySelector('#loc-cam').hidden = true;
-        host.querySelector('#loc-cam-note').innerHTML = `
-<p class="form-note">
-  이 접속에서는 카메라를 쓸 수 없습니다 (HTTPS 또는 localhost 필요).
-  아래에서 직접 입력하세요.
-</p>`;
+        return pallets.find((p) => !p.location) ?? null;
     }
 
-    host.querySelector('#loc-cam').addEventListener('click', async () => {
-        if (scanner.isOn()) {
-            scanner.stop();
+    /** 파렛트의 표시 이름 */
+    const nameOf = (p) => palletLabel(order.order_no, pallets.indexOf(p));
+
+    /**
+     * 입력값을 로케이션으로 만든다.
+     * 구역코드가 `자동` 이고 숫자만 들어오면 앞에 구역코드를 붙인다 (010203 → IF-01-02-03).
+     * `수기` 이거나 영문이 섞여 들어오면(로케이션 바코드 스캔) 넣은 값을 그대로 쓴다.
+     */
+    function compose(raw) {
+        const s = String(raw ?? '').trim();
+        if (!s) return '';
+        if (stowPrefs.zoneMode === 'auto' && stowPrefs.zone && !/[a-zA-Z]/.test(s)) {
+            return formatLocation(stowPrefs.zone + s);
+        }
+        return formatLocation(s);
+    }
+
+    /* -------------------------------- 그리기 -------------------------------- */
+
+    /** 상단 상태 태그와 진행 수 */
+    function drawState() {
+        const done = pallets.filter((p) => p.location).length;
+        $('#stow-state').innerHTML = `${stowTag(done, pallets.length)}
+<span class="field__label" id="stow-count">${done}/${pallets.length}</span>`;
+    }
+
+    /** 지금 어느 파렛트에 넣는지 알려준다 */
+    function drawTarget() {
+        if (!editable) return;
+        const t = target();
+        const el = $('#stow-target');
+        const rest = pallets.filter((p) => !p.location).length;
+
+        if (stowPrefs.mode === 'one' && !t) {
+            el.className = 'stow-target is-wait';
+            el.innerHTML = '아래 목록에서 파렛트를 선택하세요.';
+        } else if (!t) {
+            el.className = 'stow-target is-done';
+            el.innerHTML = '✅ 모든 파렛트의 적치가 끝났습니다.';
+        } else {
+            el.className = 'stow-target';
+            el.innerHTML = `
+<span class="stow-target__label">${stowPrefs.mode === 'one' ? '선택' : '다음 대상'}</span>
+<b>${esc(nameOf(t))}</b>
+${t.location
+        ? `<span class="tag tag--green">${esc(formatLocation(t.location))}</span>`
+        : `<span class="stow-target__rest">남은 ${rest}건</span>`}`;
+        }
+
+        $('#loc-clear').hidden = !(t && t.location);
+        input.disabled = !t;
+        $('#loc-save').disabled = !t;
+    }
+
+    /**
+     * 목록에 뿌릴 순서.
+     * 연속이동은 **방금 이동한 것이 맨 위**로 와야 눈으로 바로 확인할 수 있다.
+     * 건별이동은 목록에서 골라야 하므로 파렛트 번호순을 그대로 둔다.
+     */
+    function ordered() {
+        if (stowPrefs.mode !== 'seq' || !moved.length) return pallets;
+        const recent = [...moved].reverse()
+            .map((id) => pallets.find((p) => p.id === id))
+            .filter(Boolean);
+        return [...recent, ...pallets.filter((p) => !moved.includes(p.id))];
+    }
+
+    /** 파렛트 목록 */
+    function drawList() {
+        if (!pallets.length) {
+            list.innerHTML = `
+<div class="empty">파렛트가 없습니다.<br>검수작업에서 파렛트수를 입력하세요.</div>`;
             return;
         }
+        const t = target();
+        list.innerHTML = ordered().map((p) => `
+<button class="pallet ${p.location ? 'is-scanned' : ''} ${p.id === t?.id ? 'is-target' : ''}"
+        data-pallet="${p.id}" type="button" ${editable ? '' : 'disabled'}>
+  <span class="pallet__mark">${p.location ? '✅' : p.id === t?.id ? '▶' : '⬜'}</span>
+  <span class="pallet__code">${esc(nameOf(p))}</span>
+  <span class="pallet__loc">${p.location
+        ? `<b>${esc(formatLocation(p.location))}</b>`
+        : '<span class="muted">미지정</span>'}</span>
+</button>`).join('');
+
+        list.querySelectorAll('[data-pallet]').forEach((el) => {
+            el.addEventListener('click', () => pick(el.dataset.pallet));
+        });
+    }
+
+    /** 입력 중인 값을 형식에 맞춰 크게 보여준다 */
+    function drawPreview() {
+        if (!editable) return;
+        const v = compose(input.value);
+        const el = $('#loc-preview');
+        // 입력 전에는 빈 상자만 남으므로 값이 있을 때만 보여준다
+        el.hidden = !v;
+        el.textContent = v || '-';
+        el.classList.toggle('is-ready', isValidLocation(v));
+    }
+
+    /** 모드·구역코드 선택 상태를 화면에 맞춘다 */
+    function drawModes() {
+        if (!editable) return;
+        host.querySelectorAll('[data-mode]').forEach((el) => {
+            el.classList.toggle('is-active', el.dataset.mode === stowPrefs.mode);
+        });
+        host.querySelectorAll('[data-zone]').forEach((el) => {
+            el.classList.toggle('is-active', el.dataset.zone === stowPrefs.zoneMode);
+        });
+
+        const auto = stowPrefs.zoneMode === 'auto';
+        const zoneInput = $('#zone-code');
+        zoneInput.disabled = !auto;
+        zoneInput.value = stowPrefs.zone;
+        // 자동이고 구역코드가 정해졌으면 숫자만 받으면 되므로 숫자 자판을 띄운다
+        input.inputMode = auto && stowPrefs.zone ? 'numeric' : 'text';
+        input.placeholder = auto && stowPrefs.zone ? '010203' : LOCATION_FORMAT;
+        const note = $('#zone-note');
+        note.innerHTML = auto
+            ? (stowPrefs.zone
+                ? `숫자 6자리만 넣으면 <b>${esc(stowPrefs.zone)}-00-00-00</b> 으로 채워집니다.`
+                : '⚠️ 구역코드를 먼저 넣으세요. 이후 입력에 계속 따라붙습니다.')
+            : '넣은 값을 그대로 씁니다. (로케이션 바코드 스캔용)';
+        note.classList.toggle('is-warn', auto && !stowPrefs.zone);
+    }
+
+    /** 목록·상태·대상을 다시 읽어 그린다 */
+    async function refresh() {
+        pallets = await db.listPallets(order.id);
+        if (selectedId && !pallets.some((p) => p.id === selectedId)) selectedId = null;
+        drawState();
+        drawTarget();
+        drawList();
+    }
+
+    /** 입력칸을 비우고 커서를 되돌린다 (스캐너 연속 입력) */
+    function resetInput() {
+        input.value = '';
+        drawPreview();
+        if (!input.disabled) input.focus();
+    }
+
+    /* -------------------------------- 동작 -------------------------------- */
+
+    /** 목록에서 파렛트를 고른다. 연속이동 중이면 건별이동으로 넘어간다 */
+    function pick(palletId) {
+        if (!editable) return;
+        if (stowPrefs.mode !== 'one') {
+            stowPrefs.mode = 'one';
+            toast('건별이동으로 바꿨습니다.', 'info');
+            drawModes();
+        }
+        selectedId = palletId;
+        drawTarget();
+        drawList();
+        resetInput();
+    }
+
+    /** 로케이션 저장 */
+    async function save(pallet, value) {
         try {
-            await scanner.start();
+            await db.setPalletLocation(pallet.id, value);
+            toast(`${nameOf(pallet)} → ${value}`, 'success');
+            moved = [...moved.filter((id) => id !== pallet.id), pallet.id];
+            if (navigator.vibrate) navigator.vibrate(60);
+            // 건별이동도 저장 뒤에는 다음 미지정 파렛트로 옮겨 이어서 넣게 한다
+            const from = pallets.indexOf(pallet);
+            selectedId = pallets.find((p, i) => i > from && !p.location)?.id
+                ?? pallets.find((p) => !p.location && p.id !== pallet.id)?.id
+                ?? null;
+            await refresh();
+            resetInput();
         } catch (err) {
             toast(err.message, 'error');
+            resetInput();
         }
-    });
+    }
 
-    sync();
+    /**
+     * 입력 확정.
+     * 스캐너가 같은 값을 연달아 보내면 2.5초 안에는 무시하고,
+     * 이미 다른 파렛트에 들어간 로케이션이면 알리고 다시 받는다.
+     */
+    function submit(raw) {
+        const t = target();
+        if (!t) {
+            toast('로케이션을 넣을 파렛트가 없습니다.', 'error');
+            return;
+        }
+        const v = compose(raw);
+        if (!isValidLocation(v)) {
+            toast(`로케이션은 ${LOCATION_FORMAT} 형식으로 입력하세요.`, 'error');
+            resetInput();
+            return;
+        }
+
+        const now = performance.now();
+        if (v === lastValue && now - lastAt < STOW_REPEAT_MS) {
+            resetInput();          // 스캐너 중복 발사 - 조용히 넘긴다
+            return;
+        }
+        lastValue = v;
+        lastAt = now;
+
+        const dup = pallets.find((p) => p.id !== t.id && p.location
+            && formatLocation(p.location) === v);
+        if (dup) {
+            toast(`${v} 는 ${nameOf(dup)} 에 이미 들어간 로케이션입니다. 다시 스캔하세요.`, 'error');
+            if (navigator.vibrate) navigator.vibrate([70, 70, 70]);
+            resetInput();
+            return;
+        }
+
+        save(t, v);
+    }
+
+    /* ------------------------------ 이벤트 연결 ------------------------------ */
+
+    if (editable) {
+        host.querySelectorAll('[data-mode]').forEach((el) => {
+            el.addEventListener('click', () => {
+                stowPrefs.mode = el.dataset.mode;
+                // 연속이동으로 돌아오면 첫 미지정 파렛트부터 다시 시작한다
+                if (stowPrefs.mode === 'one' && !selectedId) {
+                    selectedId = pallets.find((p) => !p.location)?.id ?? null;
+                }
+                drawModes();
+                drawTarget();
+                drawList();
+                resetInput();
+            });
+        });
+
+        host.querySelectorAll('[data-zone]').forEach((el) => {
+            el.addEventListener('click', () => {
+                stowPrefs.zoneMode = el.dataset.zone;
+                drawModes();
+                drawPreview();
+                input.focus();
+            });
+        });
+
+        $('#zone-code').addEventListener('input', (e) => {
+            // 구역코드는 영문 2자리만 받는다
+            e.target.value = e.target.value.replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 2);
+            stowPrefs.zone = e.target.value;
+            drawModes();
+            drawPreview();
+            if (stowPrefs.zone.length === 2) input.focus();
+        });
+
+        input.addEventListener('input', drawPreview);
+        input.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();          // 외부 스캐너의 Enter 도 여기로 들어온다
+            submit(input.value);
+        });
+        $('#loc-save').addEventListener('click', () => submit(input.value));
+
+        host.querySelectorAll('[data-k]').forEach((el) => {
+            el.addEventListener('click', () => {
+                const k = el.dataset.k;
+                if (k === 'del') input.value = input.value.slice(0, -1);
+                else if (k === 'clr') input.value = '';
+                else input.value += k;
+                drawPreview();
+            });
+        });
+
+        $('#loc-pad').addEventListener('click', () => {
+            stowPrefs.keypad = !stowPrefs.keypad;
+            syncKeypad();
+        });
+
+        $('#loc-clear').addEventListener('click', async () => {
+            const t = target();
+            if (!t) return;
+            try {
+                await db.clearPalletLocation(t.id);
+                toast('로케이션을 지웠습니다.', 'success');
+                moved = moved.filter((id) => id !== t.id);
+                lastValue = '';
+                selectedId = stowPrefs.mode === 'one' ? t.id : null;
+                await refresh();
+                resetInput();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    }
+
+    /* ------------------------------ 카메라 스캔 ------------------------------ */
+
+    const scanner = createScanner(host.querySelector('#loc-video'), (code) => submit(code));
+
+    if (editable) {
+        if (!scanSupported()) {
+            $('#loc-cam').hidden = true;
+            $('#loc-cam-note').innerHTML = `
+<p class="form-note">
+  이 접속에서는 카메라를 쓸 수 없습니다 (HTTPS 또는 localhost 필요).
+  입력칸에 직접 넣거나 외부 스캐너를 쓰세요.
+</p>`;
+        }
+        $('#loc-cam').addEventListener('click', async () => {
+            if (scanner.isOn()) {
+                scanner.stop();
+                $('#loc-cam').classList.remove('btn--primary');
+                return;
+            }
+            try {
+                await scanner.start();
+                $('#loc-cam').classList.add('btn--primary');
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    }
+
+    /** 숫자 자판 펼침 상태를 화면에 맞춘다 */
+    function syncKeypad() {
+        if (!editable) return;
+        $('#keypad').hidden = !stowPrefs.keypad;
+        $('#loc-pad').classList.toggle('btn--primary', stowPrefs.keypad);
+        host.querySelector('.stow-bar').classList.toggle('is-tall', stowPrefs.keypad);
+    }
+
+    // 연속이동은 목록 순서대로, 건별이동은 첫 미지정 파렛트부터 시작한다
+    if (stowPrefs.mode === 'one') selectedId = pallets.find((p) => !p.location)?.id ?? null;
+    drawModes();
+    drawState();
+    drawTarget();
+    drawList();
+    drawPreview();
+    syncKeypad();
+    if (editable && !input.disabled) {
+        // 자동인데 구역코드가 비어 있으면 그것부터 받는다
+        const first = stowPrefs.zoneMode === 'auto' && !stowPrefs.zone ? $('#zone-code') : input;
+        first.focus();
+    }
+
     return () => scanner.stop();
 }
 

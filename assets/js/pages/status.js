@@ -93,7 +93,8 @@ export async function render(root, { user }) {
         if (activeTab !== 'active') {
             parts.push('<button class="btn btn--sm" id="btn-detail" type="button">상세검색</button>');
         }
-        if (can(user, 'download')) {
+        // 다운로드는 웹에서만 쓴다 (모바일은 상단을 비워 목록에 자리를 준다)
+        if (can(user, 'download') && !isMobile()) {
             parts.push('<button class="btn btn--sm" id="btn-csv" type="button">다운로드</button>');
         }
         root.querySelector('#head-actions').innerHTML = parts.join('');
@@ -217,7 +218,9 @@ ${monthBox}
 
         root.querySelector('#card-title').textContent =
             `${TABS.find((t) => t.key === activeTab).label} 주문`;
-        root.querySelector('#note').textContent = NOTE[activeTab];
+        const note = root.querySelector('#note');
+        note.textContent = isMobile() ? '' : NOTE[activeTab];
+        note.hidden = isMobile();
         root.querySelector('#row-count').textContent = `${num(rows.length)}건`;
         drawSummary(root, rows, tasks, adjust);
         drawTable(root, rows, tasks, adjust, { user, editable, reload });
@@ -256,7 +259,10 @@ ${monthBox}
 
     // 창 크기가 기준점을 넘나들면 표 구성이 달라지므로 다시 그린다
     const mq = window.matchMedia(MOBILE_QUERY);
-    const onResize = () => reload();
+    const onResize = () => {
+        drawHeadActions();
+        reload();
+    };
     mq.addEventListener('change', onResize);
 
     drawHeadActions();
@@ -414,8 +420,9 @@ ${rows.map((o, i) => {
     <div class="steps steps--flow">
       ${steps.map((s, idx) => `
       ${idx ? '<span class="steps__arrow">→</span>' : ''}
-      <span class="step ${s.done ? 'is-done' : ''}"
-            title="${s.doneAt ? fmtDateTime(s.doneAt) : '미완료'}">${s.label}</span>`).join('')}
+      <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
+            title="${s.doneAt ? fmtDateTime(s.doneAt)
+        : s.current ? '진행중' : '미완료'}">${s.label}</span>`).join('')}
     </div>
   </td>
   <td class="num">${stepRate(o, opt)}%</td>
@@ -442,16 +449,15 @@ ${rows.map((o, i) => {
 function mobileTable(rows, tasks, adjust) {
     return `
 <thead><tr>
-  <th>전송일자</th><th>주문번호</th><th>거래처명</th><th>출고요청일</th>
+  <th>출고요청일</th><th>주문번호</th><th>거래처명</th>
   <th class="center">처리현황</th>
 </tr></thead>
 <tbody>
 ${rows.map((o) => `
 <tr class="is-clickable ${o.canceled_at ? 'is-canceled' : ''}" data-detail="${o.id}">
-  <td>${o.send_date}</td>
+  <td>${o.ship_req_date}</td>
   <td><span class="link">${esc(o.order_no)}</span></td>
   <td class="wrap">${esc(o.customer)}</td>
-  <td>${o.ship_req_date}</td>
   <td class="center">${lastStepTag(o, stepOpt(o, tasks, adjust))}</td>
 </tr>`).join('')}
 </tbody>`;
@@ -545,8 +551,9 @@ function openDetail(o, opt, ctx) {
 <div class="steps steps--flow">
   ${steps.map((s, i) => `
   ${i ? '<span class="steps__arrow">→</span>' : ''}
-  <span class="step ${s.done ? 'is-done' : ''}"
-        title="${s.doneAt ? fmtDateTime(s.doneAt) : '미완료'}">${s.label}</span>`).join('')}
+  <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
+        title="${s.doneAt ? fmtDateTime(s.doneAt)
+        : s.current ? '진행중' : '미완료'}">${s.label}</span>`).join('')}
 </div>
 
 <table class="grid" style="margin-top:14px"><tbody>
