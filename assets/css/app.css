@@ -1214,6 +1214,8 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    /* 좁은 화면에서 버튼이 카드 밖으로 밀려나지 않게 줄바꿈을 허용한다 */
+    flex-wrap: wrap;
     gap: 10px;
     margin-top: 14px;
     padding-top: 12px;
@@ -1223,8 +1225,10 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .stow-tool { min-height: 46px; padding: 0 16px; font-size: 14px; font-weight: 600; }
 .stow-tool__ico { font-size: 20px; line-height: 1; margin-right: 6px; }
 
-/* 지우기는 잘못 누르지 않게 반대쪽 끝으로 떨어뜨린다 */
-#loc-clear { margin-right: auto; }
+/* 지우기는 잘못 누르지 않게 반대쪽 끝으로 떨어뜨린다 (한 줄에 들어갈 때만) */
+@media (min-width: 420px) {
+    #loc-clear { margin-right: auto; }
+}
 
 /* 다음 차례인 파렛트 */
 .pallet.is-target {

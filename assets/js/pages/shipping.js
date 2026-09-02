@@ -706,6 +706,8 @@ async function mountStowPanel(host, { order, editable, user }) {
         <button class="btn btn--danger stow-tool" id="loc-clear" type="button" hidden>지우기</button>
         <button class="btn btn--danger stow-tool" id="stow-cancel" type="button" hidden>
           적치취소</button>
+        <button class="btn btn--success stow-tool" id="stow-done" type="button" hidden>
+          적치완료</button>
         <button class="btn stow-tool" id="loc-cam" type="button">
           ${icon('camera')}카메라</button>
         <button class="btn stow-tool" id="loc-pad" type="button">
@@ -797,9 +799,11 @@ ${t.location
         }
 
         $('#loc-clear').hidden = !(t && t.location);
-        // 적치취소는 전량 입력이 끝난 뒤에만 의미가 있다
-        const allDone = pallets.length > 0 && pallets.every((p) => p.location);
-        $('#stow-cancel').hidden = !allDone;
+        // 전량 입력 → `적치완료` / 완료된 뒤 → `적치취소`
+        const allFilled = pallets.length > 0 && pallets.every((p) => p.location);
+        const stowed = Boolean(order.stow_done_at);
+        $('#stow-done').hidden = !(allFilled && !stowed);
+        $('#stow-cancel').hidden = !stowed;
         input.disabled = !t;
         $('#loc-save').disabled = !t;
     }
@@ -1025,6 +1029,19 @@ ${t.location
             syncKeypad();
         });
 
+        $('#stow-done').addEventListener('click', async () => {
+            try {
+                await db.completeStow(order.id, user);
+                toast('출고적치를 완료했습니다.', 'success');
+                if (navigator.vibrate) navigator.vibrate(60);
+                order.stow_done_at = new Date().toISOString();   // 화면 상태를 즉시 맞춘다
+                await refresh();
+                resetInput();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+
         $('#stow-cancel').addEventListener('click', async () => {
             const ok = await confirmDialog(
                 '이 주문의 적치를 취소하시겠습니까?\n\n'
@@ -1034,6 +1051,7 @@ ${t.location
             try {
                 await db.cancelStow(order.id, user);
                 toast('출고적치를 취소했습니다.', 'success');
+                order.stow_done_at = null;
                 moved = [];
                 selectedId = null;
                 lastValue = '';
