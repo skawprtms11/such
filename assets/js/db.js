@@ -4,13 +4,14 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    COMPANY, EXTRA_TASK_TYPE, LOAD_STATUS, RESTORE_TYPE, WORK_STEPS,
+    COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, LOAD_STATUS, RESTORE_TYPE, WORK_STEPS,
     LOCATION_FORMAT, formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
 import {
-    loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase,
+    loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
+import { supabase } from './supabase.js';
 import { uid, today } from './util.js';
 
 /**
@@ -195,6 +196,61 @@ export async function createUser(payload) {
     db.users.push(row);
     await save(db);
     return row;
+}
+
+/**
+ * 사용자 정보 수정 (관리자 전용).
+ * 이메일은 로그인 ID 라 서버 함수가 auth 쪽까지 함께 고친다.
+ */
+export async function updateUser(id, patch) {
+    if (!isSupabase) {
+        const db = (await load());
+        const u = db.users.find((x) => x.id === id);
+        if (!u) throw new Error('사용자를 찾을 수 없습니다.');
+        Object.assign(u, patch);
+        await save(db);
+        return u;
+    }
+    const { error } = await supabase().rpc('admin_update_user', {
+        target: id,
+        p_name: patch.name,
+        p_email: patch.email,
+        p_phone: patch.phone ?? '',
+        p_company: patch.company,
+        p_role: patch.role,
+    });
+    if (error) throw new Error(error.message);
+    invalidate();
+    return (await getUser(id));
+}
+
+/**
+ * 비밀번호 초기화 (관리자 전용).
+ * `config.INITIAL_PASSWORD` 로 되돌린다. 사용자에게 이 값을 알려주고 바꾸게 한다.
+ */
+export async function resetUserPassword(id) {
+    if (!isSupabase) throw new Error('mock 모드에서는 비밀번호를 다룰 수 없습니다.');
+    const { error } = await supabase().rpc('admin_reset_password', {
+        target: id, new_pw: INITIAL_PASSWORD,
+    });
+    if (error) throw new Error(error.message);
+    return INITIAL_PASSWORD;
+}
+
+/**
+ * 사용자 삭제 (관리자 전용).
+ * 로그인 계정까지 함께 지운다. **등록한 주문이 남아 있으면 서버가 거부한다.**
+ */
+export async function deleteUser(id) {
+    if (!isSupabase) {
+        const db = (await load());
+        db.users = db.users.filter((u) => u.id !== id);
+        await save(db);
+        return;
+    }
+    const { error } = await supabase().rpc('admin_delete_user', { target: id });
+    if (error) throw new Error(error.message);
+    invalidate();
 }
 
 /* ----------------------------------- 주문 ----------------------------------- */

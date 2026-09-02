@@ -188,6 +188,25 @@ button { font: inherit; }
 .me strong { color: #fff; }
 .me--sm strong { color: var(--gray-900); }
 
+/* 상단바·사이드바의 소속 표시 (소속 → 권한 → 이름 순서) */
+.me__company { font-size: 12px; opacity: .75; white-space: nowrap; }
+.me--sm .me__company { color: var(--gray-500); opacity: 1; }
+
+/* 초기화된 비밀번호를 크게 보여준다 */
+.pw-box {
+    margin: 4px 0 12px;
+    padding: 16px;
+    border: 2px dashed var(--blue);
+    border-radius: 10px;
+    background: var(--blue-soft);
+    color: #1d4ed8;
+    text-align: center;
+    font-family: monospace;
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: 6px;
+}
+
 .role {
     font-size: 11px;
     padding: 2px 7px;
