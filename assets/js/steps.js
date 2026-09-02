@@ -20,6 +20,20 @@ function norm(opt = {}) {
 }
 
 /**
+ * 그 단계에 **착수했는지**.
+ *   - 착수 시각 필드(`startAt`)가 있으면 그 값으로 본다 (출고작업)
+ *   - 상차작업은 상차라벨을 한 장이라도 스캔했으면 착수로 본다
+ *   - 나머지(검수·적치·요청·추가·조정)는 착수를 따로 기록하지 않으므로
+ *     완료 전까지 진행중으로 표시하지 않는다
+ */
+function started(order, step) {
+    if (!step) return false;
+    if (step.startAt) return Boolean(order[step.startAt]);
+    if (step.key === 'load') return Number(order.inspected ?? 0) > 0;
+    return false;
+}
+
+/**
  * 해당 주문에서 화면에 보여야 할 단계 목록.
  *
  * `current` 는 **지금 진행중인 단계**(아직 끝나지 않은 첫 단계)다.
@@ -52,8 +66,14 @@ export function visibleSteps(order, opt = {}) {
             };
         });
 
+    // 🔑 진행중(노란색)은 **실제로 착수한 단계**에만 붙인다.
+    // 앞 단계가 끝났다는 이유만으로 다음 단계가 노란색이 되면,
+    // 아무도 손대지 않은 작업이 진행중으로 보인다.
     const next = order.canceled_at ? -1 : steps.findIndex((s) => !s.done);
-    return steps.map((s, i) => ({ ...s, current: i === next }));
+    return steps.map((s, i) => ({
+        ...s,
+        current: i === next && started(order, WORK_STEPS.find((w) => w.key === s.key)),
+    }));
 }
 
 /**

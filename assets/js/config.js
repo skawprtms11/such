@@ -127,6 +127,9 @@ export const PROGRESS = {
 /**
  * 출고 처리 단계 (주문처리현황 · 출고주문처리가 공유한다)
  *   at   : 완료 시각이 담기는 주문 필드. 값이 있으면 완료로 본다
+ *   startAt : **착수** 시각이 담기는 필드. 진행중(노란색) 판정에 쓴다.
+ *             이 값이 없는 단계는 '차례가 됐다' 는 이유만으로 노란색이 되지 않는다
+ *             (상차작업은 스캔을 시작하면 `inspected` 가 올라가므로 그것으로 본다)
  *   cond : 조건부 단계. 해당 조건일 때만 화면에 표시한다
  *          'extra'  - 주문에 추가작업(라벨작업 등)이 등록된 경우
  *          'adjust' - 조정요청이 등록된 경우 (완료 여부는 요청 확인 상태로 계산한다)
@@ -143,7 +146,7 @@ export const PROGRESS = {
  */
 export const WORK_STEPS = [
     { key: 'order', label: '주문처리', at: 'confirmed_at' },
-    { key: 'ship', label: '출고작업', at: 'ship_done_at' },
+    { key: 'ship', label: '출고작업', at: 'ship_done_at', startAt: 'ship_started_at' },
     { key: 'request', label: '요청작업', at: 'req_work_at', cond: 'extra' },
     { key: 'inspect', label: '검수작업', at: 'inspect_done_at' },
     { key: 'stow', label: '출고적치', at: 'stow_done_at' },
