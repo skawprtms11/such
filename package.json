@@ -2,7 +2,7 @@
     "name": "thefurerap-order-system",
     "version": "0.1.0",
     "private": true,
-    "description": "더퓨어랩 주문접수시스템 - 주문 등록부터 검수·상차까지 실시간 관리",
+    "description": "더퓨어랩 수출 모니터링 시스템 - 주문 등록부터 검수·상차까지 실시간 관리",
     "type": "module",
     "scripts": {
         "dev": "vite",

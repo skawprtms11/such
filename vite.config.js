@@ -92,9 +92,9 @@ export default defineConfig({
                 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
             ],
             manifest: {
-                name: '더퓨어랩 주문접수시스템',
+                name: '더퓨어랩 수출 모니터링 시스템',
                 short_name: '더퓨어랩',
-                description: '주문 등록부터 검수·상차까지 실시간으로 관리하는 주문접수시스템',
+                description: '주문 등록부터 검수·상차까지 실시간으로 확인하는 수출 모니터링 시스템',
                 lang: 'ko',
                 start_url: 'app.html',
                 scope: './',
