@@ -315,9 +315,12 @@ function sortByLocation(pallets) {
 
 /**
  * 상차완료 건의 상세.
- * 이미 끝난 건이라 처리 수단 없이 결과만 보여준다 (적치 로케이션 포함).
+ * 결과를 보여주고, 잘못 찍은 상차는 하단의 `상차완료 취소` 로 되돌린다.
+ * @param {object} user 로그인 사용자 (취소 이력에 남는다)
+ * @param {Function} reload 목록 갱신
+ * @param {boolean} editable 처리 권한
  */
-async function openLoadedDetail(orderId) {
+async function openLoadedDetail(orderId, user, reload, editable) {
     const o = await db.getOrder(orderId);
     if (!o) return;
     const g = await db.getLoadGroup(orderId);
@@ -349,7 +352,30 @@ async function openLoadedDetail(orderId) {
     <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>` : dash}</span>
   </div>`).join('') : '<div class="empty">파렛트가 없습니다.</div>'}
-</div>`, { wide: true });
+</div>`, {
+        wide: true,
+        footer: editable
+            ? '<button class="btn btn--danger" id="btn-unload" type="button">상차완료 취소</button>'
+            : '',
+    });
+
+    // 상차완료 취소 - 되돌리면 검수 상태로 돌아가고 다시 상차완료할 수 있다
+    locModal.root.querySelector('#btn-unload')?.addEventListener('click', async () => {
+        const ok = await confirmDialog(
+            `${o.order_no} 의 상차완료를 취소하시겠습니까?\n\n`
+            + `묶인 ${g.rows.length}개 차수 전체가 검수 상태로 돌아갑니다.\n`
+            + '상차작업 취소 이력이 남습니다.',
+        );
+        if (!ok) return;
+        try {
+            await db.cancelLoading(orderId, user);
+            locModal.close();
+            toast(`${o.order_no} 의 상차완료를 취소했습니다.`, 'success');
+            reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
 }
 
 /** 검수 이동 / 상차완료 / 적치로케이션 버튼 바인딩 */
@@ -358,7 +384,9 @@ function bindActions(scope, user, reload) {
         el.addEventListener('click', () => openLocationModal(el.dataset.loc, user, reload));
     });
     scope.querySelectorAll('[data-loaded]').forEach((el) => {
-        el.addEventListener('click', () => openLoadedDetail(el.dataset.loaded));
+        el.addEventListener('click', () => openLoadedDetail(
+            el.dataset.loaded, user, reload, can(user, 'updateStatus'),
+        ));
     });
     scope.querySelectorAll('[data-inspect]').forEach((el) => {
         el.addEventListener('click', () => {

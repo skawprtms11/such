@@ -1052,6 +1052,30 @@ export async function completeLoading(orderId, user) {
 }
 
 /**
+ * 상차완료 취소.
+ * 잘못 찍은 상차를 되돌린다. 묶음 전체(모든 차수)에 적용되며 검수 상태로 돌아간다.
+ * ⚠️ **완료처리(마감)된 주문은 되돌릴 수 없다.** 완료처리를 먼저 취소해야 한다.
+ */
+export async function cancelLoading(orderId, user) {
+    const db = (await load());
+    const group = groupOf(db, orderId);
+    if (!group) throw new Error('주문을 찾을 수 없습니다.');
+    if (group.rows.some((r) => r.closed_at)) {
+        throw new Error('완료처리된 주문입니다. 주문처리현황에서 완료처리를 먼저 취소하세요.');
+    }
+    if (!group.rows.some((r) => r.loaded_at)) {
+        throw new Error('상차완료된 주문이 아닙니다.');
+    }
+    group.rows.forEach((r) => {
+        r.loaded_at = null;
+        r.load_status = LOAD_STATUS.INSPECTED;   // 검수는 그대로 두고 상차만 되돌린다
+        addHistory(db, r.id, '상차작업', '완료', '취소', user);
+    });
+    await save(db);
+    return group.head;
+}
+
+/**
  * 출고 완료처리 / 완료처리 취소.
  * 상차작업까지 끝난 주문을 용마담당자가 최종 마감하는 단계다.
  * 완료처리된 주문은 주문처리현황의 `현재진행` 탭에서 빠지고 `출고완료` 탭으로 간다.
