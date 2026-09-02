@@ -8,6 +8,7 @@ import { LOAD_STATUS } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import { createScanner, scanSupported } from '../scanner.js';
+import { icon } from '../icons.js';
 import { esc, num, rate, toast, confirmDialog, seqTag } from '../util.js';
 
 export async function render(root, { user, params }) {
@@ -39,7 +40,8 @@ export async function render(root, { user, params }) {
       (같은 라벨을 연속으로 읽는 것을 막기 위해 카메라는 2.5초 간격으로 인식합니다)
     </p>
     <div class="btn-row" style="margin-bottom:12px">
-      <button class="btn btn--primary" id="btn-cam" type="button">📷 카메라 스캔 시작</button>
+      <button class="btn btn--primary" id="btn-cam" type="button">
+        ${icon('camera')} 카메라 스캔 시작</button>
     </div>
     <div id="cam-note"></div>
     <video id="scan-video" playsinline muted hidden></video>
@@ -71,7 +73,8 @@ export async function render(root, { user, params }) {
     function syncCamBtn() {
         const btn = root.querySelector('#btn-cam');
         if (!btn) return;
-        btn.textContent = scanner.isOn() ? '■ 스캔 중지' : '📷 카메라 스캔 시작';
+        btn.innerHTML = scanner.isOn()
+            ? `${icon('stop')} 스캔 중지` : `${icon('camera')} 카메라 스캔 시작`;
         btn.classList.toggle('btn--danger', scanner.isOn());
         btn.classList.toggle('btn--primary', !scanner.isOn());
     }
@@ -110,7 +113,7 @@ ${g.rows.length > 1 ? `
         // 라벨 바코드가 모두 같은 주문번호라 순번으로 보여준다 (라벨 우측 하단 연번과 같은 순서)
         root.querySelector('#pallets').innerHTML = pallets.length ? pallets.map((p, i) => `
 <div class="pallet ${p.scanned_at ? 'is-scanned' : ''}">
-  <span class="pallet__mark">${p.scanned_at ? '✅' : '⬜'}</span>
+  <span class="pallet__mark">${icon(p.scanned_at ? 'check' : 'square')}</span>
   ${seqTag(p.seq, '차')}
   <span class="pallet__code" title="${esc(p.barcode)}">
     파렛트 ${i + 1} <small>/ ${pallets.length}</small>

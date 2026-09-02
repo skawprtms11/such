@@ -420,6 +420,10 @@ table.grid.bulk-grid input {
 /* --------------------------------- 버튼 --------------------------------- */
 
 .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     border: 1px solid var(--gray-300);
     background: #fff;
     color: var(--gray-900);
@@ -1040,7 +1044,14 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 
 .pallet.is-scanned { background: var(--green-soft); border-color: #9fd9c4; }
 .pallet__code { flex: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
-.pallet__mark { font-size: 18px; }
+.pallet__mark { display: flex; align-items: center; color: var(--gray-300); }
+.pallet__mark .icon { width: 19px; height: 19px; }
+.pallet.is-scanned .pallet__mark { color: var(--green); }
+.pallet.is-target .pallet__mark { color: var(--blue); }
+
+/* 버튼 안의 아이콘 - 글자와 같은 줄에 맞춘다 */
+.btn .icon { width: 17px; height: 17px; }
+.stow-tool .icon { width: 19px; height: 19px; }
 
 /* -------------------------- 출고적치 (로케이션 입력) -------------------------- */
 

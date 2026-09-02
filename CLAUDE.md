@@ -112,7 +112,6 @@ thefurerap/
 │     ├─ steps.js        출고 처리 단계 계산 (여러 화면이 공유)
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
-│     ├─ mock-data.js     mock 모드용 샘플 데이터
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     └─ pages/           화면 모듈 6개
 ├─ public/icons/          PWA 아이콘 (해시 없이 그대로 복사됨)
@@ -141,6 +140,7 @@ thefurerap/
 | 요청작업 | `req_work_at` | 출고주문처리 (검수 탭) |
 | 검수작업 | `inspect_done_at` | 출고주문처리 |
 | 출고적치 | `stow_done_at` | 출고주문처리 (출고적치 탭 - 파렛트 로케이션 전량 입력 시 자동) |
+| | | ↳ 되돌리려면 `적치취소` (검수취소보다 먼저 해야 한다) |
 | 조정작업 | *(계산값)* | 조정요청을 모두 확인 처리할 때 |
 | 추가작업 | `extra_done_at` | 출고주문처리 |
 | 상차작업 | `loaded_at` | 당일상차리스트 |
@@ -341,7 +341,9 @@ Supabase Auth(이메일 + 비밀번호)로 연동했다. 권한은 서버의 RLS
   화면을 떠난 뒤에도 폴링과 카메라가 계속 돈다.
 - 개발 모드에서는 서비스워커를 쓰지 않는다. `vite.config.js` 의 `devUnregisterSw` 플러그인이
   예전에 등록된 서비스워커를 자동으로 해제한다. (캐시된 옛 화면이 보이는 문제 방지)
-- **메뉴 아이콘은 이모지가 아니라 `icons.js` 의 단색 라인 SVG 를 쓴다.**
+- **아이콘은 이모지가 아니라 `icons.js` 의 단색 라인 SVG 를 쓴다. 메뉴뿐 아니라
+  버튼과 목록 표시(카메라·자판·완료·미지정·다음차례)까지 모두 해당한다.**
+  이모지는 기기·OS 마다 그림이 달라 같은 화면이 다르게 보인다
   모바일 하단 탭바에는 `MENUS` 의 `mobile: true` 인 메뉴만 나온다
   ([docs/common.md](docs/common.md#메뉴-정의-configjs-의-menus) 참고)
 - Supabase 키는 `.env.local` 에 넣는다. 소스에 하드코딩하지 않는다. (`.env.example` 참고)

@@ -8,7 +8,6 @@ import {
     LOCATION_FORMAT, formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
-import { makePallets } from './mock-data.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase,
 } from './store.js';
@@ -80,6 +79,25 @@ function save(db) {
 /** 저장 데이터를 시드 상태로 되돌린다 (mock 모드 전용) */
 export async function resetDb() {
     return storeReset();
+}
+
+/**
+ * 검수용 파렛트 바코드를 파렛트 수만큼 만든다.
+ * 상차 검수는 상차라벨(주문번호)을 스캔하지만, 파렛트 개별 바코드도 그대로 인식한다.
+ */
+function makePallets(orderRow) {
+    const list = [];
+    for (let i = 1; i <= orderRow.pallet_count; i += 1) {
+        list.push({
+            id: `${orderRow.id}_p${i}`,
+            order_id: orderRow.id,
+            barcode: `${orderRow.order_no}-P${String(i).padStart(2, '0')}`,
+            scanned_at: null,
+            location: '',
+            picked_at: null,
+        });
+    }
+    return list;
 }
 
 /**
@@ -423,6 +441,11 @@ export async function setInspectDone(id, done, checks, user) {
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
     if (done && !o.ship_done_at) throw new Error('출고작업이 완료된 주문만 검수할 수 있습니다.');
     if (!done && o.loaded_at) throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
+    // 적치가 끝난 주문은 순서대로 되돌린다. 적치를 남긴 채 검수만 취소하면
+    // '검수 미완료 · 적치 완료' 라는 앞뒤 안 맞는 상태가 되고, 적치를 고칠 수도 없다
+    if (!done && o.pallet_count && o.stow_done_at) {
+        throw new Error('출고적치가 완료된 주문입니다. 출고적치 탭에서 적치취소를 먼저 하세요.');
+    }
 
     const hasExtra = (o.extra_works ?? []).length > 0;
     if (done && hasExtra && !checks.reqWork) {
@@ -832,6 +855,28 @@ export async function clearPalletLocation(palletId) {
     return o;
 }
 
+/**
+ * 출고적치 취소 - 그 주문의 로케이션을 모두 지우고 적치완료를 되돌린다.
+ * 검수작업을 취소하려면 이 단계를 먼저 거쳐야 한다.
+ */
+export async function cancelStow(orderId, user) {
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === orderId);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (o.loaded_at) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
+
+    const mine = db.pallets.filter((p) => p.order_id === o.id);
+    const had = mine.filter((p) => p.location).length;
+    if (!had && !o.stow_done_at) throw new Error('아직 적치된 파렛트가 없습니다.');
+
+    mine.forEach((p) => { p.location = ''; });
+    o.stow_done_at = null;
+    addHistory(db, o.id, '출고적치', '완료', '취소', user, `로케이션 ${had}건 삭제`);
+    await save(db);
+    return o;
+}
+
 /** 파렛트 전량에 로케이션이 있으면 출고적치 완료로 본다 */
 function syncStowDone(db, o) {
     const mine = db.pallets.filter((p) => p.order_id === o.id);
@@ -886,7 +931,11 @@ export async function scanPallet(orderId, barcode, user) {
     // 상차라벨의 바코드는 주문번호다. 파렛트마다 같은 라벨이 붙으므로
     // 주문번호를 스캔할 때마다 아직 검수되지 않은 파렛트를 하나씩 채운다.
     // (예전 방식인 파렛트 개별 바코드 {주문번호}-P01 도 그대로 인식한다)
-    const isOrderCode = code === String(o.order_no).trim().toUpperCase();
+    //
+    // 🔑 추가주문은 라벨이 자기 번호(`a11111-1`)로 인쇄되고 1차수와 함께 실린다.
+    // 대표 번호든 추가차수 번호든 **같은 묶음이면 모두 인식한다.**
+    const groupNos = new Set(group.rows.map((r) => String(r.order_no).trim().toUpperCase()));
+    const isOrderCode = groupNos.has(code);
     const target = isOrderCode
         ? mine.find((p) => !p.scanned_at)
         : mine.find((p) => p.barcode.toUpperCase() === code);

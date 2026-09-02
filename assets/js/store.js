@@ -10,7 +10,6 @@
  * 화면 코드는 이 모듈을 직접 부르지 않는다. 반드시 `db.js` 를 거친다.
  */
 import { DATA_SOURCE } from './config.js';
-import { SEED_USERS, SEED_ORDERS, SEED_ISSUES, makePallets } from './mock-data.js';
 import { supabase } from './supabase.js';
 
 const KEY = 'tpl_order_db_v1';
@@ -104,6 +103,11 @@ function same(a, b, cols) {
 
 /* --------------------------------- mock --------------------------------- */
 
+/**
+ * mock 모드 저장소.
+ * ⚠️ 샘플 데이터는 제거했다. 더미 계정·주문이 운영 배포본에 함께 실리기 때문이다.
+ * 따라서 mock 모드는 **빈 상태로 시작한다.** 실제 데이터 확인은 Supabase 모드로 한다.
+ */
 function mockLoad() {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -113,16 +117,9 @@ function mockLoad() {
             console.warn('저장 데이터 파싱 실패, 초기화합니다.', err);
         }
     }
-    const seeded = {
-        users: SEED_USERS,
-        orders: SEED_ORDERS,
-        issues: SEED_ISSUES,
-        pallets: SEED_ORDERS.flatMap(makePallets),
-        history: [],
-        restores: [],
-    };
-    localStorage.setItem(KEY, JSON.stringify(seeded));
-    return seeded;
+    const empty = { users: [], orders: [], issues: [], pallets: [], history: [], restores: [] };
+    localStorage.setItem(KEY, JSON.stringify(empty));
+    return empty;
 }
 
 /* ------------------------------- supabase ------------------------------- */

@@ -15,6 +15,7 @@ import { can } from '../auth.js';
 import * as db from '../db.js';
 import { visibleSteps, stepsFlowHtml } from '../steps.js';
 import { createScanner, scanSupported } from '../scanner.js';
+import { icon } from '../icons.js';
 import {
     esc, num, today, fmtDateTime, toast, confirmDialog, openModal, downloadCsv, isMobile,
     monthDay, addBadge, seqTag, MOBILE_QUERY,
@@ -124,7 +125,7 @@ function mountScanBox(box, onSubmit) {
                autocomplete="off" enterkeyhint="search">
       </label>
       <button class="btn btn--primary" id="btn-find" type="button">조회</button>
-      <button class="btn" id="btn-cam" type="button">📷 스캔</button>
+      <button class="btn" id="btn-cam" type="button">${icon('camera')} 스캔</button>
     </div>
     <video id="scan-video" playsinline muted hidden style="margin-top:12px"></video>
     ${scanSupported() ? '' : `
@@ -634,7 +635,7 @@ ${orderSummary(o, {}, { fold: true })}
         box.innerHTML = `${orderSummary(o, {}, { fold: true })}<div id="stow-panel"></div>`;
         bindOrderHead(box);
         panelCleanup = await mountStowPanel(
-            box.querySelector('#stow-panel'), { order: o, editable },
+            box.querySelector('#stow-panel'), { order: o, editable, user },
         );
     }
 
@@ -656,10 +657,10 @@ ${orderSummary(o, {}, { fold: true })}
  * 한 건 저장할 때마다 입력칸을 비우고 커서를 되돌려 스캐너로 연속 입력할 수 있다.
  *
  * @param {Element} host 그릴 위치
- * @param {{order:object, editable:boolean}} ctx
+ * @param {{order:object, editable:boolean, user:object}} ctx
  * @returns {Promise<Function>} 정리 함수 (카메라 정지)
  */
-async function mountStowPanel(host, { order, editable }) {
+async function mountStowPanel(host, { order, editable, user }) {
     // 계산기와 같은 배열 - 위가 7 8 9, 아래가 0
     const KEYS = ['7', '8', '9', '4', '5', '6', '1', '2', '3', 'clr', '0', 'del'];
 
@@ -703,10 +704,12 @@ async function mountStowPanel(host, { order, editable }) {
 
       <div class="stow-tools">
         <button class="btn btn--danger stow-tool" id="loc-clear" type="button" hidden>지우기</button>
+        <button class="btn btn--danger stow-tool" id="stow-cancel" type="button" hidden>
+          적치취소</button>
         <button class="btn stow-tool" id="loc-cam" type="button">
-          <span class="stow-tool__ico">📷</span>카메라</button>
+          ${icon('camera')}카메라</button>
         <button class="btn stow-tool" id="loc-pad" type="button">
-          <span class="stow-tool__ico">⌨</span>자판</button>
+          ${icon('keypad')}자판</button>
       </div>
       <video id="loc-video" playsinline muted hidden></video>
       <div id="loc-cam-note"></div>
@@ -782,7 +785,7 @@ async function mountStowPanel(host, { order, editable }) {
             el.innerHTML = '아래 목록에서 파렛트를 선택하세요.';
         } else if (!t) {
             el.className = 'stow-target is-done';
-            el.innerHTML = '✅ 모든 파렛트의 적치가 끝났습니다.';
+            el.innerHTML = `${icon('check')} 모든 파렛트의 적치가 끝났습니다.`;
         } else {
             el.className = 'stow-target';
             el.innerHTML = `
@@ -794,6 +797,9 @@ ${t.location
         }
 
         $('#loc-clear').hidden = !(t && t.location);
+        // 적치취소는 전량 입력이 끝난 뒤에만 의미가 있다
+        const allDone = pallets.length > 0 && pallets.every((p) => p.location);
+        $('#stow-cancel').hidden = !allDone;
         input.disabled = !t;
         $('#loc-save').disabled = !t;
     }
@@ -822,7 +828,7 @@ ${t.location
         list.innerHTML = ordered().map((p) => `
 <button class="pallet ${p.location ? 'is-scanned' : ''} ${p.id === t?.id ? 'is-target' : ''}"
         data-pallet="${p.id}" type="button" ${editable ? '' : 'disabled'}>
-  <span class="pallet__mark">${p.location ? '✅' : p.id === t?.id ? '▶' : '⬜'}</span>
+  <span class="pallet__mark">${icon(p.location ? 'check' : p.id === t?.id ? 'next' : 'square')}</span>
   <span class="pallet__code">${esc(nameOf(p))}</span>
   <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>`
@@ -1019,6 +1025,25 @@ ${t.location
             syncKeypad();
         });
 
+        $('#stow-cancel').addEventListener('click', async () => {
+            const ok = await confirmDialog(
+                '이 주문의 적치를 취소하시겠습니까?\n\n'
+                + `입력한 로케이션 ${pallets.length}건이 모두 지워지고 처음부터 다시 넣어야 합니다.`,
+            );
+            if (!ok) return;
+            try {
+                await db.cancelStow(order.id, user);
+                toast('출고적치를 취소했습니다.', 'success');
+                moved = [];
+                selectedId = null;
+                lastValue = '';
+                await refresh();
+                resetInput();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+
         $('#loc-clear').addEventListener('click', async () => {
             const t = target();
             if (!t) return;
@@ -1053,11 +1078,13 @@ ${t.location
             if (scanner.isOn()) {
                 scanner.stop();
                 $('#loc-cam').classList.remove('btn--primary');
+                $('#loc-cam').innerHTML = `${icon('camera')}카메라`;
                 return;
             }
             try {
                 await scanner.start();
                 $('#loc-cam').classList.add('btn--primary');
+                $('#loc-cam').innerHTML = `${icon('stop')}중지`;
             } catch (err) {
                 toast(err.message, 'error');
             }

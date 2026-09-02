@@ -70,10 +70,11 @@ export default defineConfig({
         target: 'es2022',
         sourcemap: true,
         rollupOptions: {
+            // barcodes.html 은 개발용 테스트 시트라 배포하지 않는다.
+            // 개발 서버(npm run dev)에서는 그대로 열린다
             input: {
                 login: resolve(process.cwd(), 'index.html'),
                 app: resolve(process.cwd(), 'app.html'),
-                barcodes: resolve(process.cwd(), 'barcodes.html'),
             },
         },
     },
