@@ -937,8 +937,32 @@ export async function cancelStow(orderId, user) {
 function syncStowDone(db, o) {
     const mine = db.pallets.filter((p) => p.order_id === o.id);
     const all = mine.length > 0 && mine.every((p) => p.location);
-    if (all && !o.stow_done_at) o.stow_done_at = new Date().toISOString();
+    // 🔑 완료는 화면의 `적치완료` 버튼으로만 찍는다 (자동으로 올리지 않는다).
+    // 다만 로케이션이 하나라도 비면 완료를 유지할 수 없으므로 되돌린다
     if (!all && o.stow_done_at) o.stow_done_at = null;
+}
+
+/**
+ * 출고적치 완료처리.
+ * 파렛트 **전량에 로케이션이 들어간 뒤** 담당자가 눌러 확정한다.
+ */
+export async function completeStow(orderId, user) {
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === orderId);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (!o.inspect_done_at) throw new Error('검수작업이 완료된 주문만 적치할 수 있습니다.');
+    if (o.stow_done_at) throw new Error('이미 적치완료된 주문입니다.');
+
+    const mine = db.pallets.filter((p) => p.order_id === o.id);
+    const left = mine.filter((p) => !p.location).length;
+    if (!mine.length) throw new Error('적치할 파렛트가 없습니다.');
+    if (left) throw new Error(`로케이션이 비어 있는 파렛트가 ${left}건 있습니다.`);
+
+    o.stow_done_at = new Date().toISOString();
+    addHistory(db, o.id, '출고적치', '', '완료', user);
+    await save(db);
+    return o;
 }
 
 /**
