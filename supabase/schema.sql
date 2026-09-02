@@ -345,6 +345,74 @@ create policy issues_update on public.issues for update to authenticated
     using (public.my_role() in ('admin', 'yongma') or created_by = auth.uid())
     with check (true);
 
+-- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
+-- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
+
+-- 이력 기록 본문은 수정 불가 (확인 필드만 허용), 삭제 불가
+create or replace function public.lock_history_content()
+    returns trigger language plpgsql as $$
+begin
+    if new.order_id is distinct from old.order_id
+        or new.rev is distinct from old.rev
+        or new.field is distinct from old.field
+        or new.before is distinct from old.before
+        or new.after is distinct from old.after
+        or new.memo is distinct from old.memo
+        or new.changed_by is distinct from old.changed_by
+        or new.changed_at is distinct from old.changed_at then
+        raise exception '이력 기록 본문은 수정할 수 없습니다 (확인 처리만 가능).';
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_lock_history_content on public.order_history;
+create trigger trg_lock_history_content
+    before update on public.order_history
+    for each row execute function public.lock_history_content();
+
+revoke delete on public.order_history from authenticated;
+
+-- 단계·상차·검수·마감 컬럼이 하나도 안 바뀌었는지 (= 순수 내용 수정인지)
+create or replace function public.only_content_changed(o public.orders, n public.orders)
+    returns boolean language sql immutable as $$
+    select o.confirmed_at is not distinct from n.confirmed_at
+       and o.ship_started_at is not distinct from n.ship_started_at
+       and o.ship_done_at is not distinct from n.ship_done_at
+       and o.req_work_at is not distinct from n.req_work_at
+       and o.packing_at is not distinct from n.packing_at
+       and o.inspect_done_at is not distinct from n.inspect_done_at
+       and o.stow_done_at is not distinct from n.stow_done_at
+       and o.extra_done_at is not distinct from n.extra_done_at
+       and o.loaded_at is not distinct from n.loaded_at
+       and o.closed_at is not distinct from n.closed_at
+       and o.load_status is not distinct from n.load_status
+       and o.inspected is not distinct from n.inspected
+$$;
+
+-- 주문 UPDATE 시 무엇을 바꾸려는지 보고 권한을 강제한다.
+-- 단계·상차·검수 → updateStatus, 완료처리(closed_at) → closeOrder.
+-- null 은 '권한 없음' 으로 처리(coalesce)해 미로그인 우회를 막는다.
+create or replace function public.enforce_order_permissions()
+    returns trigger language plpgsql security definer set search_path = public as $$
+begin
+    if new.closed_at is distinct from old.closed_at
+        and not coalesce(public.can_close_order(), false) then
+        raise exception '출고 완료처리 권한이 없습니다.';
+    end if;
+    if not public.only_content_changed(old, new)
+        and not coalesce(public.can_update_status(), false) then
+        raise exception '출고·검수·적치·상차 처리 권한이 없습니다.';
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_order_permissions on public.orders;
+create trigger trg_enforce_order_permissions
+    before update on public.orders
+    for each row execute function public.enforce_order_permissions();
+
 -- ═══════════════════════════ 실시간(Realtime) ═══════════════════════════
 -- db.subscribe() 가 이 채널을 구독한다. 폴링 대신 변경 즉시 화면이 갱신된다.
 
