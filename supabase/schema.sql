@@ -255,9 +255,12 @@ drop policy if exists profiles_update on public.profiles;
 create policy profiles_update on public.profiles for update to authenticated
     using (public.my_role() = 'admin') with check (public.my_role() = 'admin');
 
+-- ⚠️ 관리자만 프로필을 만들 수 있다.
+-- `or id = auth.uid()` 를 넣으면 스스로 가입한 사람이 자기 프로필을
+-- role='admin' 으로 등록하는 권한 상승이 가능하다. 절대 되살리지 않는다.
 drop policy if exists profiles_insert on public.profiles;
 create policy profiles_insert on public.profiles for insert to authenticated
-    with check (public.my_role() = 'admin' or id = auth.uid());
+    with check (public.my_role() = 'admin');
 
 -- ── 주문 ──
 drop policy if exists orders_select on public.orders;
