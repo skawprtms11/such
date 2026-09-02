@@ -13,10 +13,11 @@ import {
 } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
-import { visibleSteps } from '../steps.js';
+import { visibleSteps, stepsFlowHtml } from '../steps.js';
 import { createScanner, scanSupported } from '../scanner.js';
 import {
-    esc, num, today, fmtDateTime, toast, confirmDialog, openModal, downloadCsv,
+    esc, num, today, fmtDateTime, toast, confirmDialog, openModal, downloadCsv, isMobile,
+    monthDay, addBadge, seqTag, MOBILE_QUERY,
 } from '../util.js';
 
 /** 탭 정의 */
@@ -33,13 +34,6 @@ let activeTab = 'ship';
 
 /** 열려 있는 팝업 - 화면을 떠날 때 함께 닫는다 */
 let openedModal = null;
-
-/** 모바일 여부 - CSS 의 반응형 기준점(860px)과 같은 값을 쓴다 */
-const MOBILE_QUERY = '(max-width: 860px)';
-
-function isMobile() {
-    return window.matchMedia(MOBILE_QUERY).matches;
-}
 
 export async function render(root, { user }) {
     const editable = can(user, 'updateStatus');
@@ -204,14 +198,7 @@ function orderSummary(o, opt, { fold = false } = {}) {
       <span>파렛트 <b>${num(o.pallet_count)}</b></span>
     </div>
     ${steps.length ? `
-    <div class="steps steps--flow">
-      ${steps.map((s, i) => `
-      ${i ? '<span class="steps__arrow">→</span>' : ''}
-      <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
-            title="${s.doneAt ? fmtDateTime(s.doneAt) : s.current ? '진행중' : '미완료'}">
-        ${s.label}
-      </span>`).join('')}
-    </div>` : ''}
+    <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>` : ''}
   </div>
   ${fold ? `
   <button class="work-head__fold" type="button" data-fold>
@@ -581,12 +568,6 @@ ${rows.map((t) => { const o = t.order; return `
     return db.subscribe(drawList);
 }
 
-/** 등록일자를 월/일로 줄인다 (모바일 목록용) */
-function monthDay(iso) {
-    const [, m, d] = String(iso).slice(0, 10).split('-');
-    return m && d ? `${m}/${d}` : '-';
-}
-
 /* -------------------------------- 출고적치 탭 -------------------------------- */
 
 /** 이동 방식 - 연속이동은 목록 순서대로, 건별이동은 고른 파렛트만 처리한다 */
@@ -621,13 +602,6 @@ async function withStow(rows) {
         stow: await db.stowCount(o.id),
         group: await db.getLoadGroup(o.id),
     })));
-}
-
-/** 추가주문 건수 배지 - 1차수 옆에 `+2건` 으로 붙인다 */
-function addBadge(count) {
-    return count > 1
-        ? ` <span class="tag tag--amber" title="추가주문 ${count - 1}건 포함">+${count - 1}건</span>`
-        : '';
 }
 
 /**
@@ -1136,7 +1110,7 @@ async function openLocationView(orderId) {
 <tbody>
 ${pallets.length ? pallets.map((p) => `
 <tr>
-  <td class="center"><span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span></td>
+  <td class="center">${seqTag(p.seq, '차')}</td>
   <td>${esc(p.label)}</td>
   <td>${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>`
@@ -1316,7 +1290,7 @@ ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
   <td><span class="link" data-loc="${o.id}">${esc(o.order_no)}</span></td>
-  <td class="center"><span class="seq ${o.seq > 1 ? 'seq--multi' : ''}">${o.seq}차수</span></td>
+  <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="num">${num(o.stow.total)}</td>
   <td class="center">
@@ -1391,7 +1365,7 @@ ${g.rows.length > 1 ? `
     <div class="pallet-list" style="margin-top:12px">
       ${pallets.map((p) => `
       <div class="pallet ${p.picked_at ? 'is-scanned' : ''}">
-        <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
+        ${seqTag(p.seq, '차')}
         <span class="pallet__code">${esc(p.label)}</span>
         <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>`
@@ -1665,7 +1639,7 @@ ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
   <td>${esc(o.order_no)}</td>
-  <td class="center"><span class="seq ${o.seq > 1 ? 'seq--multi' : ''}">${o.seq}차수</span></td>
+  <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
   <td class="center">${(o.extra_works ?? []).length
@@ -1703,7 +1677,7 @@ ${rows.map((t) => { const o = t.order; return `
     </span>
   </td>
   <td>${esc(o.order_no)}</td>
-  <td class="center"><span class="seq ${o.seq > 1 ? 'seq--multi' : ''}">${o.seq}차수</span></td>
+  <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="wrap">${esc(t.content)}</td>
   <td>${t.due_date || '-'}</td>

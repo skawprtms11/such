@@ -2,27 +2,14 @@
 import {
     LOAD_STATUS, stowStatus, STOW_STATUS, formatLocation, compareLocation,
 } from '../config.js';
-
-/** 추가주문 건수 배지 - 대표 주문번호 옆에 `+2건` 으로 붙인다 */
-function addBadge(count) {
-    return count > 1
-        ? ` <span class="tag tag--amber" title="추가주문 ${count - 1}건 포함">+${count - 1}건</span>`
-        : '';
-}
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import {
-    esc, num, today, rate, downloadCsv, toast, confirmDialog, openModal, fmtDateTime,
+    esc, num, today, rate, downloadCsv, toast, confirmDialog, openModal, fmtDateTime, isMobile,
+    addBadge, seqTag, MOBILE_QUERY,
 } from '../util.js';
 
 const filter = { date: '', keyword: '' };
-
-/** 모바일 여부 - CSS 의 반응형 기준점(860px)과 같은 값을 쓴다 */
-const MOBILE_QUERY = '(max-width: 860px)';
-
-function isMobile() {
-    return window.matchMedia(MOBILE_QUERY).matches;
-}
 
 export async function render(root, { user }) {
     filter.date = filter.date || today();
@@ -290,7 +277,7 @@ ${editable && !o.loaded_at ? `
 <div class="pallet-list">
   ${list.length ? list.map((p) => `
   <label class="pallet ${p.picked_at ? 'is-scanned' : ''}">
-    <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
+    ${seqTag(p.seq, '차')}
     <span class="pallet__code">${esc(p.label)}</span>
     <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>`
@@ -357,7 +344,7 @@ async function openLoadedDetail(orderId) {
 <div class="pallet-list">
   ${pallets.length ? pallets.map((p) => `
   <div class="pallet ${p.picked_at ? 'is-scanned' : ''}">
-    <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
+    ${seqTag(p.seq, '차')}
     <span class="pallet__code">${esc(p.label)}</span>
     <span class="pallet__loc">${p.location
         ? `<b>${esc(formatLocation(p.location))}</b>` : dash}</span>

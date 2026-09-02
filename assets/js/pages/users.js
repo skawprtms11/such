@@ -98,25 +98,39 @@ ${rows.map((u, i) => `
 
     tbl.querySelectorAll('[data-company]').forEach((el) => {
         el.addEventListener('change', async () => {
-            await db.updateUserCompany(el.dataset.company, el.value);
-            toast('소속이 변경되었습니다.', 'success');
-            reload();
+            try {
+                await db.updateUserCompany(el.dataset.company, el.value);
+                toast('소속이 변경되었습니다.', 'success');
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
+                reload();
+            }
         });
     });
 
     tbl.querySelectorAll('[data-role]').forEach((el) => {
         el.addEventListener('change', async () => {
-            await db.updateUserRole(el.dataset.role, el.value);
-            toast('권한이 변경되었습니다.', 'success');
-            reload();
+            try {
+                await db.updateUserRole(el.dataset.role, el.value);
+                toast('권한이 변경되었습니다.', 'success');
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
+                reload();
+            }
         });
     });
 
     tbl.querySelectorAll('[data-active]').forEach((el) => {
         el.addEventListener('click', async () => {
             if (!await confirmDialog('사용여부를 변경하시겠습니까?')) return;
-            await db.toggleUserActive(el.dataset.active);
-            reload();
+            try {
+                await db.toggleUserActive(el.dataset.active);
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
         });
     });
 }
@@ -161,9 +175,15 @@ function openForm(reload) {
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
     m.body.querySelector('#user-form').addEventListener('submit', async (e) => {
         e.preventDefault();
-        await db.createUser(Object.fromEntries(new FormData(e.target)));
-        m.close();
-        toast('사용자가 추가되었습니다.', 'success');
-        reload();
+        // Supabase 모드에서는 로그인 계정이 함께 필요해 여기서 만들 수 없다.
+        // 실패 사유를 반드시 화면에 알린다 (모달은 열어둔 채로 둔다)
+        try {
+            await db.createUser(Object.fromEntries(new FormData(e.target)));
+            m.close();
+            toast('사용자가 추가되었습니다.', 'success');
+            reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
     });
 }

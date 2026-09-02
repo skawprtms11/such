@@ -56,6 +56,20 @@ export function visibleSteps(order, opt = {}) {
     return steps.map((s, i) => ({ ...s, current: i === next }));
 }
 
+/**
+ * 단계 흐름을 화살표로 이어 그린다 (주문처리현황 · 출고주문처리가 함께 쓴다).
+ * 완료는 초록, 지금 진행중인 단계는 노랑으로 표시된다.
+ * @param {Array} steps `visibleSteps()` 결과
+ * @param {(iso:string) => string} fmt 완료 일시 포맷 함수 (툴팁에 넣는다)
+ */
+export function stepsFlowHtml(steps, fmt) {
+    return steps.map((s, i) => `
+${i ? '<span class="steps__arrow">→</span>' : ''}
+<span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
+      title="${s.doneAt ? fmt(s.doneAt) : s.current ? '진행중' : '미완료'}">${s.label}</span>`)
+        .join('');
+}
+
 /** 상차작업을 제외한 모든 단계가 끝났는지 (당일상차리스트 진입 조건) */
 export function readyToLoad(order, opt = {}) {
     return visibleSteps(order, opt)

@@ -3,26 +3,14 @@ import { ISSUE_TYPES, ISSUE_STATUS } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import {
-    esc, num, today, downloadCsv, toast, openModal, fmtDateTime, toDateStr,
+    esc, num, today, downloadCsv, toast, openModal, fmtDateTime, toDateStr, isMobile, monthDay,
+    MOBILE_QUERY,
 } from '../util.js';
 
 const filter = { status: '', keyword: '' };
 
-/** 모바일 여부 - CSS 의 반응형 기준점(860px)과 같은 값을 쓴다 */
-const MOBILE_QUERY = '(max-width: 860px)';
-
-function isMobile() {
-    return window.matchMedia(MOBILE_QUERY).matches;
-}
-
 /** 열려 있는 팝업 - 화면을 떠날 때 함께 닫는다 */
 let openedModal = null;
-
-/** 등록일자를 월/일로 줄인다 (모바일 목록용) */
-function monthDay(iso) {
-    const [, m, d] = String(iso).slice(0, 10).split('-');
-    return m && d ? `${m}/${d}` : '-';
-}
 
 export async function render(root, { user }) {
     root.innerHTML = `
@@ -221,9 +209,14 @@ ${rows.map((i, idx) => `
 
     tbl.querySelectorAll('[data-status]').forEach((el) => {
         el.addEventListener('change', async () => {
-            await db.updateIssue(el.dataset.status, { status: el.value });
-            toast('상태가 변경되었습니다.', 'success');
-            reload();
+            try {
+                await db.updateIssue(el.dataset.status, { status: el.value });
+                toast('상태가 변경되었습니다.', 'success');
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
+                reload();
+            }
         });
     });
 }
@@ -267,9 +260,13 @@ function openForm(user, reload) {
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
     m.body.querySelector('#issue-form').addEventListener('submit', async (e) => {
         e.preventDefault();
-        await db.createIssue(Object.fromEntries(new FormData(e.target)), user);
-        m.close();
-        toast('이슈가 등록되었습니다.', 'success');
-        reload();
+        try {
+            await db.createIssue(Object.fromEntries(new FormData(e.target)), user);
+            m.close();
+            toast('이슈가 등록되었습니다.', 'success');
+            reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
     });
 }

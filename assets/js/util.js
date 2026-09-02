@@ -80,6 +80,38 @@ export function uid(prefix = 'id') {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/**
+ * 모바일 화면인지.
+ * 기준점은 CSS 의 반응형 분기와 같은 860px 다. 한 곳에서만 정의한다.
+ */
+export const MOBILE_QUERY = '(max-width: 860px)';
+
+export function isMobile() {
+    return window.matchMedia(MOBILE_QUERY).matches;
+}
+
+/** ISO 날짜를 M/D 로 짧게 (모바일 표에서 쓴다) */
+export function monthDay(iso) {
+    const [, m, d] = String(iso).slice(0, 10).split('-');
+    return m && d ? `${m}/${d}` : '-';
+}
+
+/** 추가주문 건수 배지 - 상차는 차수를 묶어 처리하므로 대표 행에 붙인다 */
+export function addBadge(count) {
+    return count > 1
+        ? ` <span class="tag tag--amber" title="추가주문 ${count - 1}건 포함">+${count - 1}건</span>`
+        : '';
+}
+
+/**
+ * 차수 배지 - 2차수 이상은 주황색으로 구분한다.
+ * @param {number} seq 차수
+ * @param {string} [suffix] 표기 ('차수' 또는 좁은 화면용 '차')
+ */
+export function seqTag(seq, suffix = '차수') {
+    return `<span class="seq ${seq > 1 ? 'seq--multi' : ''}">${seq}${suffix}</span>`;
+}
+
 /** 진행률(%) 계산 */
 export function rate(done, total) {
     if (!total) return 0;
@@ -94,7 +126,7 @@ export function rate(done, total) {
  *   wide   : 넓은 모달로 표시
  *   xl     : 더 넓은 모달로 표시 (탭이 있는 상세 팝업 등)
  *   footer : 본문 아래에 고정되는 영역. 스크롤과 무관하게 항상 보인다
- * @returns {{root:Element, body:Element, foot:Element|null, close:Function}}
+ * @returns {{root:Element, body:Element, close:Function}}
  */
 export function openModal(title, contentHtml, { wide = false, xl = false, footer = '' } = {}) {
     const back = document.createElement('div');
@@ -115,7 +147,6 @@ export function openModal(title, contentHtml, { wide = false, xl = false, footer
     return {
         root: back,
         body: back.querySelector('.modal__body'),
-        foot: back.querySelector('.modal__foot'),
         close,
     };
 }

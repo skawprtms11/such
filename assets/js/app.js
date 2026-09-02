@@ -2,7 +2,7 @@
 import { MENUS, ROLE, appOnlyCompany } from './config.js';
 import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
-import { esc } from './util.js';
+import { esc, isMobile, MOBILE_QUERY } from './util.js';
 
 const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
@@ -22,13 +22,6 @@ const view = document.getElementById('view');
 const sideNav = document.getElementById('side-nav');
 const tabbar = document.getElementById('tabbar');
 const sidebar = document.getElementById('sidebar');
-
-/** 모바일 여부 - CSS 의 반응형 기준점(860px)과 같은 값을 쓴다 */
-const MOBILE_QUERY = '(max-width: 860px)';
-
-function isMobile() {
-    return window.matchMedia(MOBILE_QUERY).matches;
-}
 
 /** 모바일(앱)에서 처음 열 화면 - 주문정보등록은 앱 메뉴가 아니다 */
 function homeKey() {
