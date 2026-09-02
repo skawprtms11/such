@@ -49,8 +49,10 @@ function renderNav() {
   ${icon(m.icon, 'icon tab__icon')}<span class="tab__label">${esc(m.label)}</span>
 </a>`).join('');
 
-    const meHtml = `<strong>${esc(user.name)}</strong>
-        <span class="role role--${user.role}">${esc(roleLabel(user.role))}</span>`;
+    // 소속 → 권한 → 이름 순서로 보여준다
+    const meHtml = `<span class="me__company">${esc(user.company)}</span>
+        <span class="role role--${user.role}">${esc(roleLabel(user.role))}</span>
+        <strong>${esc(user.name)}</strong>`;
     document.getElementById('side-me').innerHTML = meHtml;
     document.getElementById('top-me').innerHTML = meHtml;
     document.getElementById('btn-menu').innerHTML = icon('menu', 'icon');

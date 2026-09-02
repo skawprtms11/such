@@ -77,6 +77,12 @@ export const PERMISSION = {
     },
 };
 
+/**
+ * 비밀번호 초기화 시 설정되는 공용 비밀번호.
+ * 관리자가 초기화하면 이 값이 되고, 사용자는 받은 뒤 직접 바꾼다.
+ */
+export const INITIAL_PASSWORD = '1318';
+
 /** 협력사 소속은 앱(모바일) 메뉴만 쓴다 */
 export function appOnlyCompany(company) {
     return company === COMPANY.PARTNER;
