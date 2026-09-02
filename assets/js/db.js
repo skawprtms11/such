@@ -4,15 +4,16 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, LOAD_STATUS, RESTORE_TYPE, WORK_STEPS,
-    LOCATION_FORMAT, formatLocation, isValidLocation,
+    COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE, LOAD_STATUS, PERMISSION,
+    RESTORE_TYPE, ROLE, WORK_STEPS, LOCATION_FORMAT, adjustCategory,
+    formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
 import { supabase } from './supabase.js';
-import { uid, today } from './util.js';
+import { uid, today, toDateStr } from './util.js';
 
 /**
  * 기능이 추가되면서 생긴 새 필드를 기존 저장 데이터에 채워 넣는다.
@@ -20,6 +21,7 @@ import { uid, today } from './util.js';
  */
 function normalize(db) {
     db.restores = db.restores ?? [];
+    db.comments = db.comments ?? [];
     // 소속 명칭 변경 (더퓨어랩 → 고객사, 용마물류 → 용마로지스)
     const RENAMED = { 더퓨어랩: COMPANY.CUSTOMER, 용마물류: COMPANY.LOGISTICS };
     db.users.forEach((u) => {
@@ -581,8 +583,9 @@ export async function listRequestTasks() {
     });
     const rows = [];
 
+    // 자동등록 건은 제외 - 원본 조정요청이 이미 아래 adjust 갈래로 표시된다
     db.issues
-        .filter((i) => i.type === EXTRA_TASK_TYPE && i.order_no)
+        .filter((i) => i.type === EXTRA_TASK_TYPE && i.order_no && !i.auto_created)
         .forEach((i) => {
             (byNo[i.order_no.trim()] ?? []).forEach((o) => rows.push({
                 id: i.id,
@@ -615,11 +618,11 @@ export async function listRequestTasks() {
     return rows.sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
 }
 
-/** 추가작업 요청이 있는 주문번호 집합 */
+/** 추가작업 요청이 있는 주문번호 집합 (조정요청에서 자동등록된 건은 제외) */
 function extraTaskNoSet(db) {
     return new Set(
         db.issues
-            .filter((i) => i.type === EXTRA_TASK_TYPE && i.order_no)
+            .filter((i) => i.type === EXTRA_TASK_TYPE && i.order_no && !i.auto_created)
             .map((i) => i.order_no.trim()),
     );
 }
@@ -805,6 +808,25 @@ export async function createRestore(payload, user) {
 
     const label = row.type === RESTORE_TYPE.EMAIL ? '이메일 발송' : '직접 작성';
     addHistory(db, order.id, '조정요청', '', `${label} · ${row.reason}`, user);
+
+    // 조정요청은 이슈등록에도 작업요청 건으로 자동등록해 소통 창구를 하나로 모은다.
+    // auto_created 건은 추가작업 요청 연동에서 제외된다 (조정요청 자체가 조정작업 단계를 만든다)
+    const due = new Date();
+    due.setDate(due.getDate() + 1);
+    db.issues.push({
+        id: uid('i'),
+        type: EXTRA_TASK_TYPE,
+        work_type: '출고',
+        title: `${order.order_no} 조정요청 (${adjustCategory(row.category).label})`,
+        order_no: order.order_no,
+        content: [row.reason, row.product_code && `제품코드 ${row.product_code}`,
+            row.qty && `수량 ${row.qty}`].filter(Boolean).join(' / '),
+        due_date: toDateStr(due),
+        status: ISSUE_STATE.WAIT,
+        auto_created: true,
+        created_by: user.id,
+        created_at: new Date().toISOString(),
+    });
     await save(db);
     return row;
 }
@@ -1142,7 +1164,9 @@ export async function listIssues(f = {}) {
         rows = rows.filter((i) => `${i.title} ${i.order_no}`.toLowerCase().includes(k));
     }
     rows.sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
-    return rows;
+    // 등록자 이름을 화면 표시용으로 붙인다 (저장 컬럼이 아니라 서버로는 나가지 않는다)
+    const nameById = Object.fromEntries(db.users.map((u) => [u.id, u.name]));
+    return rows.map((i) => ({ ...i, creator_name: nameById[i.created_by] ?? '' }));
 }
 
 export async function createIssue(payload, user) {
@@ -1150,7 +1174,7 @@ export async function createIssue(payload, user) {
     const row = {
         id: uid('i'),
         created_at: new Date().toISOString(),
-        status: '접수',
+        status: ISSUE_STATE.WAIT,
         created_by: user.id,
         ...payload,
     };
@@ -1166,6 +1190,178 @@ export async function updateIssue(id, patch) {
     Object.assign(i, patch);
     await save(db);
     return i;
+}
+
+/** 이슈 확인담당자 후보 - 소속이 용마로지스이고 권한이 용마담당자인 활성 사용자 */
+export async function listIssueAssignees() {
+    return (await load()).users.filter((u) => u.company === COMPANY.LOGISTICS
+        && u.role === ROLE.YONGMA && u.active !== false);
+}
+
+/** 이슈접수 - 확인담당자를 지정하면 상태가 접수대기 → 접수완료 로 바뀐다 */
+export async function acceptIssue(id, assigneeId) {
+    const db = (await load());
+    const i = db.issues.find((x) => x.id === id);
+    if (!i) throw new Error('이슈를 찾을 수 없습니다.');
+    if (i.status !== ISSUE_STATE.WAIT) {
+        throw new Error(`${ISSUE_STATE.WAIT} 상태의 이슈만 접수할 수 있습니다.`);
+    }
+    const u = db.users.find((x) => x.id === assigneeId);
+    if (!u) throw new Error('확인담당자를 찾을 수 없습니다.');
+    Object.assign(i, {
+        status: ISSUE_STATE.OPEN,
+        assignee_id: u.id,
+        assignee_name: u.name,
+    });
+    await save(db);
+    return i;
+}
+
+/* 이슈 단계별 처리 권한 - 팝업의 버튼 노출과 실제 처리에 같은 판정을 쓴다 */
+
+/** 담당자확인 가능 여부 - 접수완료 상태에서 선정된 담당자 본인 또는 관리자 */
+export function canConfirmAssignee(user, issue) {
+    return issue.status === ISSUE_STATE.OPEN && !!user
+        && (user.id === issue.assignee_id || !!PERMISSION[user.role]?.manageUsers);
+}
+
+/** 종결요청 가능 여부 - 접수완료·확인중 상태에서 선정된 담당자 또는 관리자 */
+export function canRequestClose(user, issue) {
+    return [ISSUE_STATE.OPEN, ISSUE_STATE.DOING].includes(issue.status) && !!user
+        && (user.id === issue.assignee_id || !!PERMISSION[user.role]?.manageUsers);
+}
+
+/** 이슈취소 가능 여부 - 종결요청 전(접수대기~확인중)에 등록자 본인 또는 관리자 */
+export function canCancelIssue(user, issue) {
+    return [ISSUE_STATE.WAIT, ISSUE_STATE.OPEN, ISSUE_STATE.DOING].includes(issue.status)
+        && !!user && (user.id === issue.created_by || !!PERMISSION[user.role]?.manageUsers);
+}
+
+/** 종결승인 가능 여부 - 종결요청 상태에서 등록자, 고객사 소속 화주관리자, 관리자 */
+export function canApproveClose(user, issue) {
+    return issue.status === ISSUE_STATE.CLOSE_REQ && !!user
+        && (user.id === issue.created_by
+            || !!PERMISSION[user.role]?.manageUsers
+            || (user.role === ROLE.SHIPPER_ADMIN && user.company === COMPANY.CUSTOMER));
+}
+
+/** 담당자확인 - 선정된 담당자(또는 관리자)가 확인하면 접수완료 → 확인중 */
+export async function confirmIssueAssignee(id, user) {
+    const db = (await load());
+    const i = db.issues.find((x) => x.id === id);
+    if (!i) throw new Error('이슈를 찾을 수 없습니다.');
+    if (!canConfirmAssignee(user, i)) {
+        throw new Error('선정된 확인담당자 또는 관리자만 담당자확인을 할 수 있습니다.');
+    }
+    i.status = ISSUE_STATE.DOING;
+    await save(db);
+    return i;
+}
+
+/** 종결요청 - 담당자·관리자가 처리를 마치고 등록자 쪽에 승인을 요청한다 */
+export async function requestIssueClose(id, user) {
+    const db = (await load());
+    const i = db.issues.find((x) => x.id === id);
+    if (!i) throw new Error('이슈를 찾을 수 없습니다.');
+    if (!canRequestClose(user, i)) {
+        throw new Error('선정된 담당자 또는 관리자만 종결요청을 할 수 있습니다.');
+    }
+    i.status = ISSUE_STATE.CLOSE_REQ;
+    await save(db);
+    return i;
+}
+
+/** 종결승인 - 등록자(또는 고객사 화주관리자)가 승인하면 종결완료 + 종결일자 기록 */
+export async function approveIssueClose(id, user) {
+    const db = (await load());
+    const i = db.issues.find((x) => x.id === id);
+    if (!i) throw new Error('이슈를 찾을 수 없습니다.');
+    if (!canApproveClose(user, i)) {
+        throw new Error('등록자 또는 고객사 화주관리자만 종결승인을 할 수 있습니다.');
+    }
+    i.status = ISSUE_STATE.CLOSED;
+    i.closed_at = new Date().toISOString();
+    await save(db);
+    return i;
+}
+
+/** 이슈취소 - 등록자·관리자가 종결요청 전에 취소하면 확인취소 + 취소일자 기록 */
+export async function cancelIssue(id, user) {
+    const db = (await load());
+    const i = db.issues.find((x) => x.id === id);
+    if (!i) throw new Error('이슈를 찾을 수 없습니다.');
+    if (!canCancelIssue(user, i)) {
+        throw new Error('등록자 또는 관리자만 종결요청 전까지 취소할 수 있습니다.');
+    }
+    i.status = ISSUE_STATE.CANCELED;
+    i.canceled_at = new Date().toISOString();
+    await save(db);
+    return i;
+}
+
+/* --------------------------------- 이슈 댓글 --------------------------------- */
+
+/** 이슈의 댓글 목록 - 등록순. 대댓글 트리는 화면이 parent_id 로 구성한다 */
+export async function listIssueComments(issueId) {
+    return (await load()).comments
+        .filter((c) => c.issue_id === issueId)
+        .sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
+}
+
+/** 댓글 등록 - parentId 가 있으면 그 댓글의 대댓글이 된다 */
+export async function addIssueComment(issueId, parentId, content, user) {
+    const text = String(content ?? '').trim();
+    if (!text) throw new Error('댓글 내용을 입력하세요.');
+    const db = (await load());
+    if (!db.issues.some((i) => i.id === issueId)) throw new Error('이슈를 찾을 수 없습니다.');
+    const row = {
+        id: uid('c'),
+        issue_id: issueId,
+        parent_id: parentId || null,
+        content: text,
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+        deleted_at: null,
+    };
+    db.comments.push(row);
+    await save(db);
+    return row;
+}
+
+/** 댓글 수정 - 작성자 본인만. 수정 시각을 남겨 '수정됨' 을 표시한다 */
+export async function updateIssueComment(id, content, user) {
+    const text = String(content ?? '').trim();
+    if (!text) throw new Error('댓글 내용을 입력하세요.');
+    const db = (await load());
+    const c = db.comments.find((x) => x.id === id);
+    if (!c) throw new Error('댓글을 찾을 수 없습니다.');
+    if (c.created_by !== user.id) throw new Error('작성자 본인만 수정할 수 있습니다.');
+    if (c.deleted_at) throw new Error('삭제된 댓글은 수정할 수 없습니다.');
+    c.content = text;
+    c.updated_at = new Date().toISOString();
+    await save(db);
+    return c;
+}
+
+/**
+ * 댓글 삭제 - 작성자 본인만.
+ * 대댓글이 달린 댓글은 스레드를 지키기 위해 내용만 비운다(soft delete).
+ */
+export async function deleteIssueComment(id, user) {
+    const db = (await load());
+    const c = db.comments.find((x) => x.id === id);
+    if (!c) throw new Error('댓글을 찾을 수 없습니다.');
+    if (c.created_by !== user.id) throw new Error('작성자 본인만 삭제할 수 있습니다.');
+    const hasReplies = db.comments.some((x) => x.parent_id === id);
+    if (hasReplies) {
+        c.content = '';
+        c.deleted_at = new Date().toISOString();
+    } else {
+        db.comments = db.comments.filter((x) => x.id !== id);
+    }
+    await save(db);
 }
 
 /* --------------------------------- 실시간 구독 -------------------------------- */

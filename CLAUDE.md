@@ -158,7 +158,7 @@ thefurerap/
 
 ### 1-1. 추가작업 요청
 
-이슈등록에서 **유형이 `작업요청`** 인 건을 주문번호로 이어 붙여 추가작업 요청으로 본다
+이슈등록에서 **업무구분이 `작업요청`** 인 건을 주문번호로 이어 붙여 추가작업 요청으로 본다
 (`config.js` 의 `EXTRA_TASK_TYPE`). 전용 등록 화면이 없어 기존 이슈등록을 재사용한 것이다.
 자세한 내용은 [docs/shipping.md](docs/shipping.md) 참고.
 
@@ -218,8 +218,10 @@ thefurerap/
 | `manageUsers` 사용자 권한 변경 | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 **현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·당일상차리스트는 전부 처리하고,
-주문처리현황·이슈등록은 조회만 한다. 이슈 상태 변경은 `updateStatus` 와 `createIssue` 를
-함께 가진 역할(관리자·용마담당자)만 할 수 있다.
+주문처리현황·이슈등록은 조회만 한다. 이슈 처리는 단계별로 주체가 다르다 —
+이슈접수는 `updateStatus` 와 `createIssue` 를 함께 가진 역할(관리자·용마담당자),
+담당자확인은 선정된 확인담당자 본인·관리자, 종결요청은 담당자·관리자,
+종결승인은 등록자·고객사 화주관리자·관리자가 한다 ([docs/issues.md](docs/issues.md) 참고).
 
 `viewAll` 이 false 면 각 화면이 `createdBy: user.id` 필터를 붙여 조회한다.
 
@@ -278,7 +280,8 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `order_history` | 변동사항 이력 | `order_id` `rev` `field` `before_val` `after_val` `memo` `changed_by` `checked_at` |
 | `restore_requests` | 조정요청 | `order_id` `type` `reason` `product_code` `qty` `created_by` `checked_at` |
 | `pallets` | 검수 바코드 · 적치 로케이션 | `order_id` `barcode` `scanned_at` `location` `picked_at` |
-| `issues` | 이슈 | `type` `title` `content` `due_date` `status` |
+| `issues` | 이슈 | `type`(업무구분) `work_type`(업무유형) `title` `content` `due_date` `status`(접수대기→접수완료→확인중→종결요청→종결완료 / 이탈: 확인취소) `assignee_id` `assignee_name`(확인담당자) `closed_at`(종결일자) `canceled_at`(취소일자) `auto_created`(조정요청 자동등록) |
+| `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
 검수작업 탭에서 검수완료 시 수기로 입력**한다 ([docs/shipping.md](docs/shipping.md) 참고).

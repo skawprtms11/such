@@ -258,6 +258,9 @@ button { font: inherit; }
     margin-bottom: 16px;
 }
 
+/* 이슈등록처럼 요약 카드가 5칸인 화면 (모바일에서는 공통 2칸 규칙을 따른다) */
+.summary--5 { grid-template-columns: repeat(5, 1fr); }
+
 
 .stat {
     background: var(--card);
@@ -609,6 +612,9 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
     white-space: nowrap;
 }
 
+/* 이슈등록 표의 유형처럼 문구가 잘 보여야 하는 태그 */
+.tag--lg { font-size: 13px; padding: 4px 10px; }
+
 .tag--blue { background: var(--blue-soft); color: #1d4ed8; }
 .tag--green { background: var(--green-soft); color: var(--green); }
 .tag--amber { background: var(--amber-soft); color: var(--amber); }
@@ -659,6 +665,41 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 /* 화살표로 이어지는 단계 표시 (주문처리현황 · 출고주문처리) */
 .steps--flow { flex-wrap: wrap; gap: 3px; }
 .steps__arrow { color: var(--gray-300); font-size: 11px; }
+
+/* 이슈등록 상태 컬럼의 절차 표시 - 문구가 잘 보이게 조금 키운다 */
+.issue-flow .step { font-size: 12px; }
+
+/* 이슈 상세 - 조정요청 자동등록 안내 배너 */
+.issue-auto-note {
+    background: var(--amber-soft);
+    color: var(--amber);
+    border: 1px solid #f0c987;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-weight: 700;
+    margin-bottom: 12px;
+}
+
+/* 이슈 상세 - 댓글 */
+.comments { margin-top: 18px; border-top: 1px solid var(--gray-200); padding-top: 12px; }
+.comments__title { margin: 0 0 10px; font-size: 14px; }
+
+.comment {
+    padding: 8px 10px;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    margin-bottom: 6px;
+}
+
+.comment__meta { display: flex; gap: 8px; font-size: 12px; color: var(--gray-500); }
+.comment__meta b { color: var(--gray-700); }
+.comment__body { white-space: pre-wrap; font-size: 13px; margin-top: 4px; }
+.comment__actions { display: flex; gap: 4px; margin-top: 6px; }
+.comment__deleted { color: var(--gray-500); font-size: 13px; }
+.comment__empty { color: var(--gray-500); font-size: 13px; }
+
+.comment-new { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; }
+.comment-new textarea { flex: 1; }
 
 /* 탭 */
 .tabs {
