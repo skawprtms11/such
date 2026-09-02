@@ -152,7 +152,7 @@ mock 은 다른 탭의 `storage` 이벤트 + 폴링, Supabase 는 Realtime 채�
 
 | 모드 | 저장 위치 | 로그인 |
 |---|---|---|
-| `mock` | localStorage 키 `tpl_order_db_v1`. 첫 실행 시 `mock-data.js` 시드 적재 | 계정 선택 (임시) |
+| `mock` | localStorage 키 `tpl_order_db_v1`. **빈 상태로 시작한다** (샘플 데이터 제거됨) | 계정 선택 (임시) |
 | `supabase` | Postgres 테이블 6개 (`supabase/schema.sql`) | 이메일 + 비밀번호 |
 
 - `db.resetDb()` 는 **mock 모드에서만** 동작한다. Supabase 는 SQL 로 직접 정리한다
