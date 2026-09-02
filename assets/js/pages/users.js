@@ -210,6 +210,12 @@ function openForm(reload, edit = null) {
       <span class="field__label">연락처</span>
       <input type="text" name="phone" value="${v('phone')}" placeholder="010-0000-0000">
     </label>
+    ${edit ? '' : `
+    <label class="field">
+      <span class="field__label">초기 비밀번호 *</span>
+      <input type="text" name="password" required value="${INITIAL_PASSWORD}"
+             autocomplete="off">
+    </label>`}
     <label class="field full">
       <span class="field__label">권한 *</span>
       <select name="role" required>
