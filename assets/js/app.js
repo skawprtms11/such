@@ -4,6 +4,9 @@ import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
 import { esc, isMobile, MOBILE_QUERY } from './util.js';
 
+/** 새 버전을 받으려고 새로고침했는지 (무한 새로고침 방지) */
+const RELOAD_FLAG = 'tpl_chunk_reload';
+
 const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
 
@@ -95,7 +98,29 @@ async function render() {
     sidebar.classList.remove('is-open');
 
     markActive(key === 'inspect' ? 'loading' : key);
-    const mod = await ROUTES[key]();
+
+    // 🔑 새 버전을 배포하면 화면 파일 이름이 바뀌고 옛 파일은 사라진다.
+    // 그때 브라우저가 이전 버전을 들고 있으면 없는 파일을 불러 화면이 멈춘다.
+    // 한 번만 새로고침해 새 버전을 받는다 (계속 실패하면 안내로 끝낸다).
+    let mod;
+    try {
+        mod = await ROUTES[key]();
+    } catch (err) {
+        console.warn('화면을 불러오지 못했습니다. 새 버전을 받습니다.', err);
+        if (!sessionStorage.getItem(RELOAD_FLAG)) {
+            sessionStorage.setItem(RELOAD_FLAG, '1');
+            location.reload();
+            return;
+        }
+        view.innerHTML = `
+<div class="empty">
+  화면을 불러오지 못했습니다.<br>
+  새로고침해도 같으면 앱을 완전히 닫았다가 다시 열어 주세요.
+</div>`;
+        return;
+    }
+    sessionStorage.removeItem(RELOAD_FLAG);   // 정상적으로 열렸으면 플래그를 지운다
+
     cleanup = await mod.render(view, { user, params: rest });
     view.scrollTop = 0;
 }
