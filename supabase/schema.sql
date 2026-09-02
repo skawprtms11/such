@@ -222,18 +222,51 @@ create index if not exists restores_order_idx on public.restore_requests (order_
 -- (config.js 의 EXTRA_TASK_TYPE).
 
 create table if not exists public.issues (
-    id         text        primary key,
-    type       text        not null,                               -- 오출고|재고부족|작업요청|기타
-    title      text        not null,
-    order_no   text        not null default '',
-    content    text        not null default '',
-    due_date   date,
-    status     text        not null default '접수',                 -- 접수|확인중|종결
-    created_by uuid        references public.profiles (id),
-    created_at timestamptz not null default now()
+    id            text        primary key,
+    type          text        not null,                            -- 업무구분: 오류확인|긴급작업|정보확인|자료요청|작업요청|기타업무
+    work_type     text        not null default '',                 -- 업무유형: 입고|출고|반품|배송|배차|기타
+    title         text        not null,
+    order_no      text        not null default '',
+    content       text        not null default '',
+    due_date      date,
+    status        text        not null default '접수대기',          -- 접수대기|접수완료|확인중|종결요청|종결완료
+    assignee_id   uuid        references public.profiles (id),     -- 확인담당자 (이슈접수 시 지정)
+    assignee_name text        not null default '',
+    closed_at     timestamptz,                                     -- 종결일자 (종결승인 시 기록)
+    canceled_at   timestamptz,                                     -- 취소일자 (확인취소 시 기록)
+    auto_created  boolean     not null default false,              -- 조정요청 접수 시 자동등록된 건
+    created_by    uuid        references public.profiles (id),
+    created_at    timestamptz not null default now()
 );
 
 create index if not exists issues_order_no_idx on public.issues (order_no);
+
+-- 이미 만들어진 환경 재적용용 - create table if not exists 는 컬럼을 추가하지 않으므로 병기한다
+alter table public.issues add column if not exists assignee_id   uuid references public.profiles (id);
+alter table public.issues add column if not exists assignee_name text not null default '';
+alter table public.issues add column if not exists closed_at     timestamptz;
+alter table public.issues add column if not exists work_type     text not null default '';
+alter table public.issues add column if not exists auto_created  boolean not null default false;
+alter table public.issues add column if not exists canceled_at   timestamptz;
+alter table public.issues alter column status set default '접수대기';
+
+-- ─────────────────────────── 이슈 댓글 (issue_comments) ───────────────────────────
+-- 이슈 상세 팝업의 댓글. parent_id 로 대댓글이 이어진다.
+-- 답글이 달린 댓글을 지우면 글만 비우고(soft delete) 스레드는 유지한다.
+
+create table if not exists public.issue_comments (
+    id              text        primary key,
+    issue_id        text        not null references public.issues (id) on delete cascade,
+    parent_id       text        references public.issue_comments (id),
+    content         text        not null default '',
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,                                   -- 수정 시각 (있으면 '수정됨' 표시)
+    deleted_at      timestamptz                                    -- 삭제 시각 (있으면 내용 감춤)
+);
+
+create index if not exists issue_comments_issue_idx on public.issue_comments (issue_id);
 
 -- ═══════════════════════════════ RLS 정책 ═══════════════════════════════
 -- 화면에서도 권한을 판정하지만, 서버에서 한 번 더 막는다.
@@ -245,6 +278,7 @@ alter table public.order_history    enable row level security;
 alter table public.pallets          enable row level security;
 alter table public.restore_requests enable row level security;
 alter table public.issues           enable row level security;
+alter table public.issue_comments   enable row level security;
 
 -- ── 사용자 ──
 drop policy if exists profiles_select on public.profiles;
@@ -340,10 +374,35 @@ drop policy if exists issues_insert on public.issues;
 create policy issues_insert on public.issues for insert to authenticated
     with check (public.can_create_issue() and created_by = auth.uid());
 
+-- 화주관리자(shipper_admin)는 종결요청된 이슈를 종결승인해야 하므로 수정 권한에 포함한다
 drop policy if exists issues_update on public.issues;
 create policy issues_update on public.issues for update to authenticated
-    using (public.my_role() in ('admin', 'yongma') or created_by = auth.uid())
+    using (public.my_role() in ('admin', 'yongma', 'shipper_admin') or created_by = auth.uid())
     with check (true);
+
+-- ── 이슈 댓글 ── 이슈를 볼 수 있는 사람이 읽고 쓴다. 수정·삭제는 작성자 본인만
+drop policy if exists issue_comments_select on public.issue_comments;
+create policy issue_comments_select on public.issue_comments for select to authenticated
+    using (exists (
+        select 1 from public.issues i
+        where i.id = issue_id and (public.can_view_all() or i.created_by = auth.uid())
+    ));
+
+drop policy if exists issue_comments_insert on public.issue_comments;
+create policy issue_comments_insert on public.issue_comments for insert to authenticated
+    with check (created_by = auth.uid() and exists (
+        select 1 from public.issues i
+        where i.id = issue_id and (public.can_view_all() or i.created_by = auth.uid())
+    ));
+
+drop policy if exists issue_comments_update on public.issue_comments;
+create policy issue_comments_update on public.issue_comments for update to authenticated
+    using (created_by = auth.uid())
+    with check (created_by = auth.uid());
+
+drop policy if exists issue_comments_delete on public.issue_comments;
+create policy issue_comments_delete on public.issue_comments for delete to authenticated
+    using (created_by = auth.uid());
 
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
@@ -421,4 +480,5 @@ alter publication supabase_realtime add table public.pallets;
 alter publication supabase_realtime add table public.order_history;
 alter publication supabase_realtime add table public.restore_requests;
 alter publication supabase_realtime add table public.issues;
+alter publication supabase_realtime add table public.issue_comments;
 alter publication supabase_realtime add table public.profiles;

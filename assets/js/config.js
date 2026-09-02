@@ -289,9 +289,37 @@ export function adjustCategory(key) {
 /** 검수/상차 상태 */
 export const LOAD_STATUS = { WAIT: '대기', INSPECTED: '검수', DONE: '완료' };
 
-/** 이슈 유형 / 상태 */
-export const ISSUE_TYPES = ['오출고', '재고부족', '작업요청', '기타'];
-export const ISSUE_STATUS = ['접수', '확인중', '종결'];
+/**
+ * 이슈 업무구분 (표의 업무구분 컬럼 = 저장 필드 type).
+ * ⚠️ '작업요청' 은 출고주문처리의 추가작업 요청 연동(EXTRA_TASK_TYPE)에 쓰이므로 빼지 않는다.
+ */
+export const ISSUE_TYPES = ['오류확인', '긴급작업', '정보확인', '자료요청', '작업요청', '기타업무'];
+
+/** 이슈 업무유형 (등록 시 선택하는 대상 업무 영역 = 저장 필드 work_type) */
+export const ISSUE_WORK_TYPES = ['입고', '출고', '반품', '배송', '배차', '기타'];
+
+/**
+ * 이슈 상태 - 절차 순서대로 나열한다 (상태 컬럼의 단계 표시가 이 순서를 따른다).
+ *   접수대기 : 등록만 된 상태 (확인담당자 미지정)
+ *   접수완료 : 이슈접수로 확인담당자가 지정됨 (관리자·용마담당자가 처리)
+ *   확인중   : 선정된 담당자가 '담당자확인'을 누름
+ *   종결요청 : 담당자·관리자가 처리 완료 후 등록자 쪽에 종결 승인을 요청
+ *   종결완료 : 등록자 또는 고객사 화주관리자가 승인 (closed_at 종결일자 기록)
+ */
+export const ISSUE_STATE = {
+    WAIT: '접수대기',
+    OPEN: '접수완료',
+    DOING: '확인중',
+    CLOSE_REQ: '종결요청',
+    CLOSED: '종결완료',
+    CANCELED: '확인취소',   // 절차 이탈 - 등록자·관리자가 종결요청 전에 취소한 건
+};
+
+/** 절차 단계 목록 (상태 칩 표시 순서). 확인취소는 절차가 아니라서 제외한다 */
+export const ISSUE_STATUS = [
+    ISSUE_STATE.WAIT, ISSUE_STATE.OPEN, ISSUE_STATE.DOING,
+    ISSUE_STATE.CLOSE_REQ, ISSUE_STATE.CLOSED,
+];
 
 /**
  * 메뉴 정의

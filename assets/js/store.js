@@ -70,8 +70,17 @@ const TABLES = [
         key: 'issues',
         name: 'issues',
         cols: [
-            'id', 'type', 'title', 'order_no', 'content', 'due_date', 'status',
+            'id', 'type', 'work_type', 'title', 'order_no', 'content', 'due_date', 'status',
+            'assignee_id', 'assignee_name', 'closed_at', 'canceled_at', 'auto_created',
             'created_by', 'created_at',
+        ],
+    },
+    {
+        key: 'comments',
+        name: 'issue_comments',
+        cols: [
+            'id', 'issue_id', 'parent_id', 'content',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
         ],
     },
 ];
@@ -117,7 +126,9 @@ function mockLoad() {
             console.warn('저장 데이터 파싱 실패, 초기화합니다.', err);
         }
     }
-    const empty = { users: [], orders: [], issues: [], pallets: [], history: [], restores: [] };
+    const empty = {
+        users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
+    };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;
 }
