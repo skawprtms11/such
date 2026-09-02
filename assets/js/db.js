@@ -180,16 +180,23 @@ export async function toggleUserActive(id) {
 }
 
 /**
- * 사용자 신규 등록.
- * ⚠️ Supabase 모드에서는 로그인 계정(auth.users)이 함께 있어야 하므로
- *    화면에서 만들 수 없다. Supabase 대시보드에서 계정을 만든 뒤 프로필이 생긴다.
+ * 사용자 신규 등록 (관리자 전용).
+ * Supabase 모드에서는 서버 함수가 로그인 계정·프로필을 한 번에 만든다.
+ * payload 에 password 가 포함되어야 한다.
  */
 export async function createUser(payload) {
     if (isSupabase) {
-        throw new Error(
-            '사용자 추가는 Supabase 대시보드에서 계정을 만든 뒤 처리합니다. '
-            + '(Authentication → Users)',
-        );
+        const { error } = await supabase().rpc('admin_create_user', {
+            p_name: payload.name,
+            p_email: payload.email,
+            p_password: payload.password,
+            p_company: payload.company,
+            p_role: payload.role,
+            p_phone: payload.phone ?? '',
+        });
+        if (error) throw new Error(error.message);
+        invalidate();
+        return null;
     }
     const db = (await load());
     const row = { id: uid('u'), active: true, ...payload };
