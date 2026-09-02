@@ -10,9 +10,10 @@
 import { can } from '../auth.js';
 import { code128Svg } from '../barcode.js';
 import * as db from '../db.js';
-import { visibleSteps, stepRate, currentStep } from '../steps.js';
+import { visibleSteps, stepRate, currentStep, stepsFlowHtml } from '../steps.js';
 import {
-    esc, num, today, fmtDateTime, downloadCsv, toast, openModal, confirmDialog,
+    esc, num, today, fmtDateTime, downloadCsv, toast, openModal, confirmDialog, isMobile,
+    seqTag, MOBILE_QUERY,
 } from '../util.js';
 
 /** 탭 정의 */
@@ -39,13 +40,6 @@ const search = {
     done: { keyword: '', month: thisMonth(), detail: null },
     canceled: { keyword: '', month: thisMonth(), detail: null },
 };
-
-/** 모바일 여부 - CSS 의 반응형 기준점(860px)과 같은 값을 쓴다 */
-const MOBILE_QUERY = '(max-width: 860px)';
-
-function isMobile() {
-    return window.matchMedia(MOBILE_QUERY).matches;
-}
 
 /** 열려 있는 팝업 - 화면을 떠날 때 함께 닫는다 */
 let openedModal = null;
@@ -413,17 +407,11 @@ ${rows.map((o, i) => {
 <tr class="${o.canceled_at ? 'is-canceled' : ''}">
   <td class="num">${rows.length - i}</td>
   <td>${o.send_date}</td>
-  <td class="center"><span class="seq ${o.seq > 1 ? 'seq--multi' : ''}">${o.seq}차수</span></td>
+  <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.order_no)}</td>
   <td>${esc(o.customer)}</td>
   <td>
-    <div class="steps steps--flow">
-      ${steps.map((s, idx) => `
-      ${idx ? '<span class="steps__arrow">→</span>' : ''}
-      <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
-            title="${s.doneAt ? fmtDateTime(s.doneAt)
-        : s.current ? '진행중' : '미완료'}">${s.label}</span>`).join('')}
-    </div>
+    <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>
   </td>
   <td class="num">${stepRate(o, opt)}%</td>
   <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
@@ -548,13 +536,7 @@ function openDetail(o, opt, ctx) {
 </tbody></table>
 
 <p class="field__label" style="margin:14px 0 6px">처리현황</p>
-<div class="steps steps--flow">
-  ${steps.map((s, i) => `
-  ${i ? '<span class="steps__arrow">→</span>' : ''}
-  <span class="step ${s.done ? 'is-done' : ''} ${s.current ? 'is-current' : ''}"
-        title="${s.doneAt ? fmtDateTime(s.doneAt)
-        : s.current ? '진행중' : '미완료'}">${s.label}</span>`).join('')}
-</div>
+<div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>
 
 <table class="grid" style="margin-top:14px"><tbody>
   ${steps.map((s) => row(s.label, s.doneAt ? fmtDateTime(s.doneAt) : dash)).join('')}

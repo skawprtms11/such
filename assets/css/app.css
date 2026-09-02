@@ -2,7 +2,6 @@
 
 :root {
     --navy: #0f2d4a;
-    --navy-2: #16406a;
     --blue: #2563eb;
     --blue-soft: #e8f0fe;
     --green: #12805c;
@@ -202,6 +201,7 @@ button { font: inherit; }
 .role--yongma { background: var(--blue-soft); color: #1d4ed8; }
 .role--shipper_admin { background: var(--green-soft); color: var(--green); }
 .role--shipper_sales { background: var(--amber-soft); color: var(--amber); }
+.role--worker { background: var(--gray-100); color: var(--gray-700); }
 
 .badge--live { font-size: 11px; color: var(--green); }
 
@@ -239,7 +239,6 @@ button { font: inherit; }
     margin-bottom: 16px;
 }
 
-.summary--3 { grid-template-columns: repeat(3, 1fr); }
 
 .stat {
     background: var(--card);
@@ -417,8 +416,6 @@ table.grid.bulk-grid input {
 }
 
 .bulk-err ul { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; }
-.tag.is-link { cursor: pointer; }
-.tag.is-link:hover { filter: brightness(.95); }
 
 /* --------------------------------- 버튼 --------------------------------- */
 
@@ -452,45 +449,6 @@ table.grid.bulk-grid input {
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
-/*
- * 이력 버튼 3단계
- *  기록 없음      : 흰색 (기본 .btn)
- *  미확인 있음    : 연한 빨강
- *  모두 확인 완료 : 연한 파랑
- */
-.btn--hist { font-weight: 600; }
-
-.btn--hist.has-pending {
-    background: var(--red-soft);
-    border-color: #f0b4b4;
-    color: var(--red);
-}
-
-.btn--hist.has-pending:hover { background: #fbd9d9; }
-.btn--hist.has-pending .btn__count { background: var(--red); }
-
-.btn--hist.is-done {
-    background: var(--blue-soft);
-    border-color: #a9c6f5;
-    color: #1d4ed8;
-}
-
-.btn--hist.is-done:hover { background: #dbe7fd; }
-.btn--hist.is-done .btn__count { background: var(--blue); }
-
-.btn__count {
-    display: inline-block;
-    min-width: 17px;
-    margin-left: 5px;
-    padding: 0 4px;
-    border-radius: 999px;
-    background: var(--gray-500);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 17px;
-    text-align: center;
-}
 
 /* 확인 컬럼 - 접수 / 수정 / 원복 체크박스 묶음 */
 .chk-group { display: inline-flex; gap: 4px; }
@@ -599,9 +557,8 @@ table.grid tbody tr.is-canceled .link { color: var(--gray-300); }
 table.grid tbody tr.is-canceled .seq { color: var(--gray-300); }
 table.grid tbody tr.is-canceled .tag { opacity: .5; }
 table.grid tbody tr.is-canceled .btn { opacity: .65; }
-/* 취소 배지와 이력 버튼은 흐리게 하지 않는다 */
-table.grid tbody tr.is-canceled .tag--canceled,
-table.grid tbody tr.is-canceled .btn--hist { opacity: 1; }
+/* 취소 배지는 흐리게 하지 않는다 */
+table.grid tbody tr.is-canceled .tag--canceled { opacity: 1; }
 table.grid td.num, table.grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.grid td.center, table.grid th.center { text-align: center; }
 table.grid .wrap { white-space: normal; min-width: 160px; }
@@ -1351,7 +1308,6 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 
     /* 요약 구역은 목록에 자리를 내주도록 낮게 잡는다 */
     .summary { grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 12px; }
-    .summary--3 { grid-template-columns: repeat(3, 1fr); }
     .stat { padding: 7px 10px; }
     .stat__label { font-size: 11px; line-height: 1.4; }
     .stat__value { font-size: 17px; margin-top: 2px; line-height: 1.35; }

@@ -8,7 +8,7 @@ import { LOAD_STATUS } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import { createScanner, scanSupported } from '../scanner.js';
-import { esc, num, rate, toast, confirmDialog } from '../util.js';
+import { esc, num, rate, toast, confirmDialog, seqTag } from '../util.js';
 
 export async function render(root, { user, params }) {
     const orderId = params[0];
@@ -111,7 +111,7 @@ ${g.rows.length > 1 ? `
         root.querySelector('#pallets').innerHTML = pallets.length ? pallets.map((p, i) => `
 <div class="pallet ${p.scanned_at ? 'is-scanned' : ''}">
   <span class="pallet__mark">${p.scanned_at ? '✅' : '⬜'}</span>
-  <span class="seq ${p.seq > 1 ? 'seq--multi' : ''}">${p.seq}차</span>
+  ${seqTag(p.seq, '차')}
   <span class="pallet__code" title="${esc(p.barcode)}">
     파렛트 ${i + 1} <small>/ ${pallets.length}</small>
   </span>

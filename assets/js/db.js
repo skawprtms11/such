@@ -4,7 +4,7 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    COMPANY, DATA_SOURCE, EXTRA_TASK_TYPE, LOAD_STATUS, RESTORE_TYPE, WORK_STEPS,
+    COMPANY, EXTRA_TASK_TYPE, LOAD_STATUS, RESTORE_TYPE, WORK_STEPS,
     LOCATION_FORMAT, formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
@@ -30,8 +30,9 @@ function normalize(db) {
         o.edit_count = o.edit_count ?? 0;
         o.confirmed_at = o.confirmed_at ?? null;
         o.canceled_at = o.canceled_at ?? null;
-        // 단계별 완료 시각 (없으면 미완료)
-        WORK_STEPS.forEach((step) => {
+        // 단계별 완료 시각 (없으면 미완료).
+        // 조정작업처럼 `at` 이 없는 계산 단계는 건너뛴다 (o[undefined] 가 생긴다)
+        WORK_STEPS.filter((step) => step.at).forEach((step) => {
             o[step.at] = o[step.at] ?? null;
         });
         o.ship_started_at = o.ship_started_at ?? null;
@@ -183,7 +184,7 @@ export async function createUser(payload) {
 /**
  * 주문 목록 조회
  * @param {{from?:string, to?:string, keyword?:string, createdBy?:string,
- *          shipDate?:string, minStage?:number}} f 필터
+ *          shipDate?:string}} f 필터
  */
 export async function listOrders(f = {}) {
     const db = (await load());
@@ -235,7 +236,7 @@ export async function getOrder(id) {
 
 /**
  * 주문 등록.
- * 동일 주문번호가 이미 존재하면 차수를 자동으로 +1 한다.
+ * 차수는 '추가주문' 으로 등록할 때만 올라간다 (아래 주석 참고).
  */
 export async function createOrder(payload, user) {
     const db = (await load());
@@ -528,23 +529,6 @@ export async function listRequestTasks() {
     return rows.sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
 }
 
-/**
- * 추가작업 요청 목록.
- * 이슈등록의 '작업요청' 유형 건을 주문번호로 이어 붙인다.
- * @returns {Array} 요청 + 연결된 주문 정보
- */
-export async function listExtraTasks() {
-    const db = (await load());
-    const byNo = {};
-    db.orders.forEach((o) => {
-        (byNo[o.order_no] ??= []).push(o);
-    });
-    return db.issues
-        .filter((i) => i.type === EXTRA_TASK_TYPE && i.order_no)
-        .map((i) => ({ issue: i, orders: byNo[i.order_no.trim()] ?? [] }))
-        .sort((a, b) => (b.issue.created_at > a.issue.created_at ? 1 : -1));
-}
-
 /** 추가작업 요청이 있는 주문번호 집합 */
 function extraTaskNoSet(db) {
     return new Set(
@@ -622,47 +606,6 @@ export async function checkStats() {
         if (!r.checked_at) m.restoresLeft += 1;
     });
     return map;
-}
-
-/**
- * 확인 상태를 일괄로 바꾼다.
- * ⚠️ 확인 처리할 때는 **아직 확인되지 않은 건만** 대상으로 한다.
- *    이미 확인된 건까지 다시 쓰면 먼저 확인한 사람과 시각이 지워진다.
- * @returns {number} 실제로 바뀐 건수
- */
-function applyChecked(rows, checked, user) {
-    const targets = rows.filter((r) => (checked ? !r.checked_at : Boolean(r.checked_at)));
-    const now = new Date().toISOString();
-    targets.forEach((r) => {
-        r.checked_at = checked ? now : null;
-        r.checked_by = checked ? user.id : null;
-        r.checked_by_name = checked ? user.name : '';
-    });
-    return targets.length;
-}
-
-/**
- * 주문의 수정 이력을 일괄 확인 처리하거나 해제한다.
- * 확인 시에는 새로 등록된(아직 미확인인) 수정만 처리한다.
- */
-export async function setAllHistoryChecked(orderId, checked, user) {
-    const db = (await load());
-    const rows = db.history.filter((h) => h.order_id === orderId && h.rev > 0);
-    const count = applyChecked(rows, checked, user);
-    await save(db);
-    return count;
-}
-
-/**
- * 주문의 조정요청을 일괄 확인 처리하거나 해제한다.
- * 확인 시에는 새로 등록된(아직 미확인인) 요청만 처리한다.
- */
-export async function setAllRestoresChecked(orderId, checked, user) {
-    const db = (await load());
-    const rows = db.restores.filter((r) => r.order_id === orderId);
-    const count = applyChecked(rows, checked, user);
-    await save(db);
-    return count;
 }
 
 /**
@@ -854,10 +797,6 @@ export async function listPallets(orderId) {
 }
 
 /**
- * 파렛트 바코드 스캔 처리
- * @returns {{ok:boolean, msg:string, order?:object}}
- */
-/**
  * 출고적치 - 파렛트 1개의 로케이션을 기록한다.
  * 검수작업이 끝난 주문만 적치할 수 있고, 전량 입력되면 `stow_done_at` 이 자동으로 채워진다.
  */
@@ -923,6 +862,10 @@ export async function stowCount(orderId) {
     return { done: mine.filter((p) => p.location).length, total: mine.length };
 }
 
+/**
+ * 파렛트 바코드 스캔 처리 (상차 검수)
+ * @returns {{ok:boolean, msg:string, order?:object}}
+ */
 export async function scanPallet(orderId, barcode, user) {
     const db = (await load());
     const code = String(barcode).trim().toUpperCase();
@@ -1077,4 +1020,3 @@ export function subscribe(callback, intervalMs = 5000) {
     return subscribeStore(callback, intervalMs);
 }
 
-export const dataSource = DATA_SOURCE;

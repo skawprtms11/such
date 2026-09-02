@@ -257,7 +257,7 @@ tbl.querySelectorAll('[data-edit]').forEach((el) => {
 
 | 클래스 | 용도 |
 |---|---|
-| `.summary` / `.stat` | 상단 요약 카드 4칸 (`.summary--3` 은 3칸) |
+| `.summary` / `.stat` | 상단 요약 카드 4칸 |
 | `.card` `.card__head` `.card__body` | 본문 카드 |
 | `.toolbar` `.field` | 필터 영역 |
 | `.grid` | 표. `.num` 우측정렬, `.center` 가운데, `.wrap` 줄바꿈 허용 |

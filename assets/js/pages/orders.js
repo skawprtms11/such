@@ -8,6 +8,7 @@ import { currentStep } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, toDateStr, downloadCsv, toast, openModal, confirmDialog, fmtDateTime,
+    seqTag,
 } from '../util.js';
 
 /** 조회 필터 상태 */
@@ -245,7 +246,7 @@ ${rows.map((o, i) => `
   <td>${o.reg_date}</td>
   <td>${o.send_date}</td>
   <td class="center">${esc(names[o.created_by] ?? '-')}</td>
-  <td class="center"><span class="seq ${o.seq > 1 ? 'seq--multi' : ''}">${o.seq}차수</span></td>
+  <td class="center">${seqTag(o.seq)}</td>
   <td>
     <span class="link" data-detail="${o.id}">${esc(o.order_no)}</span>${countBadge(stats[o.id])}
   </td>

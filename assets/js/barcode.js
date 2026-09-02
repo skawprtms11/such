@@ -3,6 +3,7 @@
  * 테스트용 바코드 시트와 현장 라벨 출력에 쓴다.
  * Code Set B 만 사용하므로 영문 대소문자·숫자·기호(ASCII 32~126)를 모두 담을 수 있다.
  */
+import { esc } from './util.js';
 
 /** Code128 심볼 패턴 (인덱스 0~106). 각 자리는 바/공백의 굵기다. */
 const PATTERNS = [
@@ -68,14 +69,16 @@ export function code128Svg(text, opt = {}) {
     });
 
     const total = x + quiet;
+    // 주문번호는 자유 입력이라 따옴표·꺾쇠가 들어올 수 있다. 반드시 이스케이프한다
+    const safe = esc(text);
     const label = showText
         ? `<text x="${total / 2}" y="${height + 14}" text-anchor="middle"
-             font-family="monospace" font-size="13" fill="#000">${text}</text>`
+             font-family="monospace" font-size="13" fill="#000">${safe}</text>`
         : '';
 
     return `
 <svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="${height + textH}"
-     viewBox="0 0 ${total} ${height + textH}" role="img" aria-label="${text}">
+     viewBox="0 0 ${total} ${height + textH}" role="img" aria-label="${safe}">
   <rect width="${total}" height="${height + textH}" fill="#fff"/>
   <g fill="#000">${bars}</g>
   ${label}

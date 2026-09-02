@@ -22,6 +22,9 @@ export default [
             semi: ['error', 'always'],
             'comma-dangle': ['error', 'always-multiline'],
             'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+            // 🔑 import 를 빠뜨린 채 다른 모듈의 값을 쓰면 화면이 통째로 죽는다.
+            // 이 규칙이 없어 실제로 그런 사고가 났다. 반드시 켜 둔다
+            'no-undef': 'error',
             'no-var': 'error',
             'prefer-const': 'error',
             eqeqeq: ['error', 'always', { null: 'ignore' }],

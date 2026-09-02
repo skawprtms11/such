@@ -6,12 +6,6 @@
  */
 const ENV = import.meta.env ?? {};
 
-export const APP = {
-    name: '더퓨어랩 주문접수시스템',
-    shortName: '더퓨어랩',
-    version: '0.1.0',
-};
-
 /** 'mock' | 'supabase' */
 export const DATA_SOURCE = ENV.VITE_DATA_SOURCE ?? 'mock';
 
