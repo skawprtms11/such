@@ -466,6 +466,9 @@ export async function startShipWork(id, user) {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (!o.confirmed_at) {
+        throw new Error('주문정보등록에서 접수 처리되지 않은 주문입니다. 접수 후 시작할 수 있습니다.');
+    }
     if (o.ship_done_at) throw new Error('이미 출고작업이 완료된 주문입니다.');
     o.ship_started_at = new Date().toISOString();
     fillWorker(o, 'ship', user);
@@ -480,6 +483,9 @@ export async function setShipWorkDone(id, done, user) {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (done && !o.confirmed_at) {
+        throw new Error('주문정보등록에서 접수 처리되지 않은 주문입니다. 접수 후 완료할 수 있습니다.');
+    }
     if (done && o.inspect_done_at) {
         throw new Error('검수작업이 완료된 주문입니다. 검수를 먼저 취소하세요.');
     }
