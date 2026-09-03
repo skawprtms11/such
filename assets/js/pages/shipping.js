@@ -1715,13 +1715,16 @@ function workerCell(name) {
     return name ? `<b>${esc(name)}</b>` : '<span class="muted">-</span>';
 }
 
-/** 출고작업/검수작업 목록 표 */
+/**
+ * 출고작업/검수작업 목록 표.
+ * 추가작업 컬럼에는 주문정보등록에서 접수할 때 쓴 작업지시(`work_note`)를 보여준다.
+ */
 function workTable(rows, key) {
     const workerOf = (o) => (key === 'ship' ? o.ship_worker : o.inspect_worker);
     return `
 <thead><tr>
   <th>출고요청일</th><th>주문번호</th><th class="center">차수</th><th>거래처명</th>
-  <th class="center">출고형태</th><th class="center">요청작업</th>
+  <th class="center">출고형태</th><th>추가작업</th>
   ${key === 'inspect' ? '<th class="num">파렛트수</th><th class="num">박스수</th>' : ''}
   <th class="center">작업자</th>
   <th class="center">${key === 'ship' ? '작업상태' : '출고완료'}</th>
@@ -1734,9 +1737,7 @@ ${rows.map((o) => `
   <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
-  <td class="center">${(o.extra_works ?? []).length
-        ? (o.extra_works).map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ')
-        : '<span class="muted">-</span>'}</td>
+  <td class="wrap">${esc(o.work_note) || '<span class="muted">-</span>'}</td>
   ${key === 'inspect' ? `
   <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
   <td class="num">${o.box_count ? num(o.box_count) : '<span class="muted">-</span>'}</td>` : ''}
