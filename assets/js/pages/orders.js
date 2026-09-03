@@ -140,6 +140,17 @@ function canRestore(user, o) {
     return canWrite(user) && !o.inspect_done_at && !o.canceled_at;
 }
 
+/**
+ * 패킹리스트 작성 가능 여부.
+ * 주문 등록 시 패킹리스트가 '있음' 인 주문만 대상이며,
+ * 상차완료·취소된 주문은 더 이상 고치지 않는다.
+ * 고객사(등록)·용마로지스(확인) 양쪽 모두 작성할 수 있다.
+ */
+function canPacking(user, o) {
+    return o.packing_yn === YN.YES && !o.loaded_at && !o.canceled_at
+        && (canWrite(user) || canConfirm(user));
+}
+
 const EMPTY_STAT = { edits: 0, editsLeft: 0, restores: 0, restoresLeft: 0 };
 
 /**
@@ -209,6 +220,46 @@ function ynCell(v) {
         : `<span class="muted">${YN.NO}</span>`;
 }
 
+/**
+ * 패킹리스트 셀 - 등록 시 '있음' 인 주문만 작성 버튼이 붙는다.
+ * '없음' 이면 예전처럼 없음 표시만 남는다.
+ */
+function packingCell(o, user) {
+    if (o.packing_yn !== YN.YES) return `<span class="muted">${YN.NO}</span>`;
+    if (canPacking(user, o)) {
+        return `<button class="btn btn--sm" data-packing="${o.id}" type="button">
+            ${o.packing_note ? '수정' : '작성'}</button>`;
+    }
+    return o.packing_note
+        ? '<span class="tag tag--green">작성됨</span>'
+        : '<span class="tag tag--gray">미작성</span>';
+}
+
+/** 패킹리스트 작성 팝업 - 패킹리스트 컬럼의 작성/수정 버튼으로 연다 */
+function openPackingNoteModal(o, user, onSaved) {
+    const m = openModal(`패킹리스트 작성 - ${o.order_no}`, `
+<p class="form-note" style="margin-top:0">
+  ${esc(o.customer)} · 출고요청일 ${o.ship_req_date || '미정'}
+</p>
+<textarea id="packing-note-input" rows="8" style="width:100%"
+          placeholder="패킹리스트 내용을 작성하세요">${esc(o.packing_note ?? '')}</textarea>
+<div class="form-actions">
+  <button class="btn" id="btn-note-cancel" type="button">취소</button>
+  <button class="btn btn--primary" id="btn-note-save" type="button">저장</button>
+</div>`, { wide: true });
+    m.body.querySelector('#btn-note-cancel').addEventListener('click', m.close);
+    m.body.querySelector('#btn-note-save').addEventListener('click', async () => {
+        try {
+            await db.setPackingNote(o.id, m.body.querySelector('#packing-note-input').value, user);
+            m.close();
+            toast('패킹리스트를 저장했습니다.', 'success');
+            onSaved();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
+}
+
 /** 게시판 형태 목록 렌더링 */
 function drawTable(root, rows, user, reload, stats = {}, names = {}) {
     const tbl = root.querySelector('#tbl');
@@ -238,7 +289,7 @@ ${rows.map((o, i) => `
   </td>
   <td>${esc(o.customer)}</td>
   <td class="center">${ynCell(o.extra_yn)}</td>
-  <td class="center">${ynCell(o.packing_yn)}</td>
+  <td class="center">${packingCell(o, user)}</td>
   <td class="wrap">${esc(o.work_note)}</td>
   <td>${o.ship_req_date || '미정'}</td>
   <td class="center">${stateCell(o, stats[o.id])}</td>
@@ -247,6 +298,12 @@ ${rows.map((o, i) => `
 
     tbl.querySelectorAll('[data-detail]').forEach((el) => {
         el.addEventListener('click', () => showDetail(el.dataset.detail, user, reload));
+    });
+    tbl.querySelectorAll('[data-packing]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const o = rows.find((x) => x.id === el.dataset.packing);
+            if (o) openPackingNoteModal(o, user, reload);
+        });
     });
     tbl.querySelectorAll('[data-edit]').forEach((el) => {
         el.addEventListener('click', async () => {
