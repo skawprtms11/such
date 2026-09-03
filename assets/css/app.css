@@ -701,6 +701,25 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 .comment-new { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; }
 .comment-new textarea { flex: 1; }
 
+/* 주문 상세 - 접수(작업지시 작성) 입력 영역 */
+.accept-box { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.accept-box textarea { width: 100%; }
+.accept-box .btn-row { justify-content: flex-end; }
+
+/* 출고주문처리 - 접수 시 작성된 작업지시 안내 */
+.work-note {
+    background: var(--amber-soft);
+    border: 1px solid #f0c987;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+.work-note b { color: var(--amber); font-size: 12px; }
+.work-note p { margin: 4px 0 0; white-space: pre-wrap; font-size: 13px; }
+
+/* 검수작업 탭 - 작성된 패킹리스트 내용 */
+.packing-note { margin: 4px 0 8px; white-space: pre-wrap; font-size: 13px; }
+
 /* 탭 */
 .tabs {
     display: flex;

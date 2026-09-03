@@ -8,7 +8,7 @@
  * 처리 결과는 주문의 단계 완료 시각으로 저장되고 주문처리현황에 그대로 반영된다.
  */
 import {
-    adjustCategory, palletLabel, stowStatus, STOW_STATUS,
+    adjustCategory, palletLabel, stowStatus, STOW_STATUS, YN,
     formatLocation, isValidLocation, LOCATION_FORMAT,
 } from '../config.js';
 import { can } from '../auth.js';
@@ -195,7 +195,7 @@ function orderSummary(o, opt, { fold = false } = {}) {
     <div class="work-head__cust">${esc(o.customer)}</div>
     <div class="work-head__meta">
       <span>출고요청일 <b>${o.ship_req_date}</b></span>
-      <span>차량 <b>${esc(o.vehicle_type)}</b></span>
+      <span>출고형태 <b>${esc(o.vehicle_type)}</b></span>
       <span>파렛트 <b>${num(o.pallet_count)}</b></span>
     </div>
     ${steps.length ? `
@@ -282,11 +282,22 @@ ${orderSummary(o, opt, { fold: true })}
 }
 
 /** 출고작업 본문 */
+/** 접수 시 작성된 작업지시 - 출고작업·검수작업 탭 상단에 보여준다 */
+function workNoteHtml(o) {
+    if (!o.work_note) return '';
+    return `
+<div class="work-note">
+  <b>작업지시</b>
+  <p>${esc(o.work_note)}</p>
+</div>`;
+}
+
 function drawShip(body, o, user, editable, reload) {
     const started = Boolean(o.ship_started_at);
     const done = Boolean(o.ship_done_at);
 
     body.innerHTML = `
+${workNoteHtml(o)}
 <table class="grid"><tbody>
   <tr><th>작업자</th><td>${workerCell(o.ship_worker)}</td></tr>
   <tr><th>작업시작</th><td>${o.ship_started_at ? fmtDateTime(o.ship_started_at) : '-'}</td></tr>
@@ -335,6 +346,8 @@ ${editable ? `
 /** 검수작업 본문 */
 function drawInspect(body, o, user, editable, reload) {
     const extras = o.extra_works ?? [];
+    const hasExtra = o.extra_yn === YN.YES || extras.length > 0;
+    const hasPacking = o.packing_yn === YN.YES;
     const done = Boolean(o.inspect_done_at);
 
     if (!o.ship_done_at && !done) {
@@ -347,23 +360,35 @@ function drawInspect(body, o, user, editable, reload) {
     }
 
     body.innerHTML = `
-${extras.length ? `
+${workNoteHtml(o)}
+${hasExtra ? `
 <div class="check-block">
   <label class="check">
     <input type="checkbox" id="chk-req" ${done ? 'checked' : ''} ${done ? 'disabled' : ''}>
     <span>요청작업 완료 확인</span>
   </label>
+  ${extras.length ? `
   <div class="check-block__detail">
     ${extras.map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ')}
-  </div>
+  </div>` : ''}
 </div>` : '<p class="form-note">등록된 요청작업이 없습니다.</p>'}
 
+${hasPacking ? `
 <div class="check-block">
   <label class="check">
     <input type="checkbox" id="chk-pack" ${done ? 'checked' : ''} ${done ? 'disabled' : ''}>
     <span>패킹리스트 작성 확인</span>
   </label>
 </div>
+<div class="check-block" id="packing-note-box">
+  <span class="field__label">패킹리스트 내용</span>
+  ${o.packing_note
+        ? `<p class="packing-note">${esc(o.packing_note)}</p>`
+        : '<p class="form-note" style="margin:4px 0">작성된 패킹리스트가 없습니다.</p>'}
+  ${editable ? `
+  <button class="btn btn--sm" id="btn-packing-note" type="button">
+    패킹리스트 ${o.packing_note ? '수정' : '작성'}</button>` : ''}
+</div>` : ''}
 
 ${done ? '' : `
 <div class="form-grid" style="margin-top:14px">
@@ -396,6 +421,28 @@ ${editable ? `
         ? '<button class="btn btn--danger btn--lg" id="btn-cancel" type="button">완료 취소</button>'
         : '<button class="btn btn--success btn--lg" id="btn-done" type="button">검수완료</button>'}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
+
+    // 패킹리스트 내용 작성/수정 - 입력칸을 그 자리에 펼친다
+    body.querySelector('#btn-packing-note')?.addEventListener('click', () => {
+        const box = body.querySelector('#packing-note-box');
+        box.innerHTML = `
+<span class="field__label">패킹리스트 내용 작성</span>
+<textarea id="packing-note-input" rows="4">${esc(o.packing_note ?? '')}</textarea>
+<div class="btn-row" style="margin-top:8px">
+  <button class="btn btn--sm" id="btn-packing-cancel" type="button">취소</button>
+  <button class="btn btn--primary btn--sm" id="btn-packing-save" type="button">저장</button>
+</div>`;
+        box.querySelector('#btn-packing-cancel').addEventListener('click', reload);
+        box.querySelector('#btn-packing-save').addEventListener('click', async () => {
+            try {
+                await db.setPackingNote(o.id, box.querySelector('#packing-note-input').value, user);
+                toast('패킹리스트를 저장했습니다.', 'success');
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
 
     body.querySelector('#btn-done')?.addEventListener('click', async () => {
         const checks = {
@@ -1403,7 +1450,7 @@ ${g.rows.length > 1 ? `
     <table class="grid"><tbody>
       <tr><th>거래처명</th><td>${esc(o.customer)}</td></tr>
       <tr><th>출고요청일</th><td><b>${o.ship_req_date}</b></td></tr>
-      <tr><th>차량구분</th><td>${esc(o.vehicle_type)}</td></tr>
+      <tr><th>출고형태</th><td>${esc(o.vehicle_type)}</td></tr>
       <tr><th>박스수</th><td>${o.box_count
         ? `${num(o.box_count)} 박스` : '<span class="muted">-</span>'}</td></tr>
       <tr><th>검수</th><td>${o.inspected}/${o.pallet_count}</td></tr>
@@ -1561,7 +1608,14 @@ async function renderPendingList(pane, key, user) {
                 el.addEventListener('click', () => openLocationView(el.dataset.loc));
             });
         } else {
-            tbl.innerHTML = workTable(rows, key);
+            tbl.innerHTML = workTable(rows, key, can(user, 'updateStatus'));
+            // 웹 출고작업 목록의 패킹리스트 작성 버튼
+            tbl.querySelectorAll('[data-packing]').forEach((el) => {
+                el.addEventListener('click', () => {
+                    const o = rows.find((x) => orderOf(x).id === el.dataset.packing);
+                    if (o) openPackingNoteModal(orderOf(o), user, draw);
+                });
+            });
         }
     }
 
@@ -1669,13 +1723,26 @@ function workerCell(name) {
     return name ? `<b>${esc(name)}</b>` : '<span class="muted">-</span>';
 }
 
+/** 패킹리스트 셀 (웹 출고작업 목록) - 있음인 주문만 작성 버튼이 붙는다 */
+function packingCell(o, canWrite) {
+    if (o.packing_yn !== YN.YES) return '<span class="muted">-</span>';
+    if (canWrite) {
+        return `<button class="btn btn--sm" data-packing="${o.id}" type="button">
+            ${o.packing_note ? '수정' : '작성'}</button>`;
+    }
+    return o.packing_note
+        ? '<span class="tag tag--green">작성됨</span>'
+        : '<span class="tag tag--gray">미작성</span>';
+}
+
 /** 출고작업/검수작업 목록 표 */
-function workTable(rows, key) {
+function workTable(rows, key, canWrite = false) {
     const workerOf = (o) => (key === 'ship' ? o.ship_worker : o.inspect_worker);
     return `
 <thead><tr>
   <th>출고요청일</th><th>주문번호</th><th class="center">차수</th><th>거래처명</th>
-  <th class="center">차량구분</th><th class="center">요청작업</th>
+  <th class="center">출고형태</th><th class="center">요청작업</th>
+  ${key === 'ship' ? '<th class="center">패킹리스트</th>' : ''}
   ${key === 'inspect' ? '<th class="num">파렛트수</th><th class="num">박스수</th>' : ''}
   <th class="center">작업자</th>
   <th class="center">${key === 'ship' ? '작업상태' : '출고완료'}</th>
@@ -1691,6 +1758,7 @@ ${rows.map((o) => `
   <td class="center">${(o.extra_works ?? []).length
         ? (o.extra_works).map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ')
         : '<span class="muted">-</span>'}</td>
+  ${key === 'ship' ? `<td class="center">${packingCell(o, canWrite)}</td>` : ''}
   ${key === 'inspect' ? `
   <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
   <td class="num">${o.box_count ? num(o.box_count) : '<span class="muted">-</span>'}</td>` : ''}
@@ -1704,6 +1772,29 @@ ${rows.map((o) => `
         : fmtDateTime(o.ship_done_at)}</td>
 </tr>`).join('')}
 </tbody>`;
+}
+
+/** 패킹리스트 작성 팝업 (웹 출고작업 목록에서 연다) */
+function openPackingNoteModal(o, user, onSaved) {
+    const m = openModal(`패킹리스트 작성 - ${o.order_no}`, `
+<p class="form-note" style="margin-top:0">${esc(o.customer)} · 출고요청일 ${o.ship_req_date || '미정'}</p>
+<textarea id="packing-note-input" rows="6" style="width:100%"
+          placeholder="패킹리스트 내용을 작성하세요">${esc(o.packing_note ?? '')}</textarea>
+<div class="form-actions">
+  <button class="btn" id="btn-note-cancel" type="button">취소</button>
+  <button class="btn btn--primary" id="btn-note-save" type="button">저장</button>
+</div>`, { wide: true });
+    m.body.querySelector('#btn-note-cancel').addEventListener('click', m.close);
+    m.body.querySelector('#btn-note-save').addEventListener('click', async () => {
+        try {
+            await db.setPackingNote(o.id, m.body.querySelector('#packing-note-input').value, user);
+            m.close();
+            toast('패킹리스트를 저장했습니다.', 'success');
+            onSaved();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
 }
 
 /** 추가작업 목록 표 */

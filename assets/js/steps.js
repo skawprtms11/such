@@ -3,7 +3,7 @@
  * 주문처리현황·출고주문처리·당일상차리스트가 같은 규칙을 쓰도록 한곳에 모았다.
  * 단계 완료 여부는 주문의 시각 필드(예: ship_done_at)에 값이 있는지로 판단한다.
  */
-import { WORK_STEPS } from './config.js';
+import { WORK_STEPS, YN } from './config.js';
 
 /**
  * @typedef {object} StepOpt
@@ -48,9 +48,13 @@ export function visibleSteps(order, opt = {}) {
     const { task, adjust } = norm(opt);
     const steps = WORK_STEPS
         .filter((s) => {
-            if (s.cond === 'extra') return (order.extra_works ?? []).length > 0;
+            // 추가작업은 등록 시 '있음' 선택으로 판단한다 (옛 데이터는 extra_works 배열)
+            if (s.cond === 'extra') {
+                return order.extra_yn === YN.YES || (order.extra_works ?? []).length > 0;
+            }
             if (s.cond === 'adjust') return adjust.has;
             if (s.cond === 'task') return task;
+            if (s.cond === 'packing') return order.packing_yn === YN.YES;
             return true;
         })
         .map((s) => {

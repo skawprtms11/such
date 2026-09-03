@@ -33,7 +33,8 @@ const TABLES = [
         name: 'orders',
         cols: [
             'id', 'reg_date', 'send_date', 'seq', 'order_no', 'base_no', 'customer',
-            'ship_req_date', 'vehicle_type', 'team_name', 'extra_works',
+            'ship_req_date', 'vehicle_type', 'team_name', 'region',
+            'extra_yn', 'packing_yn', 'work_note', 'packing_note', 'extra_works',
             'request_note', 'remark',
             'item_count', 'qty', 'pallet_count', 'box_count', 'edit_count',
             'confirmed_at', 'confirmed_by', 'confirmed_by_name',

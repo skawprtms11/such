@@ -5,7 +5,7 @@
  */
 import {
     COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE, LOAD_STATUS, PERMISSION,
-    RESTORE_TYPE, ROLE, WORK_STEPS, LOCATION_FORMAT, adjustCategory,
+    RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, adjustCategory,
     formatLocation, isValidLocation,
 } from './config.js';
 import { readyToLoad } from './steps.js';
@@ -32,6 +32,12 @@ function normalize(db) {
         o.edit_count = o.edit_count ?? 0;
         o.ship_req_date = o.ship_req_date ?? '';   // 미정(null)은 빈 값으로 다뤄 표시·정렬을 지킨다
         o.team_name = o.team_name ?? '';
+        o.region = o.region ?? '국내';
+        // 있음/없음 도입 전 데이터는 추가작업 배열 유무로 판단한다
+        o.extra_yn = o.extra_yn ?? ((o.extra_works ?? []).length ? YN.YES : YN.NO);
+        o.packing_yn = o.packing_yn ?? YN.NO;
+        o.work_note = o.work_note ?? '';
+        o.packing_note = o.packing_note ?? '';
         o.confirmed_at = o.confirmed_at ?? null;
         o.canceled_at = o.canceled_at ?? null;
         // 단계별 완료 시각 (없으면 미완료).
@@ -346,6 +352,11 @@ export async function createOrder(payload, user) {
         pallet_count: 0,
         extra_works: [],
         team_name: '',
+        region: '국내',
+        extra_yn: YN.NO,
+        packing_yn: YN.NO,
+        work_note: '',
+        packing_note: '',
         edit_count: 0,
         confirmed_at: null,
         canceled_at: null,
@@ -378,7 +389,9 @@ export async function updateOrder(id, patch, user, memo = '') {
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     const labels = {
         send_date: '전송일자', order_no: '주문번호', customer: '거래처명',
-        ship_req_date: '출고요청일', vehicle_type: '차량구분', team_name: '팀명',
+        ship_req_date: '출고요청일', vehicle_type: '출고형태', team_name: '팀명',
+        region: '구분', extra_yn: '추가작업', packing_yn: '패킹리스트', work_note: '작업지시',
+        packing_note: '패킹리스트 내용',
         extra_works: '추가작업', request_note: '요청사항', remark: '비고',
         item_count: '품목수', qty: '출고수량', pallet_count: '파렛트수', box_count: '박스수',
     };
@@ -521,11 +534,13 @@ export async function setInspectDone(id, done, checks, user) {
         throw new Error('출고적치가 완료된 주문입니다. 출고적치 탭에서 적치취소를 먼저 하세요.');
     }
 
-    const hasExtra = (o.extra_works ?? []).length > 0;
+    const hasExtra = o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
+    const hasPacking = o.packing_yn === YN.YES;
     if (done && hasExtra && !checks.reqWork) {
         throw new Error('요청작업 확인을 체크해야 검수를 완료할 수 있습니다.');
     }
-    if (done && !checks.packing) {
+    // 패킹리스트는 주문 등록 시 '있음' 인 경우에만 확인한다
+    if (done && hasPacking && !checks.packing) {
         throw new Error('패킹리스트 작성 확인을 체크해야 검수를 완료할 수 있습니다.');
     }
 
@@ -555,9 +570,31 @@ export async function setInspectDone(id, done, checks, user) {
     if (!done && !o.pallet_count) o.stow_done_at = null;   // 혼적 건은 적치도 함께 되돌린다
     if (done) fillWorker(o, 'inspect', user);
     if (hasExtra) setStepAt(db, o, 'req_work_at', '요청작업', done, user);
-    o.packing_at = done ? new Date().toISOString() : null;
+    o.packing_at = done && hasPacking ? new Date().toISOString() : null;
     setStepAt(db, o, 'inspect_done_at', '검수작업', done, user);
     await save(db);
+    return o;
+}
+
+/**
+ * 패킹리스트 내용 작성/수정.
+ * 패킹리스트가 '있음' 인 주문만 대상이다.
+ * 모바일 검수작업 탭과 웹 출고작업 목록에서 호출한다.
+ */
+export async function setPackingNote(id, note, user) {
+    const text = String(note ?? '').trim();
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === id);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (o.packing_yn !== YN.YES) {
+        throw new Error('패킹리스트가 있음인 주문만 작성할 수 있습니다.');
+    }
+    if ((o.packing_note ?? '') !== text) {
+        addHistory(db, id, '패킹리스트 내용', o.packing_note, text, user);
+        o.packing_note = text;
+        await save(db);
+    }
     return o;
 }
 
@@ -643,24 +680,39 @@ export async function extraTaskMap() {
 }
 
 /**
- * 주문 접수확인 토글.
- * 물류 담당자가 주문 내용을 확인했음을 표시한다. 체크를 해제할 수도 있다.
+ * 주문 접수 - 물류 담당자가 상세 팝업에서 **작업지시를 작성해야** 접수된다.
+ * 접수되면 확인 컬럼의 상태가 '접수' 로 바뀐다.
  */
-export async function toggleOrderConfirm(id, user) {
+export async function confirmOrder(id, workNote, user) {
+    const note = String(workNote ?? '').trim();
+    if (!note) throw new Error('작업지시를 작성해야 접수할 수 있습니다.');
     const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.confirmed_at) {
-        o.confirmed_at = null;
-        o.confirmed_by = null;
-        o.confirmed_by_name = '';
-        addHistory(db, id, '접수확인', '접수확인', '미확인', user);
-    } else {
-        o.confirmed_at = new Date().toISOString();
-        o.confirmed_by = user.id;
-        o.confirmed_by_name = user.name;
-        addHistory(db, id, '접수확인', '미확인', '접수확인', user);
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (o.confirmed_at) throw new Error('이미 접수된 주문입니다.');
+    o.confirmed_at = new Date().toISOString();
+    o.confirmed_by = user.id;
+    o.confirmed_by_name = user.name;
+    o.work_note = note;
+    addHistory(db, id, '접수', '대기', `접수 · 작업지시: ${note}`, user);
+    await save(db);
+    return o;
+}
+
+/** 접수 취소 - 출고작업에 착수하기 전까지만 되돌릴 수 있다 */
+export async function revokeOrderConfirm(id, user) {
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === id);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (!o.confirmed_at) throw new Error('접수되지 않은 주문입니다.');
+    if (o.ship_started_at || o.ship_done_at) {
+        throw new Error('출고작업에 착수한 주문은 접수를 취소할 수 없습니다.');
     }
+    o.confirmed_at = null;
+    o.confirmed_by = null;
+    o.confirmed_by_name = '';
+    addHistory(db, id, '접수', '접수', '접수취소', user);
     await save(db);
     return o;
 }

@@ -95,8 +95,13 @@ create table if not exists public.orders (
     customer          text        not null,                        -- 거래처명
     ship_req_date     date,                                        -- 출고요청일 (null 이면 미정)
     team_name         text        not null default '',             -- 팀명
-    vehicle_type      text        not null default '픽업',          -- 픽업 | 용차
-    extra_works       text[]      not null default '{}',           -- 추가작업 (다중 선택)
+    vehicle_type      text        not null default '용차',          -- 출고형태: 용차 | 픽업 | 택배
+    region            text        not null default '국내',          -- 구분: 국내 | 해외
+    extra_yn          text        not null default '없음',          -- 추가작업: 있음 | 없음
+    packing_yn        text        not null default '없음',          -- 패킹리스트: 있음 | 없음
+    work_note         text        not null default '',             -- 접수 시 작성하는 작업지시
+    packing_note      text        not null default '',             -- 패킹리스트 내용 (있음인 주문만 작성)
+    extra_works       text[]      not null default '{}',           -- (구) 추가작업 다중 선택 - 옛 데이터용
     request_note      text        not null default '',
     remark            text        not null default '',
 
@@ -243,7 +248,12 @@ create table if not exists public.issues (
 create index if not exists issues_order_no_idx on public.issues (order_no);
 
 -- 이미 만들어진 환경 재적용용 - create table if not exists 는 컬럼을 추가하지 않으므로 병기한다
-alter table public.orders add column if not exists team_name text not null default '';
+alter table public.orders add column if not exists team_name  text not null default '';
+alter table public.orders add column if not exists region     text not null default '국내';
+alter table public.orders add column if not exists extra_yn   text not null default '없음';
+alter table public.orders add column if not exists packing_yn text not null default '없음';
+alter table public.orders add column if not exists work_note  text not null default '';
+alter table public.orders add column if not exists packing_note text not null default '';
 alter table public.orders alter column ship_req_date drop not null;
 
 alter table public.issues add column if not exists assignee_id   uuid references public.profiles (id);

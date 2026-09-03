@@ -130,24 +130,27 @@ thefurerap/
 주문 1건은 **단계별 완료 시각**으로 진행 상태를 표현한다. 값이 있으면 완료다.
 
 ```
-주문처리 → 출고작업 → [요청작업] → 검수작업 → 출고적치 → [조정작업] → [추가작업] → 상차작업
+주문처리 → 출고작업 → [요청작업] → 검수작업 → [추가작업] → [패킹리스트] → 출고적치 → [조정작업] → 상차작업
 ```
 
 | 단계 | 저장 필드 | 완료되는 곳 |
 |---|---|---|
-| 주문처리 | `confirmed_at` | 주문정보등록의 접수 체크 |
+| 주문처리 | `confirmed_at` | 주문정보등록 상세 팝업의 **접수 (작업지시 작성)** |
 | 출고작업 | `ship_done_at` | 출고주문처리 |
 | 요청작업 | `req_work_at` | 출고주문처리 (검수 탭) |
 | 검수작업 | `inspect_done_at` | 출고주문처리 |
+| 추가작업 | `extra_done_at` | 출고주문처리 |
+| 패킹리스트 | `packing_at` | 출고주문처리 (검수완료 시 함께 기록) |
 | 출고적치 | `stow_done_at` | 출고주문처리 (출고적치 탭 - 전량 입력 후 `적치완료` 버튼) |
 | | | ↳ 되돌리려면 `적치취소` (검수취소보다 먼저 해야 한다) |
 | 조정작업 | *(계산값)* | 조정요청을 모두 확인 처리할 때 |
-| 추가작업 | `extra_done_at` | 출고주문처리 |
 | 상차작업 | `loaded_at` | 당일상차리스트 |
 
-- **요청작업**은 주문에 추가작업(`extra_works`)이 등록된 경우에만 표시된다
+- **요청작업**은 주문 등록 시 추가작업이 `있음`(`extra_yn`)인 경우에만 표시된다
+  (옛 데이터는 `extra_works` 배열 유무로 판단)
 - **조정작업**은 조정요청이 등록된 경우에만 표시된다
 - **추가작업**은 추가작업 요청이 등록된 경우에만 표시된다
+- **패킹리스트**는 주문 등록 시 패킹리스트가 `있음`(`packing_yn`)인 경우에만 표시된다
 - 정의는 `config.js` 의 `WORK_STEPS`, 계산은 `assets/js/steps.js` 가 담당한다
   (`visibleSteps` `readyToLoad` `stepRate` `currentStep`)
 - **당일상차리스트에는 상차작업을 제외한 모든 단계가 끝난 주문만 나온다** (`readyToLoad`)
@@ -162,15 +165,18 @@ thefurerap/
 (`config.js` 의 `EXTRA_TASK_TYPE`). 전용 등록 화면이 없어 기존 이슈등록을 재사용한 것이다.
 자세한 내용은 [docs/shipping.md](docs/shipping.md) 참고.
 
-### 2-1. 진행상태 (주문정보등록 화면)
+### 2-1. 주문 상태 (주문정보등록의 확인 컬럼)
 
-`stage` 와 별개로, 주문정보등록 목록에 표시하는 요약 상태다. **저장하지 않고 계산한다.**
+`stage` 와 별개로, 주문정보등록 목록의 **확인 컬럼**에 표시하는 요약 상태다.
+**저장하지 않고 계산한다.** (예전의 접수 체크박스·진행상태 컬럼은 이것 하나로 합쳤다)
 
 ```
-취소(canceled_at) > 완료(stage 5) > 진행(confirmed_at) > 대기
+취소(canceled_at) > 완료(loaded_at) > 진행(ship_started_at) > 접수(confirmed_at) > 대기
 ```
 
-값 목록은 `config.js` 의 `PROGRESS`. 자세한 규칙은 [docs/orders.md](docs/orders.md) 참고.
+- **접수는 상세 팝업에서 용마담당자가 작업지시(`work_note`)를 작성해야** 처리된다.
+  작업지시는 출고주문처리의 출고작업·검수작업 탭에 표시된다
+- 값 목록은 `config.js` 의 `ORDER_STATE`. 자세한 규칙은 [docs/orders.md](docs/orders.md) 참고.
 
 ### 2. 상차 상태 (load_status)
 
@@ -276,7 +282,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | 테이블 | 용도 | 주요 필드 |
 |---|---|---|
 | `profiles` | 사용자 | `name` `email` `company`(고객사/용마로지스) `role` `active` |
-| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date`(null=미정) `vehicle_type` `team_name` `extra_works` `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
+| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date`(null=미정) `vehicle_type`(출고형태) `region`(구분) `team_name` `extra_yn` `packing_yn` `work_note`(작업지시) `packing_note`(패킹리스트 내용) `extra_works`(구버전) `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
 | `order_history` | 변동사항 이력 | `order_id` `rev` `field` `before_val` `after_val` `memo` `changed_by` `checked_at` |
 | `restore_requests` | 조정요청 | `order_id` `type` `reason` `product_code` `qty` `created_by` `checked_at` |
 | `pallets` | 검수 바코드 · 적치 로케이션 | `order_id` `barcode` `scanned_at` `location` `picked_at` |
