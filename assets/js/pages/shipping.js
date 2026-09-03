@@ -349,6 +349,10 @@ function drawInspect(body, o, user, editable, reload) {
     const hasExtra = o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
     const hasPacking = o.packing_yn === YN.YES;
     const done = Boolean(o.inspect_done_at);
+    // 패킹리스트 내용은 주문정보등록 화면과 같은 값(packing_note)을 쓴다.
+    // 편집 조건도 그 화면과 맞춘다 - 상차완료 전까지는 현장에서도 고칠 수 있다
+    const written = Boolean((o.packing_note ?? '').trim());
+    const canWritePacking = editable && !o.loaded_at;
 
     if (!o.ship_done_at && !done) {
         body.innerHTML = `
@@ -371,14 +375,18 @@ ${hasExtra ? `
 
 ${hasPacking ? `
 <div class="check-block" id="packing-note-box">
-  <span class="field__label">패킹리스트 내용</span>
-  ${o.packing_note
+  <span class="field__label">패킹리스트 내용
+    <span class="tag ${written ? 'tag--green' : 'tag--gray'}">
+      ${written ? '작성완료' : '미작성'}</span>
+  </span>
+  ${written
         ? `<p class="packing-note">${esc(o.packing_note)}</p>`
         : '<p class="form-note" style="margin:4px 0">작성된 패킹리스트가 없습니다.'
           + ' 작성해야 검수를 완료할 수 있습니다.</p>'}
-  ${editable && !done ? `
-  <button class="btn btn--sm" id="btn-packing-note" type="button">
-    패킹리스트 ${o.packing_note ? '수정' : '작성'}</button>` : ''}
+  ${canWritePacking ? `
+  <button class="btn btn--sm ${written ? '' : 'btn--primary'}"
+          id="btn-packing-note" type="button">
+    패킹리스트 ${written ? '수정' : '작성'}</button>` : ''}
 </div>` : ''}
 
 ${done ? '' : `
@@ -417,8 +425,9 @@ ${editable ? `
     body.querySelector('#btn-packing-note')?.addEventListener('click', () => {
         const box = body.querySelector('#packing-note-box');
         box.innerHTML = `
-<span class="field__label">패킹리스트 내용 작성</span>
-<textarea id="packing-note-input" rows="4">${esc(o.packing_note ?? '')}</textarea>
+<span class="field__label">패킹리스트 ${written ? '수정' : '작성'}</span>
+<textarea id="packing-note-input" rows="6"
+          placeholder="패킹리스트 내용을 작성하세요">${esc(o.packing_note ?? '')}</textarea>
 <div class="btn-row" style="margin-top:8px">
   <button class="btn btn--sm" id="btn-packing-cancel" type="button">취소</button>
   <button class="btn btn--primary btn--sm" id="btn-packing-save" type="button">저장</button>
@@ -427,7 +436,7 @@ ${editable ? `
         box.querySelector('#btn-packing-save').addEventListener('click', async () => {
             try {
                 await db.setPackingNote(o.id, box.querySelector('#packing-note-input').value, user);
-                toast('패킹리스트를 저장했습니다.', 'success');
+                toast(`패킹리스트를 ${written ? '수정' : '저장'}했습니다.`, 'success');
                 reload();
             } catch (err) {
                 toast(err.message, 'error');

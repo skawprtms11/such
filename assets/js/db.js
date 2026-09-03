@@ -580,7 +580,8 @@ export async function setInspectDone(id, done, checks, user) {
 /**
  * 패킹리스트 내용 작성/수정.
  * 패킹리스트가 '있음' 인 주문만 대상이다.
- * 주문정보등록 목록의 패킹리스트 컬럼과 모바일 검수작업 탭에서 호출한다.
+ * 주문정보등록 목록의 패킹리스트 컬럼과 모바일 검수작업 탭이 **같은 값**을 다룬다.
+ * 어느 쪽에서 쓰든 내용(`packing_note`)은 하나이고, 저장하면 양쪽에 그대로 반영된다.
  */
 export async function setPackingNote(id, note, user) {
     const text = String(note ?? '').trim();
@@ -588,9 +589,13 @@ export async function setPackingNote(id, note, user) {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (o.loaded_at) throw new Error('상차완료된 주문은 패킹리스트를 고칠 수 없습니다.');
     if (o.packing_yn !== YN.YES) {
         throw new Error('패킹리스트가 있음인 주문만 작성할 수 있습니다.');
     }
+    // 빈 내용은 저장하지 않는다. 검수완료(packing_at)된 주문의 내용이 지워지면
+    // '패킹리스트 완료인데 내용 없음' 이라는 앞뒤 안 맞는 상태가 된다
+    if (!text) throw new Error('패킹리스트 내용을 입력하세요.');
     if ((o.packing_note ?? '') !== text) {
         addHistory(db, id, '패킹리스트 내용', o.packing_note, text, user);
         o.packing_note = text;

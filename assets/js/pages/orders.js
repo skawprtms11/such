@@ -222,7 +222,9 @@ function ynCell(v) {
 
 /**
  * 패킹리스트 셀 - 등록 시 '있음' 인 주문만 작성 버튼이 붙는다.
- * 아직 안 썼으면 파란 `작성`, 이미 썼으면 초록 `수정` 버튼이다.
+ * 아직 안 썼으면 파란 `작성`, 내용이 있으면 초록 `작성완료` 버튼이다.
+ * 🔑 내용(`packing_note`)은 모바일 검수작업 탭과 같은 값이라
+ *    현장에서 작성해도 이 컬럼이 바로 `작성완료` 로 바뀐다.
  * '없음' 이면 예전처럼 없음 표시만 남는다.
  */
 function packingCell(o, user) {
@@ -231,11 +233,11 @@ function packingCell(o, user) {
     if (canPacking(user, o)) {
         return `<button class="btn btn--sm ${written ? 'btn--success' : 'btn--primary'}"
             data-packing="${o.id}" type="button"
-            title="${written ? '작성된 패킹리스트를 수정합니다' : '패킹리스트를 작성합니다'}"
-            >${written ? '수정' : '작성'}</button>`;
+            title="${written ? '작성된 패킹리스트를 확인·수정합니다' : '패킹리스트를 작성합니다'}"
+            >${written ? '작성완료' : '작성'}</button>`;
     }
     return written
-        ? '<span class="tag tag--green">작성됨</span>'
+        ? '<span class="tag tag--green">작성완료</span>'
         : '<span class="tag tag--gray">미작성</span>';
 }
 
@@ -254,8 +256,8 @@ function openPackingNoteModal(o, user, onSaved) {
   <textarea id="packing-note-input" rows="12"
             placeholder="패킹리스트 내용을 작성하세요">${esc(o.packing_note ?? '')}</textarea>
 </label>
-<p class="form-note">저장한 내용은 주문 상세의 <b>패킹리스트 내용</b> 과
-출고주문처리 검수작업에서 확인할 수 있고, 수정이력에 남습니다.</p>
+<p class="form-note">출고주문처리(모바일) 검수작업 탭과 <b>같은 내용</b>입니다.
+현장에서 작성·수정한 내용도 이 창에 그대로 나오고, 저장하면 수정이력에 남습니다.</p>
 <div class="form-actions">
   <button class="btn" id="btn-note-cancel" type="button">취소</button>
   <button class="btn btn--primary" id="btn-note-save" type="button">저장</button>
