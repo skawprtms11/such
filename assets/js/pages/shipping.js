@@ -293,7 +293,8 @@ function drawShip(body, o, user, editable, reload) {
   <tr><th>작업완료</th><td>${o.ship_done_at ? fmtDateTime(o.ship_done_at) : '-'}</td></tr>
 </tbody></table>
 ${!o.confirmed_at ? `
-<p class="form-note">⚠️ 아직 접수 처리되지 않은 주문입니다. 주문처리 단계가 비어 있습니다.</p>` : ''}
+<p class="form-note">⚠️ 아직 접수 처리되지 않은 주문입니다.
+주문정보등록에서 접수 후 출고작업을 시작할 수 있습니다.</p>` : ''}
 ${editable ? `
 <div class="btn-row" style="margin-top:16px">
   ${done ? `
@@ -301,8 +302,8 @@ ${editable ? `
         : started ? `
   <button class="btn btn--success btn--lg" id="btn-done" type="button">작업완료</button>
   <button class="btn btn--danger btn--lg" id="btn-reset" type="button">시작 취소</button>`
-            : `
-  <button class="btn btn--primary btn--lg" id="btn-start" type="button">작업시작</button>`}
+            : o.confirmed_at ? `
+  <button class="btn btn--primary btn--lg" id="btn-start" type="button">작업시작</button>` : ''}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
 
     const run = async (fn, msg) => {
