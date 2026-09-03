@@ -519,7 +519,7 @@ export async function setShipWorkDone(id, done, user) {
 /**
  * 검수작업 완료 / 완료 취소
  * 검수는 시작 개념 없이 완료만 처리한다.
- * @param {{reqWork:boolean, packing:boolean}} checks 요청작업·패킹리스트 확인 여부
+ * @param {{reqWork:boolean}} checks 요청작업 확인 여부와 검수 실측값
  */
 export async function setInspectDone(id, done, checks, user) {
     const db = (await load());
@@ -539,9 +539,10 @@ export async function setInspectDone(id, done, checks, user) {
     if (done && hasExtra && !checks.reqWork) {
         throw new Error('요청작업 확인을 체크해야 검수를 완료할 수 있습니다.');
     }
-    // 패킹리스트는 주문 등록 시 '있음' 인 경우에만 확인한다
-    if (done && hasPacking && !checks.packing) {
-        throw new Error('패킹리스트 작성 확인을 체크해야 검수를 완료할 수 있습니다.');
+    // 패킹리스트는 주문 등록 시 '있음' 인 경우에만 확인한다.
+    // 별도 체크 없이 내용(packing_note)이 작성되어 있어야 완료로 본다
+    if (done && hasPacking && !(o.packing_note ?? '').trim()) {
+        throw new Error('패킹리스트를 먼저 작성해야 검수를 완료할 수 있습니다.');
     }
 
     // 검수 실측값 - 총 파렛트수와 총 박스수를 입력해야 완료할 수 있다
@@ -579,7 +580,7 @@ export async function setInspectDone(id, done, checks, user) {
 /**
  * 패킹리스트 내용 작성/수정.
  * 패킹리스트가 '있음' 인 주문만 대상이다.
- * 모바일 검수작업 탭과 웹 출고작업 목록에서 호출한다.
+ * 주문정보등록 목록의 패킹리스트 컬럼과 모바일 검수작업 탭에서 호출한다.
  */
 export async function setPackingNote(id, note, user) {
     const text = String(note ?? '').trim();
@@ -700,7 +701,7 @@ export async function confirmOrder(id, workNote, user) {
     return o;
 }
 
-/** 접수 취소 - 출고작업에 착수하기 전까지만 되돌릴 수 있다 */
+/** 접수 취소 - 출고작업에 착수하기 전까지만 되돌릴 수 있다. 작업지시도 함께 초기화한다 */
 export async function revokeOrderConfirm(id, user) {
     const db = (await load());
     const o = db.orders.find((x) => x.id === id);
@@ -712,7 +713,8 @@ export async function revokeOrderConfirm(id, user) {
     o.confirmed_at = null;
     o.confirmed_by = null;
     o.confirmed_by_name = '';
-    addHistory(db, id, '접수', '접수', '접수취소', user);
+    o.work_note = '';
+    addHistory(db, id, '접수', '접수', '접수취소 (작업지시 초기화)', user);
     await save(db);
     return o;
 }
