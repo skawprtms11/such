@@ -591,11 +591,61 @@ function labelPages(o) {
     return pages;
 }
 
+/**
+ * 상차라벨 치수 (mm). A4 세로 · @page margin 10mm 기준으로 계산한다.
+ * 안쪽 폭 = 210 - 여백 20 - 라벨 테두리 1.6 - 라벨 안여백 14 ≈ 174
+ */
+const LABEL_BOX = {
+    innerW: 174,     // 표가 쓸 수 있는 가로 폭
+    thRatio: 0.26,   // 항목 열이 차지하는 비율
+    // 정보 표시 영역 높이. 예전 표는 브라우저 실측 146mm 였고 여기에 15% 를 더한
+    // 168mm 가 목표다. 테두리(1.5px × 7줄 ≈ 1.5mm)가 얹히므로 166.5 를 지정한다
+    tableH: 166.5,
+    rows: 6,         // 행 수 - 모든 행의 높이를 똑같이 나눈다
+    padV: 3,         // 셀 위아래 여백 (시인성 확보용, 줄이지 않는다)
+    padH: 4,         // 셀 좌우 여백
+};
+
+/** 1pt 를 mm 로 환산한 값 */
+const PT_MM = 0.3528;
+
+/**
+ * 칸에 들어가는 **가장 큰 글자 크기(pt)** 를 구한다.
+ * 글자수와 칸 크기만으로 계산하므로 인쇄 전에 값이 정해진다.
+ * 한 줄에 안 들어가면 두 줄까지 허용하고, 그 중 더 큰 쪽을 고른다.
+ * @param {string} text 칸에 들어갈 글자
+ * @param {number} boxW 여백을 뺀 칸의 가로 (mm)
+ * @param {number} boxH 여백을 뺀 칸의 세로 (mm)
+ * @param {number} maxPt 상한 (항목명이 값보다 커지지 않도록 막는다)
+ */
+function fitPt(text, boxW, boxH, maxPt) {
+    const str = String(text ?? '');
+    if (!str.trim()) return maxPt;
+    // 한글·한자는 한 글자가 1em, 영문·숫자·기호는 대략 0.58em 을 차지한다
+    const em = [...str].reduce(
+        (w, ch) => w + (/[ㄱ-힝一-鿿]/.test(ch) ? 1 : 0.58), 0);
+    // 1줄 / 2줄 각각에서 가능한 크기를 재고 더 큰 쪽을 쓴다.
+    // 세로는 글꼴이 실제로 차지하는 높이(약 1.2em)로 잡아야 여백을 먹지 않는다
+    const best = [1, 2].reduce((mx, lines) => Math.max(mx, Math.min(
+        boxW / (em / lines),        // 가로가 허용하는 크기
+        boxH / (lines * 1.2),       // 세로가 허용하는 크기 (줄간격 1.2)
+    )), 0);
+    return Math.max(9, Math.min(maxPt, Math.floor(best / PT_MM)));
+}
+
 /** 상차라벨 A4 인쇄용 HTML (파렛트 수 × 2 페이지) */
 function labelHtml(o) {
     const barcode = code128Svg(o.order_no, { height: 120, moduleWidth: 3, showText: false });
-    const row = (label, value, cls = '') =>
-        `<tr><th>${label}</th><td class="${cls}">${value}</td></tr>`;
+    const rowH = LABEL_BOX.tableH / LABEL_BOX.rows;
+    const boxH = rowH - LABEL_BOX.padV * 2;
+    const thW = LABEL_BOX.innerW * LABEL_BOX.thRatio - LABEL_BOX.padH * 2;
+    const tdW = LABEL_BOX.innerW * (1 - LABEL_BOX.thRatio) - LABEL_BOX.padH * 2;
+    // 항목명은 20pt, 값은 칸 높이가 허용하는 만큼(약 55pt)까지 키운다
+    const row = (label, value) => `
+      <tr>
+        <th style="font-size:${fitPt(label, thW, boxH, 20)}pt">${esc(label)}</th>
+        <td style="font-size:${fitPt(value, tdW, boxH, 55)}pt">${esc(value)}</td>
+      </tr>`;
     return `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
 <title>상차라벨 ${esc(o.order_no)}</title>
@@ -611,22 +661,29 @@ function labelHtml(o) {
     display: flex; flex-direction: column; page-break-after: always;
   }
   .label:last-child { page-break-after: auto; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { border: 1.5px solid #000; padding: 3mm 4mm; vertical-align: middle; }
-  th { width: 26%; background: #eee; text-align: left; font-size: 15pt; }
-  td { font-weight: 800; word-break: keep-all; }
-  /* 출고일자·주문번호·거래처명은 멀리서도 읽히도록 가장 크게.
-     45pt 는 주문번호(11자)와 거래처명이 한 줄에 들어가는 상한이다 */
-  td.xl { font-size: 45pt; line-height: 1.15; }
-  td.lg { font-size: 34pt; }
-  td.blank { height: 30mm; }
+  /* 정보 표시 영역 - 전체 높이를 고정하고 6행이 똑같이 나눠 갖는다 */
+  table {
+    width: 100%; border-collapse: collapse; table-layout: fixed;
+    height: ${LABEL_BOX.tableH}mm;
+  }
+  tr { height: ${rowH}mm; }
+  th, td {
+    border: 1.5px solid #000; height: ${rowH}mm; vertical-align: middle;
+    padding: ${LABEL_BOX.padV}mm ${LABEL_BOX.padH}mm; overflow: hidden;
+  }
+  th {
+    width: ${LABEL_BOX.thRatio * 100}%; background: #eee;
+    text-align: left; font-weight: 700;
+  }
+  /* 글자 크기는 칸마다 글자수에 맞춰 계산해 style 로 직접 넣는다 (fitPt) */
+  td { font-weight: 800; word-break: keep-all; line-height: 1.2; }
   /* 남는 높이는 바코드가 차지한다 */
   .barcode {
     flex: 1; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; padding: 4mm 0;
+    align-items: center; justify-content: center; padding: 3mm 0;
   }
-  .barcode svg { width: 100%; height: auto; max-height: 60mm; }
-  .barcode__no { margin-top: 3mm; font-family: monospace; font-size: 22pt; letter-spacing: 4px; }
+  .barcode svg { width: 100%; height: auto; max-height: 48mm; }
+  .barcode__no { margin-top: 3mm; font-family: monospace; font-size: 20pt; letter-spacing: 4px; }
   .seq { text-align: right; font-size: 14pt; font-weight: 700; }
   /* 추가건(2차수 이상)임을 라벨 오른쪽 위에 알린다 */
   .add-mark { text-align: right; font-size: 20pt; font-weight: 800; margin-bottom: 3mm; }
@@ -636,13 +693,12 @@ ${labelPages(o).map((seq) => `
   <div class="label">
     ${o.seq > 1 ? `<div class="add-mark">추가건 - ${o.seq}차수</div>` : ''}
     <table>
-      ${row('출고일자', esc(o.ship_req_date), 'xl')}
-      ${row('주문번호', esc(o.order_no), 'xl')}
-      ${row('거래처명', esc(o.customer), 'xl')}
-      ${row('주문일자', esc(o.reg_date), 'lg')}
-      ${row('총 파렛트수', o.pallet_count
-        ? `${num(o.pallet_count)} PLT` : '기존차수에 혼적적재', 'lg')}
-      ${row('박스수', '', 'blank')}
+      ${row('출고일자', o.ship_req_date)}
+      ${row('주문번호', o.order_no)}
+      ${row('거래처명', o.customer)}
+      ${row('주문일자', o.reg_date)}
+      ${row('총 파렛트수', o.pallet_count ? `${num(o.pallet_count)} PLT` : '기존차수에 혼적적재')}
+      ${row('박스수', '')}
     </table>
     <div class="barcode">
       ${barcode}
