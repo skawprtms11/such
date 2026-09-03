@@ -1128,8 +1128,23 @@ function bindRestoreForm(pane, o, user, redraw) {
 
 /* -------------------------------- 일괄등록 -------------------------------- */
 
+/**
+ * 일괄등록의 주문구분 값.
+ * `기존` 은 등록 폼의 **추가주문**과 같다 - 기존 묶음의 다음 차수로 들어간다.
+ */
+const BULK_KIND = { NEW: '신규', ADD: '기존' };
+const BULK_KINDS = [BULK_KIND.NEW, BULK_KIND.ADD];
+
 /** 일괄등록 표의 컬럼 순서 (추가작업은 일괄등록에서 받지 않는다) */
 const BULK_COLS = [
+    {
+        key: 'kind',
+        label: '주문구분',
+        required: true,
+        narrow: true,
+        hint: BULK_KINDS.join('/'),
+    },
+    { key: 'region', label: '구분', required: true, narrow: true, hint: ORDER_REGIONS.join('/') },
     { key: 'send_date', label: '전송일자', required: true, date: true, hint: '2026-08-30' },
     {
         key: 'ship_req_date',
@@ -1176,6 +1191,10 @@ function openBulkForm(user, reload) {
     <li><b>날짜</b> — <code>2026-08-30</code> · <code>2026/8/30</code> · <code>20260830</code>
       모두 인식합니다.</li>
     <li><b>출고요청일</b> — 일자를 정하지 않았으면 <code>미정</code> 이라고 적습니다.</li>
+    <li><b>주문구분</b> — <code>${BULK_KIND.NEW}</code> 또는 <code>${BULK_KIND.ADD}</code>.
+      <b>${BULK_KIND.ADD}</b> 은 이미 등록된 주문의 <b>다음 차수</b>로 들어갑니다
+      (주문번호 칸에 <b>기존 주문번호</b>를 적으면 <code>번호-1</code> 처럼 자동으로 붙습니다).</li>
+    <li><b>구분</b> — ${ORDER_REGIONS.join(' 또는 ')}</li>
     <li><b>출고형태</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
     <li><b>추가작업</b> — 일괄등록에서는 받지 않습니다. 등록 후 수정에서 지정하세요.</li>
   </ul>
@@ -1219,7 +1238,8 @@ ${rows.map((r, ri) => `
 <tr>
   <td class="num">${ri + 1}</td>
   ${r.map((v, ci) => `
-  <td><input type="text" data-r="${ri}" data-c="${ci}" value="${esc(v)}"
+  <td><input type="text" class="${BULK_COLS[ci].narrow ? 'narrow' : ''}"
+       data-r="${ri}" data-c="${ci}" value="${esc(v)}"
        placeholder="${esc(BULK_COLS[ci].hint)}"></td>`).join('')}
 </tr>`).join('')}
 </tbody>`;
@@ -1321,6 +1341,16 @@ ${rows.map((r, ri) => `
         const targets = [];
         const errors = [];
 
+        // 주문구분이 '기존' 인 행이 붙을 기존 묶음 목록.
+        // 기준 번호(a11111)와 제안 번호(a11111-1) 어느 쪽으로 적어도 찾을 수 있게 담는다
+        const opens = await db.listOpenOrderNos({
+            createdBy: can(user, 'viewAll') ? undefined : user.id,
+        });
+        const openMap = new Map();
+        opens.forEach((x) => { openMap.set(x.base_no, x); openMap.set(x.next_no, x); });
+        // 한 번에 같은 묶음을 여러 건 올릴 수 있으므로 배치 안에서 쓴 차수를 센다
+        const usedSeq = new Map();
+
         rows.forEach((r, ri) => {
             if (!r.some((c) => String(c).trim())) return;   // 빈 행은 건너뛴다
             const o = {};
@@ -1335,13 +1365,37 @@ ${rows.map((r, ri) => `
                 if (k === 'ship_req_date' && o[k] === '미정') return;
                 if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad.push(`${k === 'send_date' ? '전송일자' : '출고요청일'} 형식 오류`);
             });
+            if (o.kind && !BULK_KINDS.includes(o.kind)) {
+                bad.push(`주문구분은 ${BULK_KINDS.join('/')} 만 가능 (입력값 '${o.kind}')`);
+            }
+            if (o.region && !ORDER_REGIONS.includes(o.region)) {
+                bad.push(`구분은 ${ORDER_REGIONS.join('/')} 만 가능 (입력값 '${o.region}')`);
+            }
             if (o.vehicle_type && !VEHICLE_TYPES.includes(o.vehicle_type)) {
                 bad.push(`출고형태는 ${VEHICLE_TYPES.join('/')} 만 가능`);
             }
             if (o.ship_req_date === '미정') o.ship_req_date = '';
 
-            if (bad.length) errors.push(`${ri + 1}행: ${bad.join(', ')}`);
-            else targets.push(o);
+            // '기존' 은 이미 등록된 묶음에 다음 차수로 붙는다. 대상이 없으면 등록할 수 없다
+            const picked = o.kind === BULK_KIND.ADD ? openMap.get(o.order_no) : null;
+            if (o.kind === BULK_KIND.ADD && o.order_no && !picked) {
+                bad.push(`'${o.order_no}' 는 추가할 수 있는 기존 주문번호가 아닙니다`);
+            }
+
+            if (bad.length) {
+                errors.push(`${ri + 1}행: ${bad.join(', ')}`);
+                return;
+            }
+            if (picked) {
+                // 기준 번호에 다음 차수를 붙인다 (a11111 → a11111-1 → a11111-2)
+                const used = usedSeq.get(picked.base_no) ?? 0;
+                o.addition = true;
+                o.base_no = picked.base_no;
+                o.order_no = `${picked.base_no}-${picked.seq + used}`;
+                usedSeq.set(picked.base_no, used + 1);
+            }
+            delete o.kind;          // 주문구분은 저장 필드가 아니다
+            targets.push(o);
         });
 
         if (!targets.length && !errors.length) {
@@ -1358,7 +1412,11 @@ ${rows.map((r, ri) => `
             return;
         }
 
-        if (!await confirmDialog(`${targets.length}건을 등록하시겠습니까?`)) return;
+        // 기존 주문에 붙는 건은 차수가 올라가므로 확인 문구에 따로 알린다
+        const addCnt = targets.filter((t) => t.addition).length;
+        const ok = await confirmDialog(`${targets.length}건을 등록하시겠습니까?`
+            + (addCnt ? `\n\n그중 ${addCnt}건은 기존 주문의 다음 차수로 등록됩니다.` : ''));
+        if (!ok) return;
         try {
             for (const o of targets) await db.createOrder(o, user);
             m.close();
