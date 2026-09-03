@@ -276,7 +276,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | 테이블 | 용도 | 주요 필드 |
 |---|---|---|
 | `profiles` | 사용자 | `name` `email` `company`(고객사/용마로지스) `role` `active` |
-| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date` `vehicle_type` `extra_works` `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
+| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date`(null=미정) `vehicle_type` `team_name` `extra_works` `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
 | `order_history` | 변동사항 이력 | `order_id` `rev` `field` `before_val` `after_val` `memo` `changed_by` `checked_at` |
 | `restore_requests` | 조정요청 | `order_id` `type` `reason` `product_code` `qty` `created_by` `checked_at` |
 | `pallets` | 검수 바코드 · 적치 로케이션 | `order_id` `barcode` `scanned_at` `location` `picked_at` |

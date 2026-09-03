@@ -30,6 +30,8 @@ function normalize(db) {
     db.orders.forEach((o) => {
         o.extra_works = o.extra_works ?? [];
         o.edit_count = o.edit_count ?? 0;
+        o.ship_req_date = o.ship_req_date ?? '';   // 미정(null)은 빈 값으로 다뤄 표시·정렬을 지킨다
+        o.team_name = o.team_name ?? '';
         o.confirmed_at = o.confirmed_at ?? null;
         o.canceled_at = o.canceled_at ?? null;
         // 단계별 완료 시각 (없으면 미완료).
@@ -343,6 +345,7 @@ export async function createOrder(payload, user) {
         qty: 0,
         pallet_count: 0,
         extra_works: [],
+        team_name: '',
         edit_count: 0,
         confirmed_at: null,
         canceled_at: null,
@@ -375,7 +378,7 @@ export async function updateOrder(id, patch, user, memo = '') {
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     const labels = {
         send_date: '전송일자', order_no: '주문번호', customer: '거래처명',
-        ship_req_date: '출고요청일', vehicle_type: '차량구분',
+        ship_req_date: '출고요청일', vehicle_type: '차량구분', team_name: '팀명',
         extra_works: '추가작업', request_note: '요청사항', remark: '비고',
         item_count: '품목수', qty: '출고수량', pallet_count: '파렛트수', box_count: '박스수',
     };
