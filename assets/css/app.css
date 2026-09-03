@@ -428,6 +428,9 @@ table.grid.bulk-grid input {
     min-width: 120px;
 }
 
+/* 주문구분·구분처럼 값이 짧은 칸은 폭을 줄여 표가 옆으로 길어지지 않게 한다 */
+table.grid.bulk-grid input.narrow { min-width: 84px; }
+
 .bulk-err {
     margin-top: 12px;
     padding: 12px 14px;
