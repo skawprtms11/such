@@ -111,18 +111,27 @@ export const ORDER_POLICY = {
 };
 
 /**
- * 주문 진행상태 (저장하지 않고 주문 상태에서 계산한다)
+ * 주문 상태 - 주문정보등록의 확인 컬럼에 표시한다 (저장하지 않고 계산한다)
  *   대기 : 등록만 된 상태
- *   진행 : 접수 처리됨
- *   완료 : 상차완료까지 끝남
+ *   접수 : 용마담당자가 작업지시를 작성해 접수함 (confirmed_at)
+ *   진행 : 출고작업에 착수함 (ship_started_at 이후)
+ *   완료 : 상차완료까지 끝남 (loaded_at)
  *   취소 : 취소 처리됨 (다른 상태보다 우선한다)
  */
-export const PROGRESS = {
+export const ORDER_STATE = {
     WAIT: '대기',
+    ACCEPTED: '접수',
     DOING: '진행',
     DONE: '완료',
     CANCELED: '취소',
 };
+
+/** 주문 구분 (등록 시 선택) */
+export const ORDER_REGIONS = ['국내', '해외'];
+
+/** 있음/없음 선택값 (추가작업 · 패킹리스트) */
+export const YN = { YES: '있음', NO: '없음' };
+export const YN_LIST = Object.values(YN);
 
 /**
  * 출고 처리 단계 (주문처리현황 · 출고주문처리가 공유한다)
@@ -131,9 +140,10 @@ export const PROGRESS = {
  *             이 값이 없는 단계는 '차례가 됐다' 는 이유만으로 노란색이 되지 않는다
  *             (상차작업은 스캔을 시작하면 `inspected` 가 올라가므로 그것으로 본다)
  *   cond : 조건부 단계. 해당 조건일 때만 화면에 표시한다
- *          'extra'  - 주문에 추가작업(라벨작업 등)이 등록된 경우
- *          'adjust' - 조정요청이 등록된 경우 (완료 여부는 요청 확인 상태로 계산한다)
- *          'task'   - 추가작업 요청이 등록된 경우
+ *          'extra'   - 주문 등록 시 추가작업이 '있음' 인 경우 (옛 데이터는 extra_works 배열)
+ *          'adjust'  - 조정요청이 등록된 경우 (완료 여부는 요청 확인 상태로 계산한다)
+ *          'task'    - 추가작업 요청이 등록된 경우
+ *          'packing' - 주문 등록 시 패킹리스트가 '있음' 인 경우
  *
  * 완료 처리 위치
  *   주문처리 → 주문정보등록의 접수 체크
@@ -149,9 +159,10 @@ export const WORK_STEPS = [
     { key: 'ship', label: '출고작업', at: 'ship_done_at', startAt: 'ship_started_at' },
     { key: 'request', label: '요청작업', at: 'req_work_at', cond: 'extra' },
     { key: 'inspect', label: '검수작업', at: 'inspect_done_at' },
+    { key: 'extra', label: '추가작업', at: 'extra_done_at', cond: 'task' },
+    { key: 'packing', label: '패킹리스트', at: 'packing_at', cond: 'packing' },
     { key: 'stow', label: '출고적치', at: 'stow_done_at' },
     { key: 'adjust', label: '조정작업', cond: 'adjust' },
-    { key: 'extra', label: '추가작업', at: 'extra_done_at', cond: 'task' },
     { key: 'load', label: '상차작업', at: 'loaded_at' },
 ];
 
@@ -226,8 +237,8 @@ export function stowStatus(done, total) {
  */
 export const EXTRA_TASK_TYPE = '작업요청';
 
-/** 차량구분 */
-export const VEHICLE_TYPES = ['픽업', '용차'];
+/** 출고형태 (저장 필드는 vehicle_type 그대로 쓴다) */
+export const VEHICLE_TYPES = ['용차', '픽업', '택배'];
 
 /** 추가작업 (주문 등록 시 다중 선택) */
 export const EXTRA_WORKS = ['라벨작업', '박스교체', 'LOT지정'];

@@ -525,7 +525,7 @@ function openDetail(o, opt, ctx) {
   ${row('전송일자', o.send_date)}
   ${row('등록일자', o.reg_date)}
   ${row('출고요청일', `<b>${o.ship_req_date}</b>`)}
-  ${row('차량구분', esc(o.vehicle_type))}
+  ${row('출고형태', esc(o.vehicle_type))}
   ${row('요청작업', (o.extra_works ?? []).length
         ? o.extra_works.map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ')
         : dash)}

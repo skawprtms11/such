@@ -96,7 +96,7 @@ export async function render(root, { user }) {
 
     function downloadRows() {
         downloadCsv(`당일상차리스트_${filter.date}.csv`,
-            ['출고일자', '주문번호', '거래처명', '차량구분', '파렛트수', '검수파렛트', '상태'],
+            ['출고일자', '주문번호', '거래처명', '출고형태', '파렛트수', '검수파렛트', '상태'],
             rows.map((o) => [
                 o.ship_req_date, o.order_no, o.customer, o.vehicle_type,
                 o.pallet_count, o.inspected, o.load_status,
@@ -167,7 +167,7 @@ function drawTable(root, rows, editable, user, reload) {
     }
     tbl.innerHTML = `
 <thead><tr>
-  <th>출고일자</th><th>주문번호</th><th>거래처명</th><th class="center">차량구분</th>
+  <th>출고일자</th><th>주문번호</th><th>거래처명</th><th class="center">출고형태</th>
   <th class="num">파렛트수</th><th class="num">박스수</th>
   <th class="center">적치로케이션</th>
   <th class="center">검수</th><th class="center">상태</th>
@@ -217,7 +217,7 @@ function drawCards(root, rows, editable, user, reload) {
   <div class="load-card__cust">${esc(o.customer)}</div>
   <div class="load-card__meta">
     <span>출고일 <b>${o.ship_req_date}</b></span>
-    <span>차량 <b>${esc(o.vehicle_type)}</b></span>
+    <span>출고형태 <b>${esc(o.vehicle_type)}</b></span>
     <span>파렛트 <b>${o.group_inspected}/${o.group_pallets}</b></span>
     <span>박스 <b>${o.box_count ? num(o.box_count) : '-'}</b></span>
   </div>
@@ -332,7 +332,7 @@ async function openLoadedDetail(orderId, user, reload, editable) {
 <table class="grid"><tbody>
   ${row('거래처명', esc(o.customer))}
   ${row('출고일자', `<b>${o.ship_req_date}</b>`)}
-  ${row('차량구분', esc(o.vehicle_type))}
+  ${row('출고형태', esc(o.vehicle_type))}
   ${row('차수', `${g.rows.length}개 차수${g.rows.length > 1
         ? ` (추가주문 ${g.rows.length - 1}건 포함)` : ''}`)}
   ${row('파렛트수', pallets.length ? `${num(pallets.length)} PLT` : dash)}

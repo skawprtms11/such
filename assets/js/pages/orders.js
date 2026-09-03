@@ -1,6 +1,7 @@
 /** 주문정보등록 화면 - 화주 영업사원이 출고 주문을 게시판 형태로 등록/수정한다 */
 import {
-    VEHICLE_TYPES, EXTRA_WORKS, PROGRESS, ORDER_POLICY, ADJUST_CATEGORIES, adjustCategory,
+    VEHICLE_TYPES, ORDER_STATE, ORDER_REGIONS, YN, YN_LIST,
+    ORDER_POLICY, ADJUST_CATEGORIES, adjustCategory,
     RESTORE_TYPE, RESTORE_TYPE_LABEL, RESTORE_REASONS,
 } from '../config.js';
 import { can, allow } from '../auth.js';
@@ -89,18 +90,17 @@ export async function render(root, { user }) {
         const [counts, users] = await Promise.all([db.countRestores(), db.listUsers()]);
         const names = Object.fromEntries(users.map((u) => [u.id, u.name]));
         downloadCsv(`주문등록내역_${today()}.csv`,
-            ['연번', '등록일자', '전송일자', '담당자', '차수', '주문번호', '거래처명', '추가작업',
-                '요청사항', '출고요청일', '진행상태', '접수확인', '수정횟수', '조정요청',
-                '차량구분', '품목수', '출고수량', '비고'],
+            ['연번', '구분', '등록일자', '전송일자', '담당자', '차수', '주문번호', '거래처명',
+                '추가작업', '패킹리스트', '요청사항', '출고요청일', '상태', '작업지시',
+                '수정횟수', '조정요청', '출고형태', '팀명', '품목수', '출고수량', '비고'],
             rows.map((o, i) => [
-                i + 1, o.reg_date, o.send_date, names[o.created_by] ?? '',
+                i + 1, o.region || '국내', o.reg_date, o.send_date, names[o.created_by] ?? '',
                 `${o.seq}차수`, o.order_no, o.customer,
-                (o.extra_works ?? []).join(' / '),
-                o.request_note, o.ship_req_date || '미정', progressOf(o),
-                o.confirmed_at ? '접수확인' : '미확인',
+                o.extra_yn, o.packing_yn,
+                o.request_note, o.ship_req_date || '미정', stateOf(o), o.work_note,
                 o.edit_count ? `${o.edit_count}회` : '',
                 counts[o.id] ? `${counts[o.id]}건` : '',
-                o.vehicle_type, o.item_count, o.qty, o.remark,
+                o.vehicle_type, o.team_name, o.item_count, o.qty, o.remark,
             ]));
     });
 
@@ -160,69 +160,53 @@ function countBadge(stat = EMPTY_STAT) {
 }
 
 /**
- * 확인 셀 - 접수 체크박스 하나.
- * 색으로 상태를 알린다.
- *   흰색   : 접수 전
- *   초록   : 접수 완료, 확인할 변경 없음
- *   빨강   : 접수 완료했지만 수정·조정 미확인이 남음 (이력에서 확인해야 한다)
+ * 확인 셀 - 계산된 주문 상태(대기·접수·진행·취소·완료) 배지 하나.
+ * 접수는 상세 팝업에서 작업지시를 작성해야 처리된다 (체크 방식은 제거했다).
  */
-function confirmCell(user, o, stat = EMPTY_STAT) {
+function stateCell(o, stat = EMPTY_STAT) {
     const st = stat ?? EMPTY_STAT;
-    const confirmed = Boolean(o.confirmed_at);
+    const s = stateOf(o);
+    const cls = {
+        [ORDER_STATE.WAIT]: 'tag--gray',
+        [ORDER_STATE.ACCEPTED]: 'tag--blue',
+        [ORDER_STATE.DOING]: 'tag--amber',
+        [ORDER_STATE.DONE]: 'tag--green',
+        [ORDER_STATE.CANCELED]: 'tag--red tag--canceled',
+    }[s];
+
     const left = st.editsLeft + st.restoresLeft;
-    // 취소된 주문은 더 이상 접수 처리를 바꾸지 않는다
-    const active = canConfirm(user) && !o.canceled_at;
-
-    let cls = '';
-    let tip = '접수 확인 전';
-    if (confirmed) {
+    let tip = '';
+    if (s === ORDER_STATE.CANCELED && o.canceled_at) {
+        tip = `${fmtDateTime(o.canceled_at)}${o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''}`;
+    } else if (o.confirmed_at) {
         const by = o.confirmed_by_name ? ` · ${o.confirmed_by_name}` : '';
-        cls = left ? 'is-alert' : 'is-on';
-        tip = left
-            ? `수정·조정 미확인 ${left}건 · 이력에서 확인하세요`
-            : `${fmtDateTime(o.confirmed_at)}${by}`;
+        tip = `접수 ${fmtDateTime(o.confirmed_at)}${by}`;
+    } else {
+        tip = '상세 팝업에서 작업지시를 작성하면 접수됩니다';
     }
+    if (left) tip += ` · 수정·조정 미확인 ${left}건`;
 
-    return `
-<div class="chk-group">
-  <label class="chk ${cls} ${active ? '' : 'is-readonly'}" title="${esc(tip)}">
-    <input type="checkbox" data-confirm="${o.id}" ${confirmed ? 'checked' : ''}
-           ${active ? '' : 'disabled'}>
-    <span>접수</span>
-  </label>
-</div>`;
+    return `<span class="tag ${cls}" title="${esc(tip)}">${s}</span>`;
 }
 
 /**
- * 진행상태 셀.
+ * 확인 컬럼의 주문 상태.
  * 저장된 값이 아니라 주문 상태에서 계산한다.
- *   취소 > 완료(상차완료) > 진행(접수) > 대기
+ *   취소 > 완료(상차완료) > 진행(출고작업 착수) > 접수(작업지시 작성) > 대기
  */
-function progressOf(o) {
-    if (o.canceled_at) return PROGRESS.CANCELED;
-    if (o.loaded_at) return PROGRESS.DONE;
-    if (o.confirmed_at) return PROGRESS.DOING;
-    return PROGRESS.WAIT;
+function stateOf(o) {
+    if (o.canceled_at) return ORDER_STATE.CANCELED;
+    if (o.loaded_at) return ORDER_STATE.DONE;
+    if (o.ship_started_at || o.ship_done_at) return ORDER_STATE.DOING;
+    if (o.confirmed_at) return ORDER_STATE.ACCEPTED;
+    return ORDER_STATE.WAIT;
 }
 
-function progressCell(o) {
-    const p = progressOf(o);
-    const cls = {
-        [PROGRESS.WAIT]: 'tag--gray',
-        [PROGRESS.DOING]: 'tag--blue',
-        [PROGRESS.DONE]: 'tag--green',
-        [PROGRESS.CANCELED]: 'tag--red tag--canceled',
-    }[p];
-    const tip = p === PROGRESS.CANCELED && o.canceled_at
-        ? `${fmtDateTime(o.canceled_at)}${o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''}`
-        : '';
-    return `<span class="tag ${cls}" title="${esc(tip)}">${p}</span>`;
-}
-
-/** 추가작업 태그 HTML */
-function extraWorkTags(list) {
-    if (!list || !list.length) return '<span class="muted">-</span>';
-    return list.map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ');
+/** 있음/없음 셀 - '있음' 만 파란 태그로 눈에 띄게 한다 */
+function ynCell(v) {
+    return v === YN.YES
+        ? `<span class="tag tag--blue">${YN.YES}</span>`
+        : `<span class="muted">${YN.NO}</span>`;
 }
 
 /** 게시판 형태 목록 렌더링 */
@@ -234,15 +218,17 @@ function drawTable(root, rows, user, reload, stats = {}, names = {}) {
     }
     tbl.innerHTML = `
 <thead><tr>
-  <th class="num">연번</th><th>등록일자</th><th>전송일자</th>
+  <th class="num">연번</th><th class="center">구분</th><th>등록일자</th><th>전송일자</th>
   <th class="center">담당자</th><th class="center">차수</th>
-  <th>주문번호</th><th>거래처명</th><th class="center">추가작업</th><th>요청사항</th>
-  <th>출고요청일</th><th class="center">확인</th><th class="center">진행상태</th>
+  <th>주문번호</th><th>거래처명</th>
+  <th class="center">추가작업</th><th class="center">패킹리스트</th><th>지시사항</th>
+  <th>출고요청일</th><th class="center">확인</th>
 </tr></thead>
 <tbody>
 ${rows.map((o, i) => `
 <tr class="${o.canceled_at ? 'is-canceled' : ''}">
   <td class="num">${rows.length - i}</td>
+  <td class="center"><span class="tag">${esc(o.region || '국내')}</span></td>
   <td>${o.reg_date}</td>
   <td>${o.send_date}</td>
   <td class="center">${esc(names[o.created_by] ?? '-')}</td>
@@ -251,11 +237,11 @@ ${rows.map((o, i) => `
     <span class="link" data-detail="${o.id}">${esc(o.order_no)}</span>${countBadge(stats[o.id])}
   </td>
   <td>${esc(o.customer)}</td>
-  <td class="center">${extraWorkTags(o.extra_works)}</td>
-  <td class="wrap">${esc(o.request_note)}</td>
+  <td class="center">${ynCell(o.extra_yn)}</td>
+  <td class="center">${ynCell(o.packing_yn)}</td>
+  <td class="wrap">${esc(o.work_note)}</td>
   <td>${o.ship_req_date || '미정'}</td>
-  <td class="center">${confirmCell(user, o, stats[o.id])}</td>
-  <td class="center">${progressCell(o)}</td>
+  <td class="center">${stateCell(o, stats[o.id])}</td>
 </tr>`).join('')}
 </tbody>`;
 
@@ -267,28 +253,6 @@ ${rows.map((o, i) => `
             openForm(await db.getOrder(el.dataset.edit), user, reload);
         });
     });
-    /** 확인 체크박스 바인딩 */
-    const bindCheckbox = (attr, handler) => {
-        tbl.querySelectorAll(`[${attr}]`).forEach((el) => {
-            el.addEventListener('change', async () => {
-                try {
-                    await handler(el.dataset[attr.replace('data-', '')], el.checked);
-                    reload();
-                } catch (err) {
-                    toast(err.message, 'error');
-                    reload();
-                }
-            });
-        });
-    };
-
-    bindCheckbox('data-confirm', async (id) => {
-        const o = await db.toggleOrderConfirm(id, user);
-        toast(o.confirmed_at ? '접수확인 처리되었습니다.' : '접수확인을 해제했습니다.',
-            o.confirmed_at ? 'success' : 'info');
-    });
-
-
 }
 
 /**
@@ -378,17 +342,65 @@ async function showDetail(id, user, reload) {
             : o.loaded_at ? '상차완료된 주문이라 수정할 수 없습니다.' : '';
 
         // 조정요청 탭의 저장 버튼은 등록 카드 안에 있다 (목록 아래가 아니라 입력 바로 밑)
-        const btn = activeTab === 'info' && canEdit(user, o)
-            ? '<button class="btn btn--primary" id="btn-detail-edit" type="button">수정</button>'
-            : '';
+        const btns = [];
+        if (activeTab === 'info' && canEdit(user, o)) {
+            btns.push('<button class="btn btn--primary" id="btn-detail-edit" type="button">'
+                + '수정</button>');
+        }
+        // 접수는 여기서만 한다 - 작업지시를 작성해야 접수되고, 확인 컬럼이 '접수' 로 바뀐다
+        if (activeTab === 'info' && canConfirmHere && !o.canceled_at) {
+            if (!o.confirmed_at) {
+                btns.push('<button class="btn btn--success" id="btn-accept-order" type="button">'
+                    + '접수 (작업지시 작성)</button>');
+            } else if (!o.ship_started_at && !o.ship_done_at) {
+                btns.push('<button class="btn" id="btn-revoke-confirm" type="button">'
+                    + '접수취소</button>');
+            }
+        }
 
         foot.innerHTML = `
 <div class="modal__foot-note">${esc(note)}</div>
-${btn ? `<div class="btn-row">${btn}</div>` : ''}`;
+${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
 
         foot.querySelector('#btn-detail-edit')?.addEventListener('click', () => {
             m.close();
             openForm(o, user, reload);
+        });
+
+        // 접수 - 작업지시 입력칸을 하단에 펼친다. 작성해야 접수가 완료된다
+        foot.querySelector('#btn-accept-order')?.addEventListener('click', () => {
+            foot.innerHTML = `
+<div class="accept-box">
+  <span class="field__label">작업지시 * (현장에 전달할 내용을 작성하세요 -
+    출고주문처리의 출고작업·검수작업 탭에 표시됩니다)</span>
+  <textarea id="work-note" rows="3"
+            placeholder="예: 파렛트 2단 적재, 라벨 부착 후 검수 진행">${esc(o.work_note)}</textarea>
+  <div class="btn-row">
+    <button class="btn" id="btn-accept-cancel" type="button">취소</button>
+    <button class="btn btn--success" id="btn-accept-save" type="button">접수완료</button>
+  </div>
+</div>`;
+            foot.querySelector('#btn-accept-cancel').addEventListener('click', () => drawFooter(o));
+            foot.querySelector('#btn-accept-save').addEventListener('click', async () => {
+                try {
+                    await db.confirmOrder(o.id, foot.querySelector('#work-note').value, user);
+                    toast('접수 처리되었습니다.', 'success');
+                    draw();
+                } catch (err) {
+                    toast(err.message, 'error');
+                }
+            });
+        });
+
+        foot.querySelector('#btn-revoke-confirm')?.addEventListener('click', async () => {
+            if (!await confirmDialog('접수를 취소하시겠습니까? 상태가 대기로 돌아갑니다.')) return;
+            try {
+                await db.revokeOrderConfirm(o.id, user);
+                toast('접수를 취소했습니다.', 'info');
+                draw();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
         });
     }
 
@@ -450,7 +462,8 @@ ${row('주문번호', o.order_no)}
 ${row('거래처명', o.customer)}
 ${row('담당자', owner?.name ?? '-')}
 ${row('차수', `${o.seq}차수`)}
-${row('차량구분', o.vehicle_type)}
+${row('구분', o.region || '국내')}
+${row('출고형태', o.vehicle_type)}
 ${row('등록일자', o.reg_date)}
 ${row('전송일자', o.send_date)}
 ${row('출고요청일', o.ship_req_date || '미정')}
@@ -462,8 +475,12 @@ ${row('품목수', `${num(o.item_count)}개`)}
 ${row('출고수량', `${num(o.qty)}ea`)}
 ${row('파렛트수', `${num(o.pallet_count)}파렛트`)}
 ${row('처리현황', currentStep(o, stepOpt))}
-${row('진행상태', progressOf(o))}
-${row('추가작업', (o.extra_works ?? []).join(', '), true)}
+${row('상태', stateOf(o))}
+${row('추가작업', o.extra_yn === YN.YES && (o.extra_works ?? []).length
+        ? `${YN.YES} (${o.extra_works.join(', ')})` : o.extra_yn)}
+${row('패킹리스트', o.packing_yn)}
+${row('패킹리스트 내용', o.packing_note, true)}
+${row('작업지시', o.work_note, true)}
 ${row('요청사항', o.request_note, true)}
 ${row('비고', o.remark, true)}
 </div>`;
@@ -541,6 +558,16 @@ function openForm(o, user, reload) {
       <span class="field__label">전송일자<span class="req">*</span></span>
       <input type="date" name="send_date" required value="${v('send_date', today())}">
     </label>
+    <div class="field">
+      <span class="field__label">구분<span class="req">*</span></span>
+      <div class="checks">
+        ${ORDER_REGIONS.map((r) => `
+        <label class="check check--inline">
+          <input type="radio" name="region" value="${r}"
+                 ${(o?.region ?? ORDER_REGIONS[0]) === r ? 'checked' : ''} required> ${r}
+        </label>`).join('')}
+      </div>
+    </div>
     <label class="field">
       <span class="field__label">주문번호<span class="req">*</span></span>
       <input type="text" name="order_no" required placeholder="PO-00000000"
@@ -561,24 +588,37 @@ function openForm(o, user, reload) {
                ${isEdit && !o?.ship_req_date ? 'checked' : ''}> 미정 (일자 미지정)
       </label>
     </label>
-    <label class="field">
-      <span class="field__label">차량구분<span class="req">*</span></span>
-      <select name="vehicle_type" required>
+    <div class="field">
+      <span class="field__label">출고형태<span class="req">*</span></span>
+      <div class="checks">
         ${VEHICLE_TYPES.map((t) => `
-        <option value="${t}" ${o?.vehicle_type === t ? 'selected' : ''}>${t}</option>`).join('')}
-      </select>
-    </label>
+        <label class="check check--inline">
+          <input type="radio" name="vehicle_type" value="${t}"
+                 ${(o?.vehicle_type ?? VEHICLE_TYPES[0]) === t ? 'checked' : ''} required> ${t}
+        </label>`).join('')}
+      </div>
+    </div>
     <label class="field">
       <span class="field__label">팀명</span>
       <input type="text" name="team_name" value="${v('team_name')}">
     </label>
-    <div class="field full">
-      <span class="field__label">추가작업 (복수 선택 가능)</span>
+    <div class="field">
+      <span class="field__label">추가작업<span class="req">*</span></span>
       <div class="checks">
-        ${EXTRA_WORKS.map((w) => `
+        ${YN_LIST.map((y) => `
         <label class="check check--inline">
-          <input type="checkbox" name="extra_works" value="${w}"
-                 ${(o?.extra_works ?? []).includes(w) ? 'checked' : ''}> ${w}
+          <input type="radio" name="extra_yn" value="${y}"
+                 ${(o?.extra_yn ?? YN.NO) === y ? 'checked' : ''} required> ${y}
+        </label>`).join('')}
+      </div>
+    </div>
+    <div class="field">
+      <span class="field__label">패킹리스트<span class="req">*</span></span>
+      <div class="checks">
+        ${YN_LIST.map((y) => `
+        <label class="check check--inline">
+          <input type="radio" name="packing_yn" value="${y}"
+                 ${(o?.packing_yn ?? YN.NO) === y ? 'checked' : ''} required> ${y}
         </label>`).join('')}
       </div>
     </div>
@@ -683,8 +723,6 @@ function openForm(o, user, reload) {
         e.preventDefault();
         const form = new FormData(e.target);
         const fd = Object.fromEntries(form);
-        // 체크박스는 다중 선택이므로 getAll 로 따로 읽는다
-        fd.extra_works = form.getAll('extra_works');
         // 미정이면 출고요청일을 빈 값으로 저장한다 (비활성화된 입력은 FormData 에 없다)
         fd.ship_req_date = undecidedChk.checked ? '' : fd.ship_req_date;
         delete fd.ship_req_undecided;
@@ -1028,7 +1066,7 @@ const BULK_COLS = [
     },
     { key: 'customer', label: '거래처명', required: true, hint: '올리브영 물류센터' },
     { key: 'order_no', label: '주문번호', required: true, hint: 'PO-24080101' },
-    { key: 'vehicle_type', label: '차량구분', required: true, hint: '픽업 또는 용차' },
+    { key: 'vehicle_type', label: '출고형태', required: true, hint: '용차/픽업/택배' },
     { key: 'team_name', label: '팀명', hint: '' },
     { key: 'request_note', label: '요청사항', hint: '' },
     { key: 'remark', label: '비고', hint: '' },
@@ -1063,7 +1101,7 @@ function openBulkForm(user, reload) {
     <li><b>날짜</b> — <code>2026-08-30</code> · <code>2026/8/30</code> · <code>20260830</code>
       모두 인식합니다.</li>
     <li><b>출고요청일</b> — 일자를 정하지 않았으면 <code>미정</code> 이라고 적습니다.</li>
-    <li><b>차량구분</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
+    <li><b>출고형태</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
     <li><b>추가작업</b> — 일괄등록에서는 받지 않습니다. 등록 후 수정에서 지정하세요.</li>
   </ul>
 </div>
@@ -1122,6 +1160,43 @@ ${rows.map((r, ri) => `
             tbl.querySelector(`[data-r="${focus.r}"][data-c="${focus.c}"]`)?.focus();
         }
     }
+
+    /**
+     * 엑셀처럼 키보드로 셀을 이동한다.
+     *   Enter / Shift+Enter : 아래 / 위 (마지막 행에서 Enter 는 행을 늘려 이어서 입력)
+     *   ↑ ↓                : 위 / 아래
+     *   ← →                : 커서가 셀 끝에 닿아 있으면 옆 셀로
+     *   Tab / Shift+Tab     : 기본 동작이 이미 오른쪽 / 왼쪽 이동이라 손대지 않는다
+     */
+    tbl.addEventListener('keydown', (e) => {
+        const cell = e.target.closest('input[data-r]');
+        if (!cell) return;
+        const r = Number(cell.dataset.r);
+        const c = Number(cell.dataset.c);
+        const atStart = cell.selectionStart === 0 && cell.selectionEnd === 0;
+        const atEnd = cell.selectionStart === cell.value.length
+            && cell.selectionEnd === cell.value.length;
+
+        let tr = null;
+        let tc = null;
+        if (e.key === 'Enter') { tr = e.shiftKey ? r - 1 : r + 1; tc = c; }
+        else if (e.key === 'ArrowDown') { tr = r + 1; tc = c; }
+        else if (e.key === 'ArrowUp') { tr = r - 1; tc = c; }
+        else if (e.key === 'ArrowRight' && atEnd) { tr = r; tc = c + 1; }
+        else if (e.key === 'ArrowLeft' && atStart) { tr = r; tc = c - 1; }
+        if (tr === null || tr < 0 || tc < 0 || tc >= BULK_COLS.length) return;
+
+        e.preventDefault();
+        if (tr >= rows.length) {
+            if (e.key !== 'Enter') return;   // 마지막 행 아래로는 Enter 로만 늘린다
+            rows.push(BULK_COLS.map(() => ''));
+            draw({ r: tr, c: tc });
+            return;
+        }
+        const next = tbl.querySelector(`[data-r="${tr}"][data-c="${tc}"]`);
+        next?.focus();
+        next?.select();
+    });
 
     /** 엑셀에서 복사한 표(TSV)를 붙여넣는다 */
     tbl.addEventListener('paste', (e) => {
@@ -1186,7 +1261,7 @@ ${rows.map((r, ri) => `
                 if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad.push(`${k === 'send_date' ? '전송일자' : '출고요청일'} 형식 오류`);
             });
             if (o.vehicle_type && !VEHICLE_TYPES.includes(o.vehicle_type)) {
-                bad.push(`차량구분은 ${VEHICLE_TYPES.join('/')} 만 가능`);
+                bad.push(`출고형태는 ${VEHICLE_TYPES.join('/')} 만 가능`);
             }
             if (o.ship_req_date === '미정') o.ship_req_date = '';
 
