@@ -96,7 +96,7 @@ export async function render(root, { user }) {
                 i + 1, o.reg_date, o.send_date, names[o.created_by] ?? '',
                 `${o.seq}차수`, o.order_no, o.customer,
                 (o.extra_works ?? []).join(' / '),
-                o.request_note, o.ship_req_date, progressOf(o),
+                o.request_note, o.ship_req_date || '미정', progressOf(o),
                 o.confirmed_at ? '접수확인' : '미확인',
                 o.edit_count ? `${o.edit_count}회` : '',
                 counts[o.id] ? `${counts[o.id]}건` : '',
@@ -253,7 +253,7 @@ ${rows.map((o, i) => `
   <td>${esc(o.customer)}</td>
   <td class="center">${extraWorkTags(o.extra_works)}</td>
   <td class="wrap">${esc(o.request_note)}</td>
-  <td>${o.ship_req_date}</td>
+  <td>${o.ship_req_date || '미정'}</td>
   <td class="center">${confirmCell(user, o, stats[o.id])}</td>
   <td class="center">${progressCell(o)}</td>
 </tr>`).join('')}
@@ -453,7 +453,8 @@ ${row('차수', `${o.seq}차수`)}
 ${row('차량구분', o.vehicle_type)}
 ${row('등록일자', o.reg_date)}
 ${row('전송일자', o.send_date)}
-${row('출고요청일', o.ship_req_date)}
+${row('출고요청일', o.ship_req_date || '미정')}
+${row('팀명', o.team_name)}
 ${row('접수확인', o.confirmed_at
         ? `접수확인 · ${fmtDateTime(o.confirmed_at)}${o.confirmed_by_name ? ` · ${o.confirmed_by_name}` : ''}`
         : '미확인')}
@@ -553,7 +554,12 @@ function openForm(o, user, reload) {
     </label>
     <label class="field">
       <span class="field__label">출고요청일<span class="req">*</span></span>
-      <input type="date" name="ship_req_date" required value="${v('ship_req_date', today())}">
+      <input type="date" name="ship_req_date" ${isEdit && !o?.ship_req_date ? 'disabled' : 'required'}
+             value="${v('ship_req_date', isEdit ? '' : today())}">
+      <label class="check check--inline">
+        <input type="checkbox" name="ship_req_undecided"
+               ${isEdit && !o?.ship_req_date ? 'checked' : ''}> 미정 (일자 미지정)
+      </label>
     </label>
     <label class="field">
       <span class="field__label">차량구분<span class="req">*</span></span>
@@ -561,6 +567,10 @@ function openForm(o, user, reload) {
         ${VEHICLE_TYPES.map((t) => `
         <option value="${t}" ${o?.vehicle_type === t ? 'selected' : ''}>${t}</option>`).join('')}
       </select>
+    </label>
+    <label class="field">
+      <span class="field__label">팀명</span>
+      <input type="text" name="team_name" value="${v('team_name')}">
     </label>
     <div class="field full">
       <span class="field__label">추가작업 (복수 선택 가능)</span>
@@ -594,6 +604,15 @@ function openForm(o, user, reload) {
 </form>`, { wide: true });
 
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
+
+    // 출고요청일 '미정' - 체크하면 일자 입력을 비활성화하고 빈 값(미정)으로 저장한다
+    const shipDateInput = m.body.querySelector('[name="ship_req_date"]');
+    const undecidedChk = m.body.querySelector('[name="ship_req_undecided"]');
+    undecidedChk.addEventListener('change', () => {
+        shipDateInput.disabled = undecidedChk.checked;
+        shipDateInput.required = !undecidedChk.checked;
+        if (undecidedChk.checked) shipDateInput.value = '';
+    });
 
     // 신규/추가 선택 - 추가주문이면 기존 주문번호를 고르고, 그 정보를 채워 준다
     if (!isEdit) {
@@ -666,6 +685,9 @@ function openForm(o, user, reload) {
         const fd = Object.fromEntries(form);
         // 체크박스는 다중 선택이므로 getAll 로 따로 읽는다
         fd.extra_works = form.getAll('extra_works');
+        // 미정이면 출고요청일을 빈 값으로 저장한다 (비활성화된 입력은 FormData 에 없다)
+        fd.ship_req_date = undecidedChk.checked ? '' : fd.ship_req_date;
+        delete fd.ship_req_undecided;
         const memo = fd.memo ?? '';
         delete fd.memo;
         // 추가주문이면 차수를 올려 등록한다 (kind 는 저장 필드가 아니다)
@@ -993,14 +1015,21 @@ function bindRestoreForm(pane, o, user, redraw) {
 
 /* -------------------------------- 일괄등록 -------------------------------- */
 
-/** 일괄등록 표의 컬럼 (등록 폼과 같은 순서) */
+/** 일괄등록 표의 컬럼 순서 (추가작업은 일괄등록에서 받지 않는다) */
 const BULK_COLS = [
     { key: 'send_date', label: '전송일자', required: true, date: true, hint: '2026-08-30' },
-    { key: 'order_no', label: '주문번호', required: true, hint: 'PO-24080101' },
+    {
+        key: 'ship_req_date',
+        label: '출고요청일',
+        required: true,
+        date: true,
+        allowUndecided: true,
+        hint: '2026-08-31 또는 미정',
+    },
     { key: 'customer', label: '거래처명', required: true, hint: '올리브영 물류센터' },
-    { key: 'ship_req_date', label: '출고요청일', required: true, date: true, hint: '2026-08-31' },
+    { key: 'order_no', label: '주문번호', required: true, hint: 'PO-24080101' },
     { key: 'vehicle_type', label: '차량구분', required: true, hint: '픽업 또는 용차' },
-    { key: 'extra_works', label: '추가작업', hint: '라벨작업, LOT지정' },
+    { key: 'team_name', label: '팀명', hint: '' },
     { key: 'request_note', label: '요청사항', hint: '' },
     { key: 'remark', label: '비고', hint: '' },
 ];
@@ -1033,13 +1062,9 @@ function openBulkForm(user, reload) {
     <li><span class="req">*</span> 표시는 필수 입력 항목입니다.</li>
     <li><b>날짜</b> — <code>2026-08-30</code> · <code>2026/8/30</code> · <code>20260830</code>
       모두 인식합니다.</li>
+    <li><b>출고요청일</b> — 일자를 정하지 않았으면 <code>미정</code> 이라고 적습니다.</li>
     <li><b>차량구분</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
-    <li>
-      <b>추가작업</b> — 한 칸에 여러 개를 넣을 수 있습니다.
-      <b>쉼표(,) 또는 슬래시(/)</b> 로 구분하세요.<br>
-      예) <code>라벨작업, LOT지정</code> · <code>라벨작업/박스교체</code><br>
-      입력 가능한 값: ${EXTRA_WORKS.join(' · ')}
-    </li>
+    <li><b>추가작업</b> — 일괄등록에서는 받지 않습니다. 등록 후 수정에서 지정하세요.</li>
   </ul>
 </div>
 
@@ -1156,16 +1181,14 @@ ${rows.map((r, ri) => `
             const bad = [];
             BULK_COLS.filter((c) => c.required && !o[c.key]).forEach((c) => bad.push(`${c.label} 누락`));
             ['send_date', 'ship_req_date'].forEach((k) => {
+                // 출고요청일은 '미정' 도 허용한다 (일자를 정하지 않고 등록하는 경우)
+                if (k === 'ship_req_date' && o[k] === '미정') return;
                 if (o[k] && !/^\d{4}-\d{2}-\d{2}$/.test(o[k])) bad.push(`${k === 'send_date' ? '전송일자' : '출고요청일'} 형식 오류`);
             });
             if (o.vehicle_type && !VEHICLE_TYPES.includes(o.vehicle_type)) {
                 bad.push(`차량구분은 ${VEHICLE_TYPES.join('/')} 만 가능`);
             }
-            const works = o.extra_works
-                ? o.extra_works.split(/[,/]/).map((w) => w.trim()).filter(Boolean) : [];
-            works.filter((w) => !EXTRA_WORKS.includes(w))
-                .forEach((w) => bad.push(`추가작업 '${w}' 는 없는 항목`));
-            o.extra_works = works;
+            if (o.ship_req_date === '미정') o.ship_req_date = '';
 
             if (bad.length) errors.push(`${ri + 1}행: ${bad.join(', ')}`);
             else targets.push(o);
