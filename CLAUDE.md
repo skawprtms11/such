@@ -227,6 +227,9 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | 예 | `R-2609-001` ← `PO-1`, `PO-2`, `PO-3` | `a11111` ← `a11111-1`, `a11111-2` |
 
 - 두 묶음은 **겹칠 수 있다.** 겹치면 대표주문번호가 이긴다
+- 🔑 **같은 등록자(`created_by`)의 주문만 묶을 수 있다.** 화주영업팀은 본인 등록건만
+  보이므로 남의 주문이 섞이면 묶음이 사람마다 달라진다. 앱(`assertRepOwner`)과
+  서버(`enforce_rep_owner` 트리거)가 함께 막는다 ([docs/orders.md](docs/orders.md) 참고)
 - 묶음 대표(head)는 ① 주문번호 = 대표주문번호 → ② 먼저 등록된 건 → ③ 낮은 차수 →
   ④ id 순으로 정한다. 차수 묶음만 있으면 지금처럼 1차수가 대표다
 - ⚠️ **차수 계산(`createOrder` · `listOpenOrderNos`)은 `base_no` 만 본다.**

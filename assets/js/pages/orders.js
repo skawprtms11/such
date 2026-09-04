@@ -832,7 +832,7 @@ function openForm(o, user, reload) {
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
 
     // 열려 있는(완료처리·취소 전) 대표주문번호를 제안한다
-    db.listOpenRepNos({ createdBy: can(user, 'viewAll') ? undefined : user.id })
+    db.listOpenRepNos({ createdBy: user.id })   // 같은 등록자의 묶음만 붙일 수 있다
         .then((reps) => {
             const list = m.body.querySelector('#open-rep-nos');
             if (!list) return;
@@ -1507,7 +1507,9 @@ ${rows.map((r, ri) => `
                     bad.push(`대표주문번호 '${o.rep_no}' 의 거래처명이 ${before.row}행과 다릅니다`);
                 }
                 const open = openReps.get(o.rep_no);
-                if (open && open.customer !== o.customer) {
+                if (open && open.created_by !== user.id) {
+                    bad.push(`대표주문번호 '${o.rep_no}' 는 다른 담당자가 등록한 묶음입니다`);
+                } else if (open && open.customer !== o.customer) {
                     bad.push(`대표주문번호 '${o.rep_no}' 는 이미 '${open.customer}' 묶음으로`
                         + ' 등록되어 있습니다');
                 }

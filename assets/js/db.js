@@ -440,6 +440,25 @@ export async function listOpenOrderNos(f = {}) {
 }
 
 /**
+ * 🔑 대표주문번호 묶음은 **같은 등록자의 주문만** 묶을 수 있다.
+ * 화주영업팀은 본인 등록건만 보이므로(`viewAll` 없음) 남의 주문이 섞이면 묶음이
+ * 사람마다 다르게 보이고 일괄 처리 범위도 어긋난다. 그래서 등록자를 맞춘다.
+ * 이 검사는 화면에 보이는 행만 보므로, 서버의 `enforce_rep_owner` 트리거가 최종 판정이다.
+ * @param {string|null} repNo 붙이려는 대표주문번호
+ * @param {{id:string}} owner 묶음에 들어갈 주문의 등록자
+ * @param {string} [excludeId] 수정 중인 주문 자신
+ */
+function assertRepOwner(db, repNo, owner, excludeId) {
+    if (!repNo) return;
+    const other = db.orders.find((x) => x.rep_no === repNo && x.id !== excludeId
+        && x.created_by !== owner?.id);
+    if (other) {
+        throw new Error(`대표주문번호 '${repNo}' 는 다른 담당자가 등록한 묶음입니다. `
+            + '같은 담당자가 등록한 주문만 묶을 수 있습니다.');
+    }
+}
+
+/**
  * 등록 폼에서 제안할 대표주문번호 목록.
  * **종결된 주문(완료처리·취소)은 제외한다.**
  * @returns {Promise<Array<{rep_no:string, customer:string, count:number}>>}
@@ -451,7 +470,8 @@ export async function listOpenRepNos(f = {}) {
         .filter((o) => o.rep_no && !o.closed_at && !o.canceled_at)
         .filter((o) => !f.createdBy || o.created_by === f.createdBy)
         .forEach((o) => {
-            const cur = map.get(o.rep_no) ?? { rep_no: o.rep_no, customer: o.customer, count: 0 };
+            const cur = map.get(o.rep_no)
+                ?? { rep_no: o.rep_no, customer: o.customer, created_by: o.created_by, count: 0 };
             cur.count += 1;
             map.set(o.rep_no, cur);
         });
@@ -473,6 +493,7 @@ export async function createOrder(payload, user) {
     const { addition, base_no: baseNo, ...rest } = payload;
     // 대표주문번호는 선택 입력이다. 빈 값은 null 로 저장한다
     rest.rep_no = String(rest.rep_no ?? '').trim() || null;
+    assertRepOwner(db, rest.rep_no, user);
     // 추가주문은 기준 번호(1차수 주문번호)로 묶는다. 주문번호 자체는 `a11111-1` 처럼 따로 붙는다.
     const base = addition ? (baseNo || rest.order_no) : rest.order_no;
     const same = db.orders.filter((o) => o.base_no === base);
@@ -528,7 +549,11 @@ export async function updateOrder(id, patch, user, memo = '') {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     // 대표주문번호는 빈 값이면 묶음 해제(null)로 다룬다
-    if ('rep_no' in patch) patch.rep_no = String(patch.rep_no ?? '').trim() || null;
+    if ('rep_no' in patch) {
+        patch.rep_no = String(patch.rep_no ?? '').trim() || null;
+        // 묶음의 등록자는 원래 주문의 등록자로 본다 (수정하는 사람이 아니다)
+        if (patch.rep_no !== o.rep_no) assertRepOwner(db, patch.rep_no, { id: o.created_by }, o.id);
+    }
     const labels = {
         send_date: '전송일자', order_no: '주문번호', rep_no: '대표주문번호', customer: '거래처명',
         ship_req_date: '출고요청일', vehicle_type: '출고형태', team_name: '팀명',

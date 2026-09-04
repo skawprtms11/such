@@ -502,3 +502,25 @@ alter publication supabase_realtime add table public.restore_requests;
 alter publication supabase_realtime add table public.issues;
 alter publication supabase_realtime add table public.issue_comments;
 alter publication supabase_realtime add table public.profiles;
+
+-- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
+-- 화주영업팀은 본인 등록건만 보이므로(RLS) 앱의 assertRepOwner() 만으로는 남의 묶음을
+-- 못 본다. SECURITY DEFINER 로 전체 행을 보고 최종 판정한다.
+create or replace function public.enforce_rep_owner()
+    returns trigger language plpgsql security definer set search_path = public as $$
+begin
+    if new.rep_no is not null and exists (
+        select 1 from public.orders o
+         where o.rep_no = new.rep_no and o.id <> new.id and o.created_by <> new.created_by
+    ) then
+        raise exception '대표주문번호 ''%'' 는 다른 담당자가 등록한 묶음입니다. 같은 담당자가 등록한 주문만 묶을 수 있습니다.',
+            new.rep_no;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_rep_owner on public.orders;
+create trigger trg_enforce_rep_owner
+    before insert or update of rep_no, created_by on public.orders
+    for each row execute function public.enforce_rep_owner();
