@@ -192,9 +192,11 @@ ${rows.map((o) => `
   </td>
   <td class="center">${statusTag(o.load_status)}</td>
   <td class="center">
-    ${o.load_status === LOAD_STATUS.INSPECTED && editable
-        ? `<button class="btn btn--success btn--sm" data-load="${o.id}" type="button">상차완료</button>`
-        : '-'}
+    ${o.loaded_at
+        ? `<button class="btn btn--sm" data-loaded="${o.id}" type="button">상차완료</button>`
+        : o.load_status === LOAD_STATUS.INSPECTED && editable
+            ? `<button class="btn btn--success btn--sm" data-load="${o.id}" type="button">상차완료</button>`
+            : '-'}
   </td>
 </tr>`).join('')}
 </tbody>`;
@@ -222,7 +224,7 @@ function drawCards(root, rows, editable, user, reload) {
     <span>박스 <b>${o.box_count ? num(o.box_count) : '-'}</b></span>
   </div>
   <div class="load-card__actions">
-    ${o.load_status === LOAD_STATUS.DONE ? `
+    ${o.loaded_at ? `
     <button class="load-card__done" data-loaded="${o.id}" type="button">상차완료</button>` : `
     <button class="btn" data-loc="${o.id}" type="button">적치로케이션</button>
     <button class="btn" data-inspect="${o.id}" type="button">상차검수</button>

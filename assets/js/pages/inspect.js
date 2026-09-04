@@ -198,8 +198,13 @@ ${g.rows.length > 1 ? `
 
         root.querySelector('#btn-reset').addEventListener('click', async () => {
             if (!await confirmDialog('검수 내역을 모두 초기화하시겠습니까?')) return;
-            await db.resetInspection(orderId, user);
-            toast('검수가 초기화되었습니다.');
+            // 상차완료된 묶음은 데이터 계층이 거부한다 (상차완료를 먼저 취소해야 한다)
+            try {
+                await db.resetInspection(orderId, user);
+                toast('검수가 초기화되었습니다.');
+            } catch (err) {
+                toast(err.message, 'error');
+            }
             refresh();
         });
 
