@@ -528,6 +528,11 @@ export async function setInspectDone(id, done, checks, user) {
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
     if (done && !o.ship_done_at) throw new Error('출고작업이 완료된 주문만 검수할 수 있습니다.');
     if (!done && o.loaded_at) throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
+    // 다시 완료 처리하면 파렛트수 변경으로 상차검수가 초기화되어(rebuildPallets)
+    // loaded_at 만 남고 load_status 가 '대기' 로 어긋난다. 상차를 먼저 되돌려야 한다
+    if (done && o.loaded_at) {
+        throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
+    }
     // 적치가 끝난 주문은 순서대로 되돌린다. 적치를 남긴 채 검수만 취소하면
     // '검수 미완료 · 적치 완료' 라는 앞뒤 안 맞는 상태가 되고, 적치를 고칠 수도 없다
     if (!done && o.pallet_count && o.stow_done_at) {
