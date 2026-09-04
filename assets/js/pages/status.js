@@ -203,7 +203,9 @@ ${monthBox}
             keyword: s.keyword,
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         });
-        const [tasks, adjust] = await Promise.all([db.extraTaskMap(), db.adjustMap()]);
+        const [tasks, adjust, labels] = await Promise.all([
+            db.extraTaskMap(), db.adjustMap(), labelGroups(user),
+        ]);
         const text = s.detail && (s.detail.title || s.detail.content) ? await textIndex() : null;
 
         rows = all.filter((o) => inTab(o, activeTab))
@@ -217,7 +219,7 @@ ${monthBox}
         note.hidden = isMobile();
         root.querySelector('#row-count').textContent = `${num(rows.length)}건`;
         drawSummary(root, rows, tasks, adjust);
-        drawTable(root, rows, tasks, adjust, { user, editable, reload });
+        drawTable(root, rows, tasks, adjust, { user, editable, reload, labels });
     }
 
     /** CSV 다운로드 - 현재 탭에 보이는 행만 */
@@ -225,10 +227,11 @@ ${monthBox}
         const [taskMap, adjustMap] = await Promise.all([db.extraTaskMap(), db.adjustMap()]);
         const label = TABS.find((t) => t.key === activeTab).label;
         downloadCsv(`주문처리현황_${label}_${today()}.csv`,
-            ['연번', '전송일자', '차수', '주문번호', '거래처명', '출고요청일',
+            ['연번', '전송일자', '차수', '대표주문번호', '주문번호', '거래처명', '출고요청일',
                 '처리현황', '진행률', '파렛트수', '박스수', '완료처리'],
             rows.map((o, i) => [
-                i + 1, o.send_date, `${o.seq}차수`, o.order_no, o.customer, o.ship_req_date,
+                i + 1, o.send_date, `${o.seq}차수`, o.rep_no ?? '', o.order_no, o.customer,
+                o.ship_req_date,
                 currentStep(o, stepOpt(o, taskMap, adjustMap)),
                 `${stepRate(o, stepOpt(o, taskMap, adjustMap))}%`,
                 o.pallet_count, o.box_count,
@@ -408,7 +411,7 @@ ${rows.map((o, i) => {
   <td class="num">${rows.length - i}</td>
   <td>${o.send_date}</td>
   <td class="center">${seqTag(o.seq)}</td>
-  <td>${esc(o.order_no)}</td>
+  <td>${esc(o.order_no)}${repTag(o)}</td>
   <td>${esc(o.customer)}</td>
   <td>
     <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>
@@ -416,7 +419,7 @@ ${rows.map((o, i) => {
   <td class="num">${stepRate(o, opt)}%</td>
   <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
   <td>${o.ship_req_date}</td>
-  <td class="center">${labelCell(o)}</td>
+  <td class="center">${labelCell(o, ctx.labels?.[o.id])}</td>
   <td class="center">${closeCell(o, ctx.editable)}</td>
 </tr>`;
     }).join('')}
@@ -425,7 +428,8 @@ ${rows.map((o, i) => {
     bindCloseButtons(tbl, ctx);
     tbl.querySelectorAll('[data-label]').forEach((el) => {
         el.addEventListener('click', () => {
-            printLoadLabel(rows.find((o) => o.id === el.dataset.label));
+            const o = rows.find((x) => x.id === el.dataset.label);
+            printLoadLabel(o, ctx.labels?.[el.dataset.label]);
         });
     });
 }
@@ -444,7 +448,7 @@ function mobileTable(rows, tasks, adjust) {
 ${rows.map((o) => `
 <tr class="is-clickable ${o.canceled_at ? 'is-canceled' : ''}" data-detail="${o.id}">
   <td>${o.ship_req_date}</td>
-  <td><span class="link">${esc(o.order_no)}</span></td>
+  <td><span class="link">${esc(o.order_no)}</span>${repTag(o)}</td>
   <td class="wrap">${esc(o.customer)}</td>
   <td class="center">${lastStepTag(o, stepOpt(o, tasks, adjust))}</td>
 </tr>`).join('')}
@@ -516,6 +520,7 @@ function openDetail(o, opt, ctx) {
     openedModal?.close();
     openedModal = openModal(`${o.order_no} · ${o.seq}차수`, `
 <table class="grid"><tbody>
+  ${o.rep_no ? row('대표주문번호', `<b>${esc(o.rep_no)}</b>`) : ''}
   ${row('거래처명', esc(o.customer))}
   ${row('진행상태', o.canceled_at
         ? '<span class="tag tag--red">취소</span>'
@@ -551,41 +556,76 @@ function openDetail(o, opt, ctx) {
 
 /* --------------------------------- 상차라벨 --------------------------------- */
 
+/** 목록에 붙는 대표주문번호 태그 */
+function repTag(o) {
+    return o.rep_no
+        ? ` <span class="tag tag--amber" title="대표주문번호로 묶인 주문입니다">대표 ${esc(o.rep_no)}</span>`
+        : '';
+}
+
+/**
+ * 상차라벨용 묶음 정보 { 주문ID: {key, head, rows} }.
+ * 라벨은 **상차 묶음 단위**로 찍는다 (대표주문번호 · 추가주문 차수 · 묶음 총 파렛트수).
+ * 묶인 주문이 조회 조건에서 빠질 수 있어 목록이 아니라 전체 주문으로 만든다.
+ */
+async function labelGroups(user) {
+    const all = await db.listOrders({
+        createdBy: can(user, 'viewAll') ? undefined : user.id,
+    });
+    const map = {};
+    db.loadGroups(all.filter((o) => !o.canceled_at)).forEach((g) => {
+        g.rows.forEach((o) => { map[o.id] = g; });
+    });
+    return map;
+}
+
+/** 라벨에 찍을 총 파렛트수 - 대표주문번호로 묶였으면 묶음 총량이다 */
+function labelTotal(o, g) {
+    return o.rep_no ? (g?.head?.pallet_count ?? 0) : o.pallet_count;
+}
+
 /**
  * 상차라벨 출력 셀.
  * 검수작업에서 파렛트수를 입력한 뒤에만 출력할 수 있다 (라벨에 총 파렛트수가 들어간다).
+ * 🔑 대표주문번호로 묶인 주문은 **대표 행에서만** 출력한다.
+ *    멤버 행마다 버튼을 두면 같은 라벨을 묶음 건수만큼 인쇄하게 된다.
  */
-function labelCell(o) {
+function labelCell(o, g) {
+    if (o.rep_no && g?.head && g.head.id !== o.id) {
+        return `<span class="muted" title="묶음 대표에서 한 번만 출력합니다">대표 ${
+            esc(o.rep_no)} 에서 출력</span>`;
+    }
+    const total = labelTotal(o, g);
     // 추가건이 혼적(0파렛트)이면 파렛트가 없어도 라벨 1장분(앞뒤 2장)을 뽑는다
-    const mixed = o.seq > 1 && !o.pallet_count;
-    if (!o.inspect_done_at || (!o.pallet_count && !mixed)) {
+    const mixed = !total && o.seq > 1;
+    if (!o.inspect_done_at || (!total && !mixed)) {
         return '<span class="muted" title="검수작업을 완료하면 출력할 수 있습니다">-</span>';
     }
-    const sheets = labelPages(o).length;
+    const sheets = labelPages(o, g).length;
     return `<button class="btn btn--sm" data-label="${o.id}" type="button"
-        title="총 ${sheets}장 (${mixed ? '혼적' : `${o.pallet_count}파렛트`} × 앞뒤 2장)">출력</button>`;
+        title="총 ${sheets}장 (${mixed ? '혼적' : `${total}파렛트`} × 앞뒤 2장)">출력</button>`;
 }
 
 /**
  * 상차라벨(A4)을 새 창에 그리고 인쇄 대화상자를 띄운다.
  * 파렛트에 부착하는 라벨이라 박스수는 현장에서 손으로 적도록 빈칸으로 둔다.
  */
-function printLoadLabel(o) {
+function printLoadLabel(o, g) {
     if (!o) return;
     const win = window.open('', '_blank', 'width=820,height=1040');
     if (!win) {
         toast('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.', 'error');
         return;
     }
-    win.document.write(labelHtml(o));
+    win.document.write(labelHtml(o, g));
     win.document.close();
     win.focus();
 }
 
 /** 라벨 페이지 목록 - 파렛트 1장당 앞뒤 2매를 뽑는다 ('10/1' = 10장 중 1번째) */
-function labelPages(o) {
+function labelPages(o, g) {
     // 혼적 추가건은 파렛트가 없어도 라벨 1장분을 만든다
-    const total = o.pallet_count || (o.seq > 1 ? 1 : 0);
+    const total = labelTotal(o, g) || (o.seq > 1 ? 1 : 0);
     const pages = [];
     for (let i = 1; i <= total; i += 1) pages.push(`${total}/${i}`, `${total}/${i}`);
     return pages;
@@ -601,7 +641,8 @@ const LABEL_BOX = {
     // 정보 표시 영역 높이. 예전 표는 브라우저 실측 146mm 였고 여기에 15% 를 더한
     // 168mm 가 목표다. 테두리(1.5px × 7줄 ≈ 1.5mm)가 얹히므로 166.5 를 지정한다
     tableH: 166.5,
-    rows: 6,         // 행 수 - 모든 행의 높이를 똑같이 나눈다
+    // 행 수는 고정하지 않는다. 대표주문번호가 있으면 '묶인 주문' 행이 붙어 한 줄 늘어나고,
+    // 이 높이를 행 수만큼 똑같이 나눠 갖는다 (labelHtml 참고)
     padV: 3,         // 셀 위아래 여백 (시인성 확보용, 줄이지 않는다)
     padH: 4,         // 셀 좌우 여백
 };
@@ -633,22 +674,41 @@ function fitPt(text, boxW, boxH, maxPt) {
     return Math.max(9, Math.min(maxPt, Math.floor(best / PT_MM)));
 }
 
-/** 상차라벨 A4 인쇄용 HTML (파렛트 수 × 2 페이지) */
-function labelHtml(o) {
-    const barcode = code128Svg(o.order_no, { height: 120, moduleWidth: 3, showText: false });
-    const rowH = LABEL_BOX.tableH / LABEL_BOX.rows;
+/**
+ * 상차라벨 A4 인쇄용 HTML (파렛트 수 × 2 페이지).
+ * 🔑 대표주문번호가 있으면 **바코드·주문번호를 대표주문번호로 찍고**, 묶인 주문번호를 함께 적는다.
+ * 파렛트수도 묶음 총량이라 묶음의 어느 주문에서 눌러도 같은 라벨이 나온다.
+ */
+function labelHtml(o, g) {
+    const head = g?.head ?? o;
+    const src = o.rep_no ? head : o;                       // 라벨에 찍을 주문
+    const no = o.rep_no || o.order_no;                     // 바코드 · 주문번호 칸
+    const members = o.rep_no ? (g?.rows ?? [o]).map((r) => r.order_no) : [];
+    const total = labelTotal(o, g);
+    const barcode = code128Svg(no, { height: 120, moduleWidth: 3, showText: false });
+    // 항목명 · 값 · 값의 최대 글자 크기(pt)
+    const lines = [
+        ['출고일자', src.ship_req_date, 55],
+        ['주문번호', no, 55],
+        ...(members.length > 1 ? [['묶인 주문', members.join(', '), 22]] : []),
+        ['거래처명', src.customer, 55],
+        ['주문일자', src.reg_date, 55],
+        ['총 파렛트수', total ? `${num(total)} PLT` : '기존차수에 혼적적재', 55],
+        ['박스수', '', 55],
+    ];
+    const rowH = LABEL_BOX.tableH / lines.length;
     const boxH = rowH - LABEL_BOX.padV * 2;
     const thW = LABEL_BOX.innerW * LABEL_BOX.thRatio - LABEL_BOX.padH * 2;
     const tdW = LABEL_BOX.innerW * (1 - LABEL_BOX.thRatio) - LABEL_BOX.padH * 2;
-    // 항목명은 20pt, 값은 칸 높이가 허용하는 만큼(약 55pt)까지 키운다
-    const row = (label, value) => `
+    // 항목명은 20pt, 값은 칸 높이가 허용하는 만큼까지 키운다
+    const row = (label, value, maxPt) => `
       <tr>
         <th style="font-size:${fitPt(label, thW, boxH, 20)}pt">${esc(label)}</th>
-        <td style="font-size:${fitPt(value, tdW, boxH, 55)}pt">${esc(value)}</td>
+        <td style="font-size:${fitPt(value, tdW, boxH, maxPt)}pt">${esc(value)}</td>
       </tr>`;
     return `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8">
-<title>상차라벨 ${esc(o.order_no)}</title>
+<title>상차라벨 ${esc(no)}</title>
 <style>
   @page { size: A4 portrait; margin: 10mm; }
   * { box-sizing: border-box; }
@@ -689,22 +749,17 @@ function labelHtml(o) {
   .add-mark { text-align: right; font-size: 20pt; font-weight: 800; margin-bottom: 3mm; }
 </style></head>
 <body onload="window.print()">
-${labelPages(o).map((seq) => `
+${labelPages(o, g).map((page) => `
   <div class="label">
-    ${o.seq > 1 ? `<div class="add-mark">추가건 - ${o.seq}차수</div>` : ''}
+    ${!o.rep_no && o.seq > 1 ? `<div class="add-mark">추가건 - ${o.seq}차수</div>` : ''}
     <table>
-      ${row('출고일자', o.ship_req_date)}
-      ${row('주문번호', o.order_no)}
-      ${row('거래처명', o.customer)}
-      ${row('주문일자', o.reg_date)}
-      ${row('총 파렛트수', o.pallet_count ? `${num(o.pallet_count)} PLT` : '기존차수에 혼적적재')}
-      ${row('박스수', '')}
+      ${lines.map(([label, value, maxPt]) => row(label, value, maxPt)).join('')}
     </table>
     <div class="barcode">
       ${barcode}
-      <div class="barcode__no">${esc(o.order_no)}</div>
+      <div class="barcode__no">${esc(no)}</div>
     </div>
-    <div class="seq">${seq}</div>
+    <div class="seq">${page}</div>
   </div>`).join('')}
 </body></html>`;
 }

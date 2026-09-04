@@ -9,7 +9,7 @@ import { currentStep, loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, toDateStr, downloadCsv, toast, openModal, confirmDialog, fmtDateTime,
-    seqTag,
+    seqTag, addBadge,
 } from '../util.js';
 
 /** 조회 필터 상태 */
@@ -60,7 +60,8 @@ export async function render(root, { user }) {
             + '<button class="btn btn--primary btn--sm" id="btn-new" type="button">주문 등록</button>');
     }
 
-    let rows = [];
+    let rows = [];      // 주문 전체 (다운로드는 주문별로 풀어서 내려준다)
+    let groups = [];    // 대표주문번호 묶음 - 목록은 묶음당 1행이다 (차수는 묶지 않는다)
 
     /** 목록 조회 후 요약/표 갱신 */
     async function reload() {
@@ -68,11 +69,13 @@ export async function render(root, { user }) {
             ...filter,
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         });
+        groups = db.repGroups(rows);
         const [stats, users] = await Promise.all([db.checkStats(), db.listUsers()]);
         // 담당자(등록자) 이름 조회용 맵
         const names = Object.fromEntries(users.map((u) => [u.id, u.name]));
-        drawTable(root, rows, user, reload, stats, names);
-        root.querySelector('#row-count').textContent = `${num(rows.length)}건`;
+        drawTable(root, groups, user, reload, stats, names);
+        root.querySelector('#row-count').textContent =
+            `${num(groups.length)}건 (주문 ${num(rows.length)}개)`;
     }
 
     root.querySelector('#btn-search').addEventListener('click', () => {
@@ -90,12 +93,12 @@ export async function render(root, { user }) {
         const [counts, users] = await Promise.all([db.countRestores(), db.listUsers()]);
         const names = Object.fromEntries(users.map((u) => [u.id, u.name]));
         downloadCsv(`주문등록내역_${today()}.csv`,
-            ['연번', '등록일자', '전송일자', '담당자', '차수', '주문번호', '거래처명',
+            ['연번', '등록일자', '전송일자', '담당자', '차수', '대표주문번호', '주문번호', '거래처명',
                 '추가작업', '패킹리스트', '요청사항', '출고요청일', '상태', '작업지시',
                 '수정횟수', '조정요청', '출고형태', '팀명', '품목수', '출고수량', '비고'],
             rows.map((o, i) => [
                 i + 1, o.reg_date, o.send_date, names[o.created_by] ?? '',
-                `${o.seq}차수`, o.order_no, o.customer,
+                `${o.seq}차수`, o.rep_no ?? '', o.order_no, o.customer,
                 o.extra_yn, o.packing_yn,
                 o.request_note, o.ship_req_date || '미정', stateOf(o), o.work_note,
                 o.edit_count ? `${o.edit_count}회` : '',
@@ -174,20 +177,19 @@ function countBadge(stat = EMPTY_STAT) {
  * 확인 셀 - 계산된 주문 상태(대기·접수·진행·취소·완료) 배지 하나.
  * 접수는 상세 팝업에서 작업지시를 작성해야 처리된다 (체크 방식은 제거했다).
  */
-function stateCell(o, stat = EMPTY_STAT) {
+function stateCell(o, stat = EMPTY_STAT, state = stateOf(o)) {
     const st = stat ?? EMPTY_STAT;
-    const s = stateOf(o);
     const cls = {
         [ORDER_STATE.WAIT]: 'tag--gray',
         [ORDER_STATE.ACCEPTED]: 'tag--blue',
         [ORDER_STATE.DOING]: 'tag--amber',
         [ORDER_STATE.DONE]: 'tag--green',
         [ORDER_STATE.CANCELED]: 'tag--red tag--canceled',
-    }[s];
+    }[state];
 
     const left = st.editsLeft + st.restoresLeft;
     let tip = '';
-    if (s === ORDER_STATE.CANCELED && o.canceled_at) {
+    if (state === ORDER_STATE.CANCELED && o.canceled_at) {
         tip = `${fmtDateTime(o.canceled_at)}${o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''}`;
     } else if (o.confirmed_at) {
         const by = o.confirmed_by_name ? ` · ${o.confirmed_by_name}` : '';
@@ -197,7 +199,7 @@ function stateCell(o, stat = EMPTY_STAT) {
     }
     if (left) tip += ` · 수정·조정 미확인 ${left}건`;
 
-    return `<span class="tag ${cls}" title="${esc(tip)}">${s}</span>`;
+    return `<span class="tag ${cls}" title="${esc(tip)}">${state}</span>`;
 }
 
 /**
@@ -211,6 +213,45 @@ function stateOf(o) {
     if (o.ship_started_at || o.ship_done_at) return ORDER_STATE.DOING;
     if (o.confirmed_at) return ORDER_STATE.ACCEPTED;
     return ORDER_STATE.WAIT;
+}
+
+/**
+ * 묶음의 요약 상태 - **가장 뒤처진 주문**을 따른다 (대기 < 접수 < 진행 < 완료).
+ * 취소는 묶인 주문이 전부 취소되었을 때만 표시한다.
+ */
+function groupState(list) {
+    if (list.every((o) => o.canceled_at)) return ORDER_STATE.CANCELED;
+    const rank = [ORDER_STATE.WAIT, ORDER_STATE.ACCEPTED, ORDER_STATE.DOING, ORDER_STATE.DONE];
+    return list.filter((o) => !o.canceled_at)
+        .map(stateOf)
+        .sort((a, b) => rank.indexOf(a) - rank.indexOf(b))[0];
+}
+
+/** 묶음의 확인 현황 합계 (수정·조정요청 건수 배지에 쓴다) */
+function groupStat(list, stats) {
+    return list.reduce((a, o) => {
+        const st = stats[o.id] ?? EMPTY_STAT;
+        return {
+            edits: a.edits + st.edits,
+            editsLeft: a.editsLeft + st.editsLeft,
+            restores: a.restores + st.restores,
+            restoresLeft: a.restoresLeft + st.restoresLeft,
+        };
+    }, { ...EMPTY_STAT });
+}
+
+/**
+ * 주문번호 셀 - 대표주문번호가 있으면 그것을 굵게 보여주고 `+N건` 배지를 붙인다.
+ * 묶인 주문번호는 툴팁으로 확인한다.
+ * 🔑 배지 수와 툴팁은 **취소되지 않은 주문만** 센다 (취소건은 상세 팝업에서 확인한다).
+ */
+function groupNoCell(g, head = g.head) {
+    const live = g.rows.filter((o) => !o.canceled_at);
+    const list = live.length ? live : g.rows;
+    const tip = list.length > 1 ? `묶인 주문: ${list.map((o) => o.order_no).join(', ')}` : '';
+    const no = esc(head.rep_no || head.order_no);
+    return `<span class="link" data-detail="${head.id}" title="${esc(tip)}">${
+        head.rep_no ? `<b>${no}</b>` : no}</span>${addBadge(list.length)}`;
 }
 
 /** 있음/없음 셀 - '있음' 만 파란 태그로 눈에 띄게 한다 */
@@ -278,10 +319,10 @@ function openPackingNoteModal(o, user, onSaved) {
     });
 }
 
-/** 게시판 형태 목록 렌더링 */
-function drawTable(root, rows, user, reload, stats = {}, names = {}) {
+/** 게시판 형태 목록 렌더링 - 대표주문번호 묶음당 1행이다 (묶이지 않은 주문은 1건이 1행) */
+function drawTable(root, groups, user, reload, stats = {}, names = {}) {
     const tbl = root.querySelector('#tbl');
-    if (!rows.length) {
+    if (!groups.length) {
         tbl.innerHTML = '<tbody><tr><td class="empty">조회된 주문이 없습니다.</td></tr></tbody>';
         return;
     }
@@ -294,23 +335,30 @@ function drawTable(root, rows, user, reload, stats = {}, names = {}) {
   <th>출고요청일</th><th class="center">확인</th>
 </tr></thead>
 <tbody>
-${rows.map((o, i) => `
-<tr class="${o.canceled_at ? 'is-canceled' : ''}">
-  <td class="num">${rows.length - i}</td>
+${groups.map((g, i) => {
+        const list = g.rows;
+        // 대표가 취소된 묶음은 살아 있는 주문을 대표로 보여준다
+        const o = list.find((r) => !r.canceled_at) ?? g.head;
+        // 추가작업·패킹리스트는 묶음 중 하나라도 '있음' 이면 있음으로 본다
+        const extraYn = list.some((r) => r.extra_yn === YN.YES) ? YN.YES : YN.NO;
+        const packingOrder = list.find((r) => r.packing_yn === YN.YES) ?? o;
+        const stat = groupStat(list, stats);
+        return `
+<tr class="${list.every((r) => r.canceled_at) ? 'is-canceled' : ''}">
+  <td class="num">${groups.length - i}</td>
   <td>${o.reg_date}</td>
   <td>${o.send_date}</td>
   <td class="center">${esc(names[o.created_by] ?? '-')}</td>
   <td class="center">${seqTag(o.seq)}</td>
-  <td>
-    <span class="link" data-detail="${o.id}">${esc(o.order_no)}</span>${countBadge(stats[o.id])}
-  </td>
+  <td>${groupNoCell(g, o)}${countBadge(stat)}</td>
   <td>${esc(o.customer)}</td>
-  <td class="center">${ynCell(o.extra_yn)}</td>
-  <td class="center">${packingCell(o, user)}</td>
+  <td class="center">${ynCell(extraYn)}</td>
+  <td class="center">${packingCell(packingOrder, user)}</td>
   <td class="wrap">${esc(o.work_note)}</td>
   <td>${o.ship_req_date || '미정'}</td>
-  <td class="center">${stateCell(o, stats[o.id])}</td>
-</tr>`).join('')}
+  <td class="center">${stateCell(o, stat, groupState(list))}</td>
+</tr>`;
+    }).join('')}
 </tbody>`;
 
     tbl.querySelectorAll('[data-detail]').forEach((el) => {
@@ -318,13 +366,8 @@ ${rows.map((o, i) => `
     });
     tbl.querySelectorAll('[data-packing]').forEach((el) => {
         el.addEventListener('click', () => {
-            const o = rows.find((x) => x.id === el.dataset.packing);
+            const o = groups.flatMap((g) => g.rows).find((x) => x.id === el.dataset.packing);
             if (o) openPackingNoteModal(o, user, reload);
-        });
-    });
-    tbl.querySelectorAll('[data-edit]').forEach((el) => {
-        el.addEventListener('click', async () => {
-            openForm(await db.getOrder(el.dataset.edit), user, reload);
         });
     });
 }
@@ -371,6 +414,8 @@ const DETAIL_TABS = [
 async function showDetail(id, user, reload) {
     const canConfirmHere = canConfirm(user);
     let activeTab = 'info';
+    // 묶인 주문 중 지금 보고 있는 1건. 기본값은 묶음 대표다
+    let pickedId = id;
 
     const m = openModal('주문 상세', `
 <div class="tabs" id="d-tabs">
@@ -384,20 +429,33 @@ async function showDetail(id, user, reload) {
 
     /** 현재 탭을 다시 그린다 (데이터도 새로 읽는다) */
     async function draw() {
-        const o = await db.getOrder(id);
-        if (!o) return;
-        m.root.querySelector('.modal__head h3').textContent =
-            `주문 상세 - ${o.order_no} (${o.seq}차수)`;
+        const base = await db.getOrder(id);
+        if (!base) return;
+        // 🔑 묶인 주문번호 표에는 **취소된 멤버까지** 보여준다 (목록 배지에서는 빠진다).
+        //    처리(접수·접수취소)는 취소되지 않은 멤버에만 적용된다
+        const g = await db.getBatchGroup(id, true);
+        const list = g && g.rows.length ? g.rows : [base];
+        const live = list.filter((r) => !r.canceled_at);
+        if (!list.some((r) => r.id === pickedId)) pickedId = list[0].id;
+        const o = list.find((r) => r.id === pickedId) ?? base;
+
+        m.root.querySelector('.modal__head h3').textContent = base.rep_no
+            ? `주문 상세 - ${base.rep_no} (묶음 ${live.length}건)`
+            : `주문 상세 - ${o.order_no} (${o.seq}차수)`;
 
         m.root.querySelectorAll('[data-dtab]').forEach((el) => {
             el.classList.toggle('is-active', el.dataset.dtab === activeTab);
         });
 
-        if (activeTab === 'info') await drawInfoPane(pane, o, id);
+        const pick = (nextId) => {
+            pickedId = nextId;
+            draw();
+        };
+        if (activeTab === 'info') await drawInfoPane(pane, o, list, pick);
         else if (activeTab === 'adjust') await drawAdjustPane(pane, o, user, canConfirmHere, draw);
         else await drawHistoryPane(pane, o, user, canConfirmHere, draw);
 
-        drawFooter(o);
+        drawFooter(o, live);
     }
 
     /**
@@ -408,8 +466,12 @@ async function showDetail(id, user, reload) {
      * 주문 취소는 조정요청의 '전체취소' 항목으로 처리한다.
      * (닫기 버튼과 헷갈리지 않도록 하단에 취소 버튼을 두지 않는다)
      */
-    function drawFooter(o) {
+    function drawFooter(o, list = [o]) {
         const foot = m.root.querySelector('.modal__foot');
+        // 접수·접수취소는 취소되지 않은 멤버에만 적용된다 (list 는 이미 걸러서 넘어온다)
+        const head = list[0] ?? o;
+        const waiting = list.filter((r) => !r.confirmed_at);
+        const started = list.some((r) => r.ship_started_at || r.ship_done_at);
         const note = o.canceled_at
             ? `취소된 주문입니다. (${fmtDateTime(o.canceled_at)}${
                 o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''})`
@@ -422,11 +484,12 @@ async function showDetail(id, user, reload) {
                 + '수정</button>');
         }
         // 접수는 여기서만 한다 - 작업지시를 작성해야 접수되고, 확인 컬럼이 '접수' 로 바뀐다
+        // 🔑 접수·접수취소는 묶음 전체에 적용된다
         if (activeTab === 'info' && canConfirmHere && !o.canceled_at) {
-            if (!o.confirmed_at) {
+            if (waiting.length) {
                 btns.push('<button class="btn btn--success" id="btn-accept-order" type="button">'
                     + '접수 (작업지시 작성)</button>');
-            } else if (!o.ship_started_at && !o.ship_done_at) {
+            } else if (!started) {
                 btns.push('<button class="btn" id="btn-revoke-confirm" type="button">'
                     + '접수취소</button>');
             }
@@ -448,17 +511,22 @@ ${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
   <span class="field__label">작업지시 * (현장에 전달할 내용을 작성하세요 -
     출고주문처리의 출고작업·검수작업 탭에 표시됩니다)</span>
   <textarea id="work-note" rows="3"
-            placeholder="예: 파렛트 2단 적재, 라벨 부착 후 검수 진행">${esc(o.work_note)}</textarea>
+            placeholder="예: 파렛트 2단 적재, 라벨 부착 후 검수 진행">${esc(head.work_note)}</textarea>
+  ${list.length > 1 ? `
+  <p class="form-note">묶인 주문 ${list.length}건(미접수 ${waiting.length}건)에 같은 작업지시로
+  한 번에 접수됩니다.</p>` : ''}
   <div class="btn-row">
     <button class="btn" id="btn-accept-cancel" type="button">취소</button>
     <button class="btn btn--success" id="btn-accept-save" type="button">접수완료</button>
   </div>
 </div>`;
-            foot.querySelector('#btn-accept-cancel').addEventListener('click', () => drawFooter(o));
+            foot.querySelector('#btn-accept-cancel')
+                .addEventListener('click', () => drawFooter(o, list));
             foot.querySelector('#btn-accept-save').addEventListener('click', async () => {
                 try {
-                    await db.confirmOrder(o.id, foot.querySelector('#work-note').value, user);
-                    toast('접수 처리되었습니다.', 'success');
+                    const note = foot.querySelector('#work-note').value;
+                    await db.confirmOrderGroup(head.id, note, user);
+                    toast(`${waiting.length}건이 접수 처리되었습니다.`, 'success');
                     draw();
                 } catch (err) {
                     toast(err.message, 'error');
@@ -467,9 +535,12 @@ ${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
         });
 
         foot.querySelector('#btn-revoke-confirm')?.addEventListener('click', async () => {
-            if (!await confirmDialog('접수를 취소하시겠습니까? 상태가 대기로 돌아갑니다.')) return;
+            const msg = list.length > 1
+                ? `묶인 주문 ${list.length}건의 접수를 모두 취소하시겠습니까?`
+                : '접수를 취소하시겠습니까? 상태가 대기로 돌아갑니다.';
+            if (!await confirmDialog(msg)) return;
             try {
-                await db.revokeOrderConfirm(o.id, user);
+                await db.revokeOrderConfirmGroup(head.id, user);
                 toast('접수를 취소했습니다.', 'info');
                 draw();
             } catch (err) {
@@ -499,7 +570,45 @@ ${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
 
 /* ------------------------------ 탭 1. 주문정보상세 ----------------------------- */
 
-async function drawInfoPane(pane, o, id) {
+/**
+ * 묶인 주문번호 표 - 대표주문번호로 묶인 주문을 모두 보여준다.
+ * 🔑 **취소된 멤버까지** 보여준다 (처리 대상은 아니지만 묶음에 있던 사실은 남는다).
+ * 행을 누르면 아래 상세·조정요청·수정이력이 그 주문 기준으로 바뀐다.
+ */
+function groupTableHtml(list, pickedId) {
+    const canceled = list.filter((r) => r.canceled_at).length;
+    return `
+<div class="hist-sec" style="margin-bottom:14px">
+  <h4>묶인 주문번호 <span class="tag tag--gray">${list.length - canceled}건</span>${
+    canceled ? ` <span class="tag tag--red tag--canceled">취소 ${canceled}건</span>` : ''}</h4>
+  <table class="grid"><thead><tr>
+    <th>주문번호</th><th class="center">차수</th><th>거래처명</th>
+    <th>출고요청일</th><th class="center">출고형태</th><th class="center">상태</th>
+  </tr></thead>
+  <tbody>
+  ${list.map((r) => `
+  <tr class="is-clickable ${r.id === pickedId ? 'is-picked' : ''} ${
+    r.canceled_at ? 'is-canceled' : ''}" data-pick-order="${r.id}">
+    <td><span class="link">${esc(r.order_no)}</span></td>
+    <td class="center">${seqTag(r.seq)}</td>
+    <td>${esc(r.customer)}</td>
+    <td>${r.ship_req_date || '미정'}</td>
+    <td class="center">${esc(r.vehicle_type)}</td>
+    <td class="center">${stateCell(r)}</td>
+  </tr>`).join('')}
+  </tbody></table>
+  <p class="form-note">행을 누르면 아래 상세·조정요청·수정이력이 그 주문 기준으로 바뀝니다.</p>
+</div>`;
+}
+
+/**
+ * 주문정보상세 탭.
+ * @param {object} o 지금 보고 있는 주문 1건
+ * @param {object[]} list 묶인 주문 전체 (대표가 맨 앞)
+ * @param {(id:string) => void} pick 다른 주문을 고를 때
+ */
+async function drawInfoPane(pane, o, list = [o], pick = null) {
+    const id = o.id;
     const [owner, tasks, adjust, history] = await Promise.all([
         db.getUser(o.created_by), db.extraTaskMap(), db.adjustMap(), db.listHistory(id),
     ]);
@@ -531,7 +640,9 @@ async function drawInfoPane(pane, o, id) {
     };
 
     pane.innerHTML = `
+${list.length > 1 ? groupTableHtml(list, o.id) : ''}
 <div class="detail-grid">
+${o.rep_no ? row('대표주문번호', o.rep_no) : ''}
 ${row('주문번호', o.order_no)}
 ${row('거래처명', o.customer)}
 ${row('담당자', owner?.name ?? '-')}
@@ -557,6 +668,10 @@ ${row('작업지시', o.work_note, true)}
 ${row('요청사항', o.request_note, true)}
 ${row('비고', o.remark, true)}
 </div>`;
+
+    pane.querySelectorAll('[data-pick-order]').forEach((el) => {
+        el.addEventListener('click', () => pick?.(el.dataset.pickOrder));
+    });
 
     pane.querySelectorAll('[data-field]').forEach((el) => {
         const toggle = () => {
@@ -630,6 +745,14 @@ function openForm(o, user, reload) {
     <label class="field">
       <span class="field__label">전송일자<span class="req">*</span></span>
       <input type="date" name="send_date" required value="${v('send_date', today())}">
+    </label>
+    <label class="field">
+      <span class="field__label">대표주문번호</span>
+      <input type="text" name="rep_no" placeholder="필요 시 입력 (예: R-2609-001)"
+             autocomplete="off" list="open-rep-nos" value="${v('rep_no')}">
+      <datalist id="open-rep-nos"></datalist>
+      <span class="form-note">같은 거래처의 여러 주문을 한 검수·상차 단위로 묶을 때 적습니다.
+        묶인 주문은 목록에 1건으로 보입니다.</span>
     </label>
     <label class="field">
       <span class="field__label">주문번호<span class="req">*</span></span>
@@ -707,6 +830,16 @@ function openForm(o, user, reload) {
 </form>`, { wide: true });
 
     m.body.querySelector('#btn-cancel').addEventListener('click', m.close);
+
+    // 열려 있는(완료처리·취소 전) 대표주문번호를 제안한다
+    db.listOpenRepNos({ createdBy: can(user, 'viewAll') ? undefined : user.id })
+        .then((reps) => {
+            const list = m.body.querySelector('#open-rep-nos');
+            if (!list) return;
+            list.innerHTML = reps.map((r) => `
+<option value="${esc(r.rep_no)}">${esc(r.customer)} · 묶인 주문 ${r.count}건</option>`).join('');
+        })
+        .catch((err) => toast(err.message, 'error'));
 
     // 출고요청일 '미정' - 체크하면 일자 입력을 비활성화하고 빈 값(미정)으로 저장한다
     const shipDateInput = m.body.querySelector('[name="ship_req_date"]');
@@ -1142,6 +1275,7 @@ const BULK_COLS = [
         hint: '2026-08-31 또는 미정',
     },
     { key: 'customer', label: '거래처명', required: true, hint: '올리브영 물류센터' },
+    { key: 'rep_no', label: '대표주문번호', hint: '필요 시' },
     { key: 'order_no', label: '주문번호', required: true, hint: 'PO-24080101' },
     { key: 'vehicle_type', label: '출고형태', required: true, hint: '용차/픽업/택배' },
     { key: 'team_name', label: '팀명', hint: '' },
@@ -1182,6 +1316,9 @@ function openBulkForm(user, reload) {
       <b>${BULK_KIND.ADD}</b> 은 이미 등록된 주문의 <b>다음 차수</b>로 들어갑니다
       (주문번호 칸에 <b>기존 주문번호</b>를 적으면 <code>번호-1</code> 처럼 자동으로 붙습니다).</li>
     <li><b>출고형태</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
+    <li><b>대표주문번호</b> — 여러 주문번호를 <b>한 검수·상차 단위</b>로 묶을 때만 적습니다.
+      같은 값을 적은 주문은 목록에 1건으로 보이고 함께 처리됩니다
+      (같은 대표주문번호는 <b>거래처명이 같아야</b> 합니다).</li>
     <li><b>추가작업</b> — 일괄등록에서는 받지 않습니다. 등록 후 수정에서 지정하세요.</li>
   </ul>
 </div>
@@ -1336,6 +1473,11 @@ ${rows.map((r, ri) => `
         opens.forEach((x) => { openMap.set(x.base_no, x); openMap.set(x.next_no, x); });
         // 한 번에 같은 묶음을 여러 건 올릴 수 있으므로 배치 안에서 쓴 차수를 센다
         const usedSeq = new Map();
+        // 대표주문번호 묶음은 거래처명이 같아야 한다 (이미 등록된 묶음 + 이번 파일)
+        const openReps = new Map((await db.listOpenRepNos({
+            createdBy: can(user, 'viewAll') ? undefined : user.id,
+        })).map((x) => [x.rep_no, x]));
+        const fileReps = new Map();
 
         rows.forEach((r, ri) => {
             if (!r.some((c) => String(c).trim())) return;   // 빈 행은 건너뛴다
@@ -1358,6 +1500,19 @@ ${rows.map((r, ri) => `
                 bad.push(`출고형태는 ${VEHICLE_TYPES.join('/')} 만 가능`);
             }
             if (o.ship_req_date === '미정') o.ship_req_date = '';
+
+            if (o.rep_no) {
+                const before = fileReps.get(o.rep_no);
+                if (before && before.customer !== o.customer) {
+                    bad.push(`대표주문번호 '${o.rep_no}' 의 거래처명이 ${before.row}행과 다릅니다`);
+                }
+                const open = openReps.get(o.rep_no);
+                if (open && open.customer !== o.customer) {
+                    bad.push(`대표주문번호 '${o.rep_no}' 는 이미 '${open.customer}' 묶음으로`
+                        + ' 등록되어 있습니다');
+                }
+                if (!before) fileReps.set(o.rep_no, { row: ri + 1, customer: o.customer });
+            }
 
             // '기존' 은 이미 등록된 묶음에 다음 차수로 붙는다. 대상이 없으면 등록할 수 없다
             const picked = o.kind === BULK_KIND.ADD ? openMap.get(o.order_no) : null;

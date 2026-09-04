@@ -75,7 +75,9 @@ export async function render(root, { user }) {
         if (!can(user, 'viewAll')) rows = rows.filter((o) => o.created_by === user.id);
         const kw = filter.keyword.trim().toLowerCase();
         if (kw) {
-            rows = rows.filter((o) => `${o.order_no} ${o.customer}`.toLowerCase().includes(kw));
+            rows = rows.filter(
+                (o) => `${o.group_no} ${o.order_no} ${o.customer}`.toLowerCase().includes(kw),
+            );
         }
         drawSummary(root, rows);
         drawTable(root, rows, editable, user, reload);
@@ -97,10 +99,12 @@ export async function render(root, { user }) {
 
     function downloadRows() {
         downloadCsv(`당일상차리스트_${filter.date}.csv`,
-            ['출고일자', '주문번호', '거래처명', '출고형태', '파렛트수', '검수파렛트', '상태'],
+            ['출고일자', '대표주문번호', '주문번호', '거래처명', '출고형태',
+                '파렛트수', '검수파렛트', '상태'],
             rows.map((o) => [
-                o.ship_req_date, o.order_no, o.customer, o.vehicle_type,
-                o.pallet_count, o.inspected, o.load_status,
+                o.ship_req_date, o.rep_no ?? '', (o.group_nos ?? [o.order_no]).join(' / '),
+                o.customer, o.vehicle_type,
+                o.group_pallets, o.group_inspected, o.load_status,
             ]));
     }
 
@@ -150,6 +154,18 @@ function drawSummary(root, rows) {
 </div>`;
 }
 
+/**
+ * 목록의 주문번호 칸.
+ * 상차는 묶음 단위라 **대표주문번호(없으면 대표 주문번호)** 를 보여주고,
+ * 묶인 주문번호는 툴팁으로 확인한다.
+ */
+function loadNoCell(o) {
+    const tip = (o.group_nos ?? []).join(', ');
+    const no = esc(o.group_no ?? o.order_no);
+    return `<span title="${esc(tip)}">${o.rep_no ? `<b>${no}</b>` : no}</span>`
+        + addBadge(o.group_count, '함께 실리는 주문');
+}
+
 /** 상태 배지 HTML */
 function statusTag(s) {
     const cls = s === LOAD_STATUS.DONE ? 'tag--green'
@@ -178,7 +194,7 @@ function drawTable(root, rows, editable, user, reload) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td>${esc(o.order_no)}${addBadge(o.group_count)}</td>
+  <td>${loadNoCell(o)}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
   <td class="num">${num(o.group_pallets)}</td>
@@ -214,7 +230,7 @@ function drawCards(root, rows, editable, user, reload) {
     box.innerHTML = rows.map((o) => `
 <div class="load-card">
   <div class="load-card__top">
-    <span class="load-card__no">${esc(o.order_no)}${addBadge(o.group_count)}</span>
+    <span class="load-card__no">${loadNoCell(o)}</span>
     ${statusTag(o.load_status)}
   </div>
   <div class="load-card__cust">${esc(o.customer)}</div>
@@ -266,7 +282,10 @@ async function openLocationModal(orderId, user, reload) {
         body.innerHTML = `
 <div class="toolbar" style="margin-bottom:10px">
   <div>
-    <b>${esc(o.order_no)}</b>${addBadge(g.rows.length)} · ${esc(o.customer)}
+    <b>${esc(o.rep_no || o.order_no)}</b>${addBadge(g.rows.length, '함께 실리는 주문')} · ${esc(o.customer)}
+    ${g.rows.length > 1 ? `
+    <span class="field__label">묶인 주문 ${esc(g.rows.map((r) => r.order_no).join(', '))}</span>`
+        : ''}
   </div>
   <div class="toolbar__spacer"></div>
   <span class="tag ${st === STOW_STATUS.DONE ? 'tag--green' : 'tag--gray'}">${st}</span>
@@ -331,13 +350,16 @@ async function openLoadedDetail(orderId, user, reload, editable) {
     const row = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
     const dash = '<span class="muted">-</span>';
     locModal?.close();
-    locModal = openModal(`${o.order_no} · 상차완료`, `
+    locModal = openModal(`${o.rep_no || o.order_no} · 상차완료`, `
 <table class="grid"><tbody>
+  ${o.rep_no ? row('대표주문번호', `<b>${esc(o.rep_no)}</b>`) : ''}
+  ${g.rows.length > 1
+        ? row('묶인 주문', esc(g.rows.map((r) => r.order_no).join(', '))) : ''}
   ${row('거래처명', esc(o.customer))}
   ${row('출고일자', `<b>${o.ship_req_date}</b>`)}
   ${row('출고형태', esc(o.vehicle_type))}
-  ${row('차수', `${g.rows.length}개 차수${g.rows.length > 1
-        ? ` (추가주문 ${g.rows.length - 1}건 포함)` : ''}`)}
+  ${row('묶음', `${g.rows.length}건${g.rows.length > 1
+        ? ` (함께 실리는 주문 ${g.rows.length - 1}건 포함)` : ''}`)}
   ${row('파렛트수', pallets.length ? `${num(pallets.length)} PLT` : dash)}
   ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
   ${row('검수', `${pallets.filter((p) => p.scanned_at).length}/${pallets.length}`)}
@@ -365,15 +387,15 @@ async function openLoadedDetail(orderId, user, reload, editable) {
     // 상차완료 취소 - 되돌리면 검수 상태로 돌아가고 다시 상차완료할 수 있다
     locModal.root.querySelector('#btn-unload')?.addEventListener('click', async () => {
         const ok = await confirmDialog(
-            `${o.order_no} 의 상차완료를 취소하시겠습니까?\n\n`
-            + `묶인 ${g.rows.length}개 차수 전체가 검수 상태로 돌아갑니다.\n`
+            `${o.rep_no || o.order_no} 의 상차완료를 취소하시겠습니까?\n\n`
+            + `묶인 주문 ${g.rows.length}건 전체가 검수 상태로 돌아갑니다.\n`
             + '상차작업 취소 이력이 남습니다.',
         );
         if (!ok) return;
         try {
             await db.cancelLoading(orderId, user);
             locModal.close();
-            toast(`${o.order_no} 의 상차완료를 취소했습니다.`, 'success');
+            toast(`${o.rep_no || o.order_no} 의 상차완료를 취소했습니다.`, 'success');
             reload();
         } catch (err) {
             toast(err.message, 'error');

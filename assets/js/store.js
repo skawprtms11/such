@@ -32,7 +32,7 @@ const TABLES = [
         key: 'orders',
         name: 'orders',
         cols: [
-            'id', 'reg_date', 'send_date', 'seq', 'order_no', 'base_no', 'customer',
+            'id', 'reg_date', 'send_date', 'seq', 'order_no', 'base_no', 'rep_no', 'customer',
             'ship_req_date', 'vehicle_type', 'team_name', 'region',
             'extra_yn', 'packing_yn', 'work_note', 'packing_note', 'extra_works',
             'request_note', 'remark',

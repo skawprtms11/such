@@ -206,7 +206,52 @@ thefurerap/
 **상차는 차수를 묶어서 처리한다 🔑** — 추가주문은 1차수와 함께 한 거래처로 배송되므로,
 상차대기·당일상차리스트·상차검수는 **같은 `base_no` 의 모든 차수를 하나로 본다**
 (`db.getLoadGroup()`). 목록에는 대표(가장 낮은 차수)만 나오고 옆에 `+2건` 배지가 붙는다.
-검수·상차완료도 그룹 전체에 적용된다.
+상차검수·상차완료도 그룹 전체에 적용된다.
+⚠️ **묶이는 것은 상차뿐이다.** 접수·출고작업·검수작업은 차수마다 따로 처리한다
+(1차수 검수 뒤에 들어온 추가주문도 막히지 않아야 하기 때문이다 — 아래 3-1 참고).
+
+### 3-1. 대표주문번호 (rep_no) 🔑
+
+같은 거래처인데 주문번호가 여러 개로 나뉘는 주문은 **실제 검수·상차를 대표주문번호 하나로**
+한다. 주문 등록 시 `대표주문번호`(선택 입력)를 적으면 그 주문들이 한 묶음이 된다.
+
+```js
+/** 상차 묶음 키. 대표주문번호 > 차수 기준번호 > 주문번호 */
+db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 전용
+```
+
+| | `rep_no` (대표주문번호) | `base_no` (차수 기준번호) |
+|---|---|---|
+| 묶는 대상 | **서로 다른 주문번호** | 같은 주문의 **추가 차수** |
+| 입력 | 등록·수정 폼 / 일괄등록에서 직접 (선택) | `createOrder` 가 자동 계산 |
+| 예 | `R-2609-001` ← `PO-1`, `PO-2`, `PO-3` | `a11111` ← `a11111-1`, `a11111-2` |
+
+- 두 묶음은 **겹칠 수 있다.** 겹치면 대표주문번호가 이긴다
+- 묶음 대표(head)는 ① 주문번호 = 대표주문번호 → ② 먼저 등록된 건 → ③ 낮은 차수 →
+  ④ id 순으로 정한다. 차수 묶음만 있으면 지금처럼 1차수가 대표다
+- ⚠️ **차수 계산(`createOrder` · `listOpenOrderNos`)은 `base_no` 만 본다.**
+  차수는 추가주문 개념이라 대표주문번호와 무관하다
+
+#### 일괄 처리 범위 🔑 (헷갈리기 쉬운 곳)
+
+**두 묶음의 처리 범위가 다르다.**
+
+| 단계 | 일괄 적용 범위 | 묶음 키 |
+|---|---|---|
+| 접수 · 접수취소 · 출고작업 시작/완료/취소 · 검수완료/취소 · 패킹리스트 · 완료처리 | **대표주문번호 묶음만** | `rep_no` (없으면 주문 1건) |
+| 상차대기 · 당일상차리스트 · 상차검수 · 상차완료/취소 · 상차라벨 | 대표주문번호 **+ 추가주문 차수** | `db.groupKeyOf` |
+
+- **대표주문번호가 없는 주문(단독 · 추가주문 차수)은 종전처럼 1건씩 처리한다.**
+  추가주문은 1차수와 진행이 다를 수 있어(1차수 검수 후 추가 등록) 묶어서 처리할 수 없다
+- 상차만 묶는 이유는 추가주문이 1차수와 **한 거래처로 함께 실리기** 때문이다
+- 총 파렛트수·박스수는 대표주문번호 묶음일 때 **묶음 총량을 1회 입력**해 대표에 저장하고
+  나머지 멤버는 0파렛트로 둔다 (혼적 추가건과 같은 처리)
+- 주문정보등록 목록과 출고주문처리 웹 목록(출고작업·검수작업·출고적치)은
+  **대표주문번호 묶음만** 1행으로 접는다 (`db.repGroups`). 상차대기 목록은 차수까지 묶는다
+  (`db.loadGroups`). 상세 팝업 맨 위에는 묶인 주문번호 표가 나온다 (취소건 포함)
+- **상차라벨은 대표주문번호로 찍는다** (바코드·큰 글씨 = `rep_no`, 묶인 주문번호는 작은 행,
+  파렛트수는 묶음 총량). 출력 버튼은 **묶음 대표 행에만** 있다.
+  상차검수는 어느 번호를 스캔해도 인식한다
 
 ### 4. 권한
 
@@ -282,7 +327,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | 테이블 | 용도 | 주요 필드 |
 |---|---|---|
 | `profiles` | 사용자 | `name` `email` `company`(고객사/용마로지스) `role` `active` |
-| `orders` | 주문 | `order_no` `base_no` `seq` `customer` `ship_req_date`(null=미정) `vehicle_type`(출고형태) `region`(구분) `team_name` `extra_yn` `packing_yn` `work_note`(작업지시) `packing_note`(패킹리스트 내용) `extra_works`(구버전) `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
+| `orders` | 주문 | `order_no` `base_no` `rep_no`(대표주문번호) `seq` `customer` `ship_req_date`(null=미정) `vehicle_type`(출고형태) `region`(구분) `team_name` `extra_yn` `packing_yn` `work_note`(작업지시) `packing_note`(패킹리스트 내용) `extra_works`(구버전) `pallet_count` `box_count` `confirmed_at` `ship_done_at` `req_work_at` `inspect_done_at` `extra_done_at` `stow_done_at` `loaded_at` `closed_at` `edit_count` `canceled_at` `inspected` `status` `created_by` |
 | `order_history` | 변동사항 이력 | `order_id` `rev` `field` `before_val` `after_val` `memo` `changed_by` `checked_at` |
 | `restore_requests` | 조정요청 | `order_id` `type` `reason` `product_code` `qty` `created_by` `checked_at` |
 | `pallets` | 검수 바코드 · 적치 로케이션 | `order_id` `barcode` `scanned_at` `location` `picked_at` |

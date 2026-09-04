@@ -115,13 +115,46 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 
 | 함수 | 설명 |
 |---|---|
-| `listOrders(filter)` | `from` `to` `shipDate` `keyword` `createdBy` `minStage` 로 필터. 최신순 |
+| `listOrders(filter)` | `from` `to` `shipDate` `keyword` `createdBy` 로 필터. 최신순 (키워드는 대표주문번호도 본다) |
 | `getOrder(id)` | 1건 조회 |
 | `createOrder(payload, user)` | **차수 자동 계산** + 파렛트 바코드 생성 + 이력 기록 |
 | `updateOrder(id, patch, user, memo)` | **변경된 항목마다 이력 기록** |
 | `deleteOrder(id, user)` | 주문과 파렛트를 함께 삭제 |
-| `setStage(id, stage, user)` | 처리 단계 변경. `stage>=5` 면 `load_status='완료'` |
 | `listHistory(orderId)` | 변동사항 이력 (최신순) |
+| `listOpenOrderNos(f)` | 추가주문을 붙일 수 있는 주문번호 (차수용, `base_no` 기준) |
+| `listOpenRepNos(f)` | 등록 폼에서 제안할 **대표주문번호** 목록 `{rep_no, customer, count}` |
+
+### 묶음 - 두 종류가 있다 🔑
+
+**일괄 처리 묶음(대표주문번호)과 상차 묶음(대표주문번호 + 차수)은 범위가 다르다.**
+묶음 키는 `db.js` 한 곳에서 정한다.
+
+```js
+// 일괄 처리 묶음 - 대표주문번호가 있을 때만 묶는다 (없으면 주문 1건)
+db.repGroups(rows)      // [{ key, head, rows }] — 목록을 대표주문번호로 모은다 (순수 함수)
+db.getBatchGroup(id, canceled)   // { key, head, rows } — 저장소에서 읽는다
+
+// 상차 묶음 - 추가주문 차수까지 함께 묶는다
+db.groupKeyOf(o)        // rep_no > base_no > order_no
+db.loadGroups(rows)     // [{ key, head, rows }] (순수 함수)
+db.getLoadGroup(id)     // { head, rows, pallets }
+```
+
+| | 뜻 |
+|---|---|
+| `rep_no` | **대표주문번호.** 여러 주문번호를 한 검수·상차 단위로 묶는다 (선택 입력) |
+| `base_no` | **차수 기준번호.** 추가주문(`a11111` → `a11111-1`)을 묶는다 |
+
+- 대표(head)는 ① 주문번호 = 대표주문번호 → ② 먼저 등록된 건 → ③ 낮은 차수 → ④ id 순
+- ⚠️ **차수 계산(`createOrder` · `listOpenOrderNos`)은 `base_no` 만 본다.**
+  차수는 추가주문 개념이라 대표주문번호와 무관하다
+- **대표주문번호 묶음** 전체에 적용되는 처리: `confirmOrderGroup` ·
+  `revokeOrderConfirmGroup` · `startShipWork` · `setShipWorkDone` ·
+  `setInspectDone` · `setPackingNote` · `closeOrder`
+  (대표주문번호가 없으면 주문 1건만 처리한다)
+- **상차 묶음** 전체에 적용되는 처리: `completeLoading` · `cancelLoading` · `resetInspection`
+- `repGroups` / `loadGroups` 는 **넘긴 목록을 그대로 묶는다.** 취소건을 걸러 넘길지는
+  호출부가 정한다 (`getBatchGroup` · `getLoadGroup` 은 기본적으로 취소건을 뺀다)
 
 ### 상차 · 검수
 

@@ -96,10 +96,14 @@ export function monthDay(iso) {
     return m && d ? `${m}/${d}` : '-';
 }
 
-/** 추가주문 건수 배지 - 상차는 차수를 묶어 처리하므로 대표 행에 붙인다 */
-export function addBadge(count) {
+/**
+ * 묶인 건수 배지 - 목록에서 묶음 대표 행에만 붙인다.
+ * @param {number} count 묶음 전체 건수 (대표 포함)
+ * @param {string} label 툴팁 문구 (묶음 종류에 따라 호출부가 정한다)
+ */
+export function addBadge(count, label = '묶인 주문') {
     return count > 1
-        ? ` <span class="tag tag--amber" title="추가주문 ${count - 1}건 포함">+${count - 1}건</span>`
+        ? ` <span class="tag tag--amber" title="${label} ${count - 1}건 포함">+${count - 1}건</span>`
         : '';
 }
 

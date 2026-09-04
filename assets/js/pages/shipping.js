@@ -181,18 +181,24 @@ let headFolded = false;
  * `fold: true` 면 카드 하단에 접기/펼치기 손잡이가 붙고,
  * 접으면 **주문번호와 거래처명만 한 줄로** 남는다. `bindOrderHead()` 로 동작을 연결한다.
  */
-function orderSummary(o, opt, { fold = false } = {}) {
+function orderSummary(o, opt, { fold = false, group = null } = {}) {
     const steps = visibleSteps(o, opt);
     const folded = fold && headFolded;
+    const list = group ?? [o];
     return `
 <div class="work-head ${folded ? 'is-folded' : ''}" data-head>
   <div class="work-head__top">
-    <strong>${esc(o.order_no)}</strong>
+    <strong>${esc(o.rep_no || o.order_no)}</strong>
+    ${o.rep_no ? '<span class="tag tag--amber">대표</span>' : ''}
     <span class="tag tag--blue">${o.seq}차수</span>
     <span class="work-head__cust-inline">${esc(o.customer)}</span>
   </div>
   <div class="work-head__body">
     <div class="work-head__cust">${esc(o.customer)}</div>
+    ${list.length > 1 ? `
+    <div class="work-head__meta">
+      <span>묶인 주문 <b>${list.length}건</b> · ${esc(list.map((r) => r.order_no).join(', '))}</span>
+    </div>` : ''}
     <div class="work-head__meta">
       <span>출고요청일 <b>${o.ship_req_date}</b></span>
       <span>출고형태 <b>${esc(o.vehicle_type)}</b></span>
@@ -220,7 +226,11 @@ function bindOrderHead(root) {
     });
 }
 
-/** 주문번호로 조회해 1건을 고른다. 여러 차수면 선택 목록을 보여준다 */
+/**
+ * 주문번호(또는 대표주문번호)로 조회해 1건을 고른다.
+ * 🔑 결과가 **한 대표주문번호 묶음이면 묶음 대표를 연다** (처리가 묶음 전체에 적용되기 때문이다).
+ * 대표주문번호가 없는데 여러 건이 걸리면(추가주문 차수) 종전처럼 선택 목록을 보여준다.
+ */
 async function pickOrder(box, orderNo, onPick) {
     const rows = await db.findOrdersByNo(orderNo);
     if (!rows.length) {
@@ -228,14 +238,19 @@ async function pickOrder(box, orderNo, onPick) {
         return null;
     }
     if (rows.length === 1) return rows[0];
+    const reps = new Set(rows.map((o) => o.rep_no ?? ''));
+    if (reps.size === 1 && rows[0].rep_no) {
+        const g = await db.getBatchGroup(rows[0].id);
+        return g?.head ?? rows[0];
+    }
 
     box.innerHTML = `
 <div class="card"><div class="card__body">
-  <p class="field__label">차수가 여러 건입니다. 처리할 건을 선택하세요.</p>
+  <p class="field__label">처리할 건이 여러 건입니다. 선택하세요.</p>
   <div class="btn-row">
     ${rows.map((o) => `
     <button class="btn" data-pick="${o.id}" type="button">
-      ${o.seq}차수 · ${esc(o.customer)}
+      ${esc(o.order_no)} · ${o.seq}차수 · ${esc(o.customer)}
     </button>`).join('')}
   </div>
 </div></div>`;
@@ -256,21 +271,24 @@ async function renderWorkTab(pane, user, editable, mode) {
     const workBox = pane.querySelector('#work-box');
     const tasks = await db.extraTaskMap();
 
-    /** 주문 1건의 작업 화면을 그린다 */
+    /** 묶음 1건의 작업 화면을 그린다 (처리는 묶음 전체에 적용된다) */
     async function draw(orderId) {
         // 스캔해서 작업을 연 사람이 이 단계의 작업자가 된다 (조회 권한만 있으면 기록하지 않는다)
         if (editable) await db.recordWorker(orderId, mode, user);
         const o = await db.getOrder(orderId);
         if (!o) return;
+        // 출고작업·검수작업은 대표주문번호 묶음에만 일괄 적용된다 (차수는 각자 처리)
+        const g = await db.getBatchGroup(orderId);
+        const list = g && g.rows.length ? g.rows : [o];
         const opt = { task: Boolean(tasks[o.order_no]), adjust: (await db.adjustMap())[o.id] };
         workBox.innerHTML = `
-${orderSummary(o, opt, { fold: true })}
+${orderSummary(o, opt, { fold: true, group: list })}
 <div class="card"><div class="card__body" id="work-body"></div></div>`;
         bindOrderHead(workBox);
         const body = workBox.querySelector('#work-body');
 
-        if (mode === 'ship') drawShip(body, o, user, editable, () => draw(orderId));
-        else drawInspect(body, o, user, editable, () => draw(orderId));
+        if (mode === 'ship') drawShip(body, o, user, editable, () => draw(orderId), list);
+        else drawInspect(body, o, user, editable, () => draw(orderId), list);
     }
 
     const cleanup = mountScanBox(pane.querySelector('#scan-box'), async (no) => {
@@ -292,9 +310,11 @@ function workNoteHtml(o) {
 </div>`;
 }
 
-function drawShip(body, o, user, editable, reload) {
+function drawShip(body, o, user, editable, reload, list = [o]) {
     const started = Boolean(o.ship_started_at);
     const done = Boolean(o.ship_done_at);
+    // 처리는 묶음 전체에 적용된다. 접수되지 않은 주문이 하나라도 있으면 시작할 수 없다
+    const waiting = list.filter((r) => !r.confirmed_at);
 
     body.innerHTML = `
 ${workNoteHtml(o)}
@@ -303,9 +323,12 @@ ${workNoteHtml(o)}
   <tr><th>작업시작</th><td>${o.ship_started_at ? fmtDateTime(o.ship_started_at) : '-'}</td></tr>
   <tr><th>작업완료</th><td>${o.ship_done_at ? fmtDateTime(o.ship_done_at) : '-'}</td></tr>
 </tbody></table>
-${!o.confirmed_at ? `
-<p class="form-note">⚠️ 아직 접수 처리되지 않은 주문입니다.
+${waiting.length ? `
+<p class="form-note">⚠️ 아직 접수 처리되지 않은 주문이 있습니다
+(${esc(waiting.map((r) => r.order_no).join(', '))}).
 주문정보등록에서 접수 후 출고작업을 시작할 수 있습니다.</p>` : ''}
+${list.length > 1 ? `
+<p class="form-note">묶인 주문 ${list.length}건이 <b>한 번에</b> 처리됩니다.</p>` : ''}
 ${editable ? `
 <div class="btn-row" style="margin-top:16px">
   ${done ? `
@@ -313,7 +336,7 @@ ${editable ? `
         : started ? `
   <button class="btn btn--success btn--lg" id="btn-done" type="button">작업완료</button>
   <button class="btn btn--danger btn--lg" id="btn-reset" type="button">시작 취소</button>`
-            : o.confirmed_at ? `
+            : !waiting.length ? `
   <button class="btn btn--primary btn--lg" id="btn-start" type="button">작업시작</button>` : ''}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
 
@@ -343,21 +366,31 @@ ${editable ? `
     });
 }
 
-/** 검수작업 본문 */
-function drawInspect(body, o, user, editable, reload) {
+/**
+ * 검수작업 본문.
+ * 🔑 검수는 **묶음 전체**에 한 번에 적용되고, 총 파렛트수·박스수도 묶음 총량을 1회 입력한다.
+ * 입력한 총량은 묶음 대표에 저장되고 나머지 멤버는 0파렛트(혼적)로 들어간다.
+ */
+function drawInspect(body, o, user, editable, reload, list = [o]) {
     // 추가작업은 등록 시 '있음' 선택으로 판단한다 (옛 데이터는 extra_works 배열)
-    const hasExtra = o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
-    const hasPacking = o.packing_yn === YN.YES;
+    const hasExtra = list.some((r) => r.extra_yn === YN.YES || (r.extra_works ?? []).length > 0);
+    const hasPacking = list.some((r) => r.packing_yn === YN.YES);
+    // 0파렛트(혼적)는 추가건일 때만 허용한다.
+    // 입력한 총량은 묶음 대표에 실리므로 대표 기준으로 본다 (db.setInspectDone 과 같은 조건)
+    const head = list[0] ?? o;
+    const allowZero = head.seq > 1;
     const done = Boolean(o.inspect_done_at);
     // 패킹리스트 내용은 주문정보등록 화면과 같은 값(packing_note)을 쓴다.
     // 편집 조건도 그 화면과 맞춘다 - 상차완료 전까지는 현장에서도 고칠 수 있다
     const written = Boolean((o.packing_note ?? '').trim());
     const canWritePacking = editable && !loadDone(o);
 
-    if (!o.ship_done_at && !done) {
+    const notShipped = list.filter((r) => !r.ship_done_at);
+    if (notShipped.length && !done) {
         body.innerHTML = `
 <div class="empty">
-  출고작업이 완료되지 않은 주문입니다.<br>
+  출고작업이 완료되지 않은 주문입니다
+  (${esc(notShipped.map((r) => r.order_no).join(', '))}).<br>
   출고작업 탭에서 먼저 완료 처리하세요.
 </div>`;
         return;
@@ -393,8 +426,8 @@ ${done ? '' : `
 <div class="form-grid" style="margin-top:14px">
   <label class="field">
     <span class="field__label">총 파렛트수<span class="req">*</span></span>
-    <input type="number" id="in-pallet" min="${o.seq > 1 ? 0 : 1}" step="1" inputmode="numeric"
-           placeholder="0" value="${o.pallet_count || (o.seq > 1 ? '0' : '')}">
+    <input type="number" id="in-pallet" min="${allowZero ? 0 : 1}" step="1" inputmode="numeric"
+           placeholder="0" value="${o.pallet_count || (allowZero ? '0' : '')}">
   </label>
   <label class="field">
     <span class="field__label">총 박스수<span class="req">*</span></span>
@@ -404,7 +437,9 @@ ${done ? '' : `
 </div>
 <p class="form-note">
   검수하면서 센 실제 수량을 입력합니다. 입력한 파렛트 수만큼 상차 검수용 바코드가 만들어집니다.
-  ${o.seq > 1 ? '<br><b>추가건은 기존 차수에 혼적하면 0파렛트로 둡니다.</b>' : ''}
+  ${list.length > 1
+        ? `<br><b>묶음 ${list.length}건의 총 파렛트수·박스수를 한 번에 입력합니다.</b>` : ''}
+  ${allowZero ? '<br><b>추가건은 기존 차수에 혼적하면 0파렛트로 둡니다.</b>' : ''}
 </p>`}
 
 <table class="grid" style="margin-top:14px"><tbody>
@@ -451,7 +486,7 @@ ${editable ? `
             boxCount: Number(body.querySelector('#in-box')?.value),
         };
         // 추가건을 0파렛트로 넘기면 혼적 여부를 한 번 더 묻는다
-        if (o.seq > 1 && checks.palletCount === 0) {
+        if (allowZero && checks.palletCount === 0) {
             const ok = await confirmDialog(
                 '0파렛트로 처리됩니다.\n\n'
                 + '기존 차수 파렛트에 함께 적재(혼적)하여 파렛트수가 늘지 않는 것이 맞습니까?',
@@ -460,7 +495,9 @@ ${editable ? `
         }
         try {
             await db.setInspectDone(o.id, true, checks, user);
-            toast('검수작업을 완료했습니다.', 'success');
+            toast(list.length > 1
+                ? `묶음 ${list.length}건의 검수작업을 완료했습니다.` : '검수작업을 완료했습니다.',
+            'success');
             reload();
         } catch (err) {
             toast(err.message, 'error');
@@ -468,7 +505,10 @@ ${editable ? `
     });
 
     body.querySelector('#btn-cancel')?.addEventListener('click', async () => {
-        if (!await confirmDialog('검수작업 완료를 취소하시겠습니까?')) return;
+        const msg = list.length > 1
+            ? `묶인 주문 ${list.length}건의 검수작업 완료를 모두 취소하시겠습니까?`
+            : '검수작업 완료를 취소하시겠습니까?';
+        if (!await confirmDialog(msg)) return;
         try {
             await db.setInspectDone(o.id, false, {}, user);
             toast('검수작업 완료를 취소했습니다.', 'success');
@@ -643,13 +683,20 @@ function stowTag(done, total) {
     return `<span class="tag ${cls}">${st}</span>`;
 }
 
-/** 주문 목록에 적치 진행 수와 상차 단위(차수 묶음)를 붙인다 */
+/**
+ * 주문 목록에 적치 진행 수와 상차 단위(대표주문번호 · 차수 묶음)를 붙인다.
+ *   stow  - **그 주문의** 파렛트 진행 수 (대표주문번호 묶음은 파렛트가 대표에 모인다)
+ *   group - 상차 묶음 (상차대기 목록의 건수·파렛트 합계에 쓴다)
+ */
 async function withStow(rows) {
-    return Promise.all(rows.map(async (o) => ({
-        ...o,
-        stow: await db.stowCount(o.id),
-        group: await db.getLoadGroup(o.id),
-    })));
+    return Promise.all(rows.map(async (o) => {
+        const [group, mine] = await Promise.all([db.getLoadGroup(o.id), db.listPallets(o.id)]);
+        return {
+            ...o,
+            group,
+            stow: { done: mine.filter((p) => p.location).length, total: mine.length },
+        };
+    }));
 }
 
 /**
@@ -679,7 +726,9 @@ ${orderSummary(o, {}, { fold: true })}
             return;
         }
 
-        box.innerHTML = `${orderSummary(o, {}, { fold: true })}<div id="stow-panel"></div>`;
+        const g = await db.getLoadGroup(orderId);
+        box.innerHTML = `${orderSummary(o, {}, { fold: true, group: g?.rows })}
+<div id="stow-panel"></div>`;
         bindOrderHead(box);
         panelCleanup = await mountStowPanel(
             box.querySelector('#stow-panel'), { order: o, editable, user },
@@ -1189,9 +1238,11 @@ async function openLocationView(orderId) {
     const { head, rows, pallets } = g;
     const done = pallets.filter((p) => p.location).length;
     openedModal?.close();
-    openedModal = openModal(`${head.order_no} · 적치 로케이션`, `
+    openedModal = openModal(`${head.rep_no || head.order_no} · 적치 로케이션`, `
 <div class="toolbar" style="margin-bottom:10px">
-  <span>${esc(head.customer)}${addBadge(rows.length)}</span>
+  <span>${esc(head.customer)}${addBadge(rows.length, '함께 실리는 주문')}</span>
+  ${rows.length > 1 ? `
+  <span class="field__label">묶인 주문 ${esc(rows.map((r) => r.order_no).join(', '))}</span>` : ''}
   <div class="toolbar__spacer"></div>
   ${stowTag(done, pallets.length)}
   <span class="field__label">${done}/${pallets.length} 완료</span>
@@ -1229,7 +1280,8 @@ async function stockRows(user) {
             .filter((p) => p.location)
             .map((p) => ({
                 location: formatLocation(p.location),
-                order_no: o.order_no,
+                // 라벨과 같은 번호로 찾을 수 있게 대표주문번호를 우선 보여준다
+                order_no: o.rep_no || o.order_no,
                 customer: o.customer,
             }));
     }));
@@ -1345,6 +1397,16 @@ function printStockSheet(rows) {
 }
 
 /**
+ * 목록의 주문번호 칸.
+ * 대표주문번호가 있으면 그 번호를 굵게 보여주고, 묶인 건수를 `+N건` 배지로 붙인다.
+ * @param {string} label 배지 툴팁 문구 (상차 목록은 차수까지 묶이므로 다르게 적는다)
+ */
+function groupNoCell(o, count = 1, label = '묶인 주문') {
+    const no = o.rep_no || o.order_no;
+    return `${o.rep_no ? `<b>${esc(no)}</b>` : esc(no)}${addBadge(count, label)}`;
+}
+
+/**
  * 상차대기 상태 태그.
  * 🔑 상차완료는 **단계 시각(loaded_at)과 상차 상태(load_status)가 모두 완료**일 때만이다.
  * 한쪽만 완료인 건은 아직 실리지 않은 것이므로 `상차대기` 로 본다.
@@ -1366,8 +1428,8 @@ function loadWaitTable(rows) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td>${esc(o.order_no)}${addBadge(o.group.rows.length)}</td>
-  <td class="center"><span class="seq">${o.group.rows.length}개 차수</span></td>
+  <td>${groupNoCell(o, o.group.rows.length, '함께 실리는 주문')}</td>
+  <td class="center"><span class="seq">${o.group.rows.length}건</span></td>
   <td>${esc(o.customer)}</td>
   <td class="num">${num(o.group.pallets.length)}</td>
   <td class="center">${loadDone(o)
@@ -1389,7 +1451,7 @@ function stowTable(rows) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td><span class="link" data-loc="${o.id}">${esc(o.order_no)}</span></td>
+  <td><span class="link" data-loc="${o.id}">${groupNoCell(o, o.group_count)}</span></td>
   <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="num">${num(o.stow.total)}</td>
@@ -1428,13 +1490,10 @@ async function renderLoadWaitTab(pane, user) {
         const rows = await db.listOrders({
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         });
-        return rows
-            // 상차완료된 건만 뺀다. 상차 정보가 어긋난 건은 남겨 눈에 띄게 한다
-            .filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at)
-            // 추가주문은 1차수와 함께 실리므로 대표(가장 낮은 차수)만 남긴다
-            .filter((o, _i, all) => !all.some(
-                (x) => (x.base_no ?? x.order_no) === (o.base_no ?? o.order_no) && x.seq < o.seq,
-            ));
+        // 상차완료된 건만 뺀다. 상차 정보가 어긋난 건은 남겨 눈에 띄게 한다
+        const live = rows.filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at);
+        // 대표주문번호·추가주문 차수는 함께 실리므로 대표만 남긴다
+        return db.loadGroups(live).map((g) => g.head);
     }
 
     /** 고른 주문의 상세 + 파렛트별 로케이션 */
@@ -1444,9 +1503,9 @@ async function renderLoadWaitTab(pane, user) {
         const o = g.head;
         const pallets = g.pallets;
         picked.innerHTML = `
-${orderSummary(o, {})}
+${orderSummary(o, {}, { group: g.rows })}
 ${g.rows.length > 1 ? `
-<p class="form-note">추가주문 ${g.rows.length - 1}건이 함께 실립니다 (전체 ${g.rows.length}개 차수).</p>` : ''}
+<p class="form-note">묶인 주문 ${g.rows.length - 1}건이 함께 실립니다 (전체 ${g.rows.length}건).</p>` : ''}
 <div class="card">
   <div class="card__head">
     <h2>적치 로케이션</h2>
@@ -1504,7 +1563,7 @@ ${g.rows.length > 1 ? `
 <tbody>
 ${withLoc.map((o) => `
 <tr class="is-clickable" data-open="${o.id}">
-  <td><span class="link">${esc(o.order_no)}</span>${addBadge(o.group.rows.length)}</td>
+  <td><span class="link">${groupNoCell(o, o.group.rows.length, '함께 실리는 주문')}</span></td>
   <td class="wrap">${esc(o.customer)}</td>
   <td class="num">${num(o.group.pallets.length)}</td>
   <td>${o.locs.length
@@ -1565,6 +1624,15 @@ function orderOf(row) {
 }
 
 /**
+ * 목록 1행(묶음)의 완료 판정 🔑
+ * 대표만 보면 뒤늦게 합류한 멤버가 목록에서 사라진다. **멤버 전부**가 끝나야 완료다.
+ */
+function rowDone(key, row) {
+    const o = orderOf(row);
+    return (row.group_rows ?? [o]).every((r) => tabDone(key, r));
+}
+
+/**
  * 웹 전용 - 탭 요약과 처리해야 할 주문 목록.
  * 처리 버튼은 두지 않는다. 실제 작업은 모바일에서 스캔으로 한다.
  */
@@ -1600,9 +1668,15 @@ async function renderPendingList(pane, key, user) {
 
     async function draw() {
         // 요약은 검색 결과 기준으로 집계한다 (검색어가 없으면 탭 전체)
-        const all = matchKeyword(await tabRows(key, user), searchKw[key]);
-        const done = all.filter((r) => tabDone(key, orderOf(r))).length;
-        const rows = all.filter((r) => !tabDone(key, orderOf(r)));
+        const matched = matchKeyword(await tabRows(key, user), searchKw[key]);
+        // 대표주문번호 묶음은 대표 1행으로 모은다 (조정요청 탭은 요청 단위라 그대로 둔다).
+        // 🔑 상차대기 탭만 추가주문 차수까지 묶는다 - 차수는 함께 실리기 때문이다
+        const all = key === 'extra' ? matched
+            : (key === 'load' ? db.loadGroups(matched) : db.repGroups(matched)).map((g) => ({
+                ...g.head, group_count: g.rows.length, group_rows: g.rows,
+            }));
+        const done = all.filter((r) => rowDone(key, r)).length;
+        const rows = all.filter((r) => !rowDone(key, r));
         const listed = showsDone(key) ? all : rows;
 
         drawSummary(pane, all.length, done);
@@ -1695,13 +1769,8 @@ async function tabRows(key, user) {
             if (o.canceled_at) return false;
             // 출고적치는 검수완료 후 상차 전까지, 상차대기는 적치완료 후 마감 전까지 본다
             if (key === 'stow') return Boolean(o.inspect_done_at) && !loadDone(o);
-            // 추가주문은 1차수와 함께 실리므로 대표(가장 낮은 차수)만 목록에 둔다
-            if (key === 'load') {
-                if (!o.stow_done_at || o.closed_at) return false;
-                const base = o.base_no ?? o.order_no;
-                return !rows.some((x) => (x.base_no ?? x.order_no) === base
-                    && !x.canceled_at && x.stow_done_at && !x.closed_at && x.seq < o.seq);
-            }
+            // 묶인 주문은 함께 실리므로 상차대기 대상인지만 본다 (대표 선정은 목록에서 한다)
+            if (key === 'load') return Boolean(o.stow_done_at) && !o.closed_at;
             return key === 'ship' || Boolean(o.ship_done_at);
         })
         .sort((a, b) => (a.ship_req_date === b.ship_req_date
@@ -1750,7 +1819,7 @@ function workTable(rows, key) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td>${esc(o.order_no)}</td>
+  <td>${groupNoCell(o, o.group_count)}</td>
   <td class="center">${seqTag(o.seq)}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
