@@ -1200,7 +1200,11 @@ export async function cancelLoading(orderId, user) {
     }
     group.rows.forEach((r) => {
         r.loaded_at = null;
-        r.load_status = LOAD_STATUS.INSPECTED;   // 검수는 그대로 두고 상차만 되돌린다
+        // 상차만 되돌린다. 상차검수는 실제 스캔한 수를 보고 상태를 정한다
+        // (전량 검수돼 있으면 '검수', 아니면 '대기' — 값을 고정하면 어긋난 건이 남는다)
+        r.load_status = r.pallet_count > 0 && r.inspected >= r.pallet_count
+            ? LOAD_STATUS.INSPECTED
+            : LOAD_STATUS.WAIT;
         addHistory(db, r.id, '상차작업', '완료', '취소', user);
     });
     await save(db);
