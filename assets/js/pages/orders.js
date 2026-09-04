@@ -5,7 +5,7 @@ import {
     RESTORE_TYPE, RESTORE_TYPE_LABEL, RESTORE_REASONS,
 } from '../config.js';
 import { can, allow } from '../auth.js';
-import { currentStep } from '../steps.js';
+import { currentStep, loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, toDateStr, downloadCsv, toast, openModal, confirmDialog, fmtDateTime,
@@ -129,7 +129,7 @@ function canConfirm(user) {
 
 /** 수정 가능 여부 - 상차완료 전까지만 수정할 수 있다 */
 function canEdit(user, o) {
-    return canWrite(user) && !o.loaded_at && !o.canceled_at;
+    return canWrite(user) && !loadDone(o) && !o.canceled_at;
 }
 
 /**
@@ -147,7 +147,7 @@ function canRestore(user, o) {
  * 고객사(등록)·용마로지스(확인) 양쪽 모두 작성할 수 있다.
  */
 function canPacking(user, o) {
-    return o.packing_yn === YN.YES && !o.loaded_at && !o.canceled_at
+    return o.packing_yn === YN.YES && !loadDone(o) && !o.canceled_at
         && (canWrite(user) || canConfirm(user));
 }
 
@@ -207,7 +207,7 @@ function stateCell(o, stat = EMPTY_STAT) {
  */
 function stateOf(o) {
     if (o.canceled_at) return ORDER_STATE.CANCELED;
-    if (o.loaded_at) return ORDER_STATE.DONE;
+    if (loadDone(o)) return ORDER_STATE.DONE;
     if (o.ship_started_at || o.ship_done_at) return ORDER_STATE.DOING;
     if (o.confirmed_at) return ORDER_STATE.ACCEPTED;
     return ORDER_STATE.WAIT;
@@ -414,7 +414,7 @@ async function showDetail(id, user, reload) {
         const note = o.canceled_at
             ? `취소된 주문입니다. (${fmtDateTime(o.canceled_at)}${
                 o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''})`
-            : o.loaded_at ? '상차완료된 주문이라 수정할 수 없습니다.' : '';
+            : loadDone(o) ? '상차완료된 주문이라 수정할 수 없습니다.' : '';
 
         // 조정요청 탭의 저장 버튼은 등록 카드 안에 있다 (목록 아래가 아니라 입력 바로 밑)
         const btns = [];

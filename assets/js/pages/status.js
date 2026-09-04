@@ -10,7 +10,7 @@
 import { can } from '../auth.js';
 import { code128Svg } from '../barcode.js';
 import * as db from '../db.js';
-import { visibleSteps, stepRate, currentStep, stepsFlowHtml } from '../steps.js';
+import { visibleSteps, stepRate, currentStep, stepsFlowHtml, loadDone } from '../steps.js';
 import {
     esc, num, today, fmtDateTime, downloadCsv, toast, openModal, confirmDialog, isMobile,
     seqTag, MOBILE_QUERY,
@@ -475,7 +475,7 @@ function closeCell(o, editable) {
             : '';
         return `<span class="tag tag--green" title="${fmtDateTime(o.closed_at)}">완료</span>${cancelBtn}`;
     }
-    if (!o.loaded_at) {
+    if (!loadDone(o)) {
         return '<span class="muted" title="상차작업까지 끝나야 완료처리할 수 있습니다">-</span>';
     }
     if (!editable) return '<span class="muted">-</span>';

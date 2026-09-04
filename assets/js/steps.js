@@ -65,7 +65,8 @@ export function visibleSteps(order, opt = {}) {
             return {
                 key: s.key,
                 label: s.label,
-                done: Boolean(order[s.at]),
+                // 상차작업은 시각과 상차 상태를 함께 본다 (loadDone 참고)
+                done: s.key === 'load' ? loadDone(order) : Boolean(order[s.at]),
                 doneAt: order[s.at] ?? null,
             };
         });
@@ -123,13 +124,4 @@ export function currentStep(order, opt = {}) {
  */
 export function loadDone(order) {
     return Boolean(order?.loaded_at) && order?.load_status === LOAD_STATUS.DONE;
-}
-
-/**
- * 상차 정보가 어긋난 건인지.
- * 한쪽만 완료라 상차완료라고도, 상차대기라고도 할 수 없는 상태다.
- * 당일상차리스트의 `상차완료 취소` 로 되돌린다.
- */
-export function loadMismatch(order) {
-    return Boolean(order?.loaded_at) !== (order?.load_status === LOAD_STATUS.DONE);
 }
