@@ -411,7 +411,7 @@ ${rows.map((o, i) => {
   <td class="num">${rows.length - i}</td>
   <td>${o.send_date}</td>
   <td class="center">${seqTag(o.seq)}</td>
-  <td>${esc(o.order_no)}${repTag(o)}</td>
+  <td>${esc(o.order_no)}</td>
   <td>${esc(o.customer)}</td>
   <td>
     <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>
@@ -448,7 +448,7 @@ function mobileTable(rows, tasks, adjust) {
 ${rows.map((o) => `
 <tr class="is-clickable ${o.canceled_at ? 'is-canceled' : ''}" data-detail="${o.id}">
   <td>${o.ship_req_date}</td>
-  <td><span class="link">${esc(o.order_no)}</span>${repTag(o)}</td>
+  <td><span class="link">${esc(o.order_no)}</span></td>
   <td class="wrap">${esc(o.customer)}</td>
   <td class="center">${lastStepTag(o, stepOpt(o, tasks, adjust))}</td>
 </tr>`).join('')}
@@ -555,13 +555,6 @@ function openDetail(o, opt, ctx) {
 }
 
 /* --------------------------------- 상차라벨 --------------------------------- */
-
-/** 목록에 붙는 대표주문번호 태그 */
-function repTag(o) {
-    return o.rep_no
-        ? ` <span class="tag tag--amber" title="대표주문번호로 묶인 주문입니다">대표 ${esc(o.rep_no)}</span>`
-        : '';
-}
 
 /**
  * 상차라벨용 묶음 정보 { 주문ID: {key, head, rows} }.
