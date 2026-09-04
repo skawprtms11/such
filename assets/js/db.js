@@ -1138,16 +1138,27 @@ export async function scanPallet(orderId, barcode, user) {
     return { ok: true, msg: `검수 완료 (${done}/${mine.length})`, order: o };
 }
 
-/** 검수 취소 (전체 초기화) */
+/**
+ * 상차검수 취소 (전체 초기화).
+ * ⚠️ **상차완료된 묶음은 되돌릴 수 없다.** 상차완료를 먼저 취소해야 한다.
+ * 이걸 막지 않으면 `loaded_at` 은 남은 채 상차 상태만 `대기` 로 돌아가
+ * 화면에는 상차 전으로 보이는데 다른 처리는 `상차완료된 주문` 이라며 거부되는
+ * 앞뒤 안 맞는 상태가 된다 (적치취소·검수취소와 같은 순서 규칙이다).
+ */
 export async function resetInspection(orderId, user) {
     const db = (await load());
     const group = groupOf(db, orderId);
+    if (!group) throw new Error('주문을 찾을 수 없습니다.');
+    if (group.rows.some((r) => r.loaded_at)) {
+        throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
+    }
     const ids = new Set(group.rows.map((r) => r.id));
     db.pallets.filter((p) => ids.has(p.order_id)).forEach((p) => { p.scanned_at = null; });
     group.rows.forEach((r) => {
+        // 이력의 이전 값은 실제 상태를 적는다 (예전에는 '검수완료' 로 고정돼 있었다)
+        addHistory(db, r.id, '검수', r.load_status, LOAD_STATUS.WAIT, user);
         r.inspected = 0;
         r.load_status = LOAD_STATUS.WAIT;
-        addHistory(db, r.id, '검수', '검수완료', '대기', user);
     });
     await save(db);
     return group.head;
