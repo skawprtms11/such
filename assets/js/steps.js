@@ -3,7 +3,7 @@
  * 주문처리현황·출고주문처리·당일상차리스트가 같은 규칙을 쓰도록 한곳에 모았다.
  * 단계 완료 여부는 주문의 시각 필드(예: ship_done_at)에 값이 있는지로 판단한다.
  */
-import { WORK_STEPS, YN } from './config.js';
+import { WORK_STEPS, YN, LOAD_STATUS } from './config.js';
 
 /**
  * @typedef {object} StepOpt
@@ -113,4 +113,23 @@ export function currentStep(order, opt = {}) {
     const steps = visibleSteps(order, opt);
     const next = steps.find((s) => !s.done);
     return next ? next.label : (steps.at(-1)?.label ?? '');
+}
+
+/**
+ * 상차완료 판정 🔑
+ * **단계 시각(`loaded_at`)과 상차 상태(`load_status`)가 모두 완료여야 완료다.**
+ * 둘은 항상 같이 움직이지만(completeLoading · cancelLoading), 어긋난 데이터가
+ * 남으면 화면마다 다르게 보인다. 판정을 한곳으로 모아 그런 건을 완료로 세지 않는다.
+ */
+export function loadDone(order) {
+    return Boolean(order?.loaded_at) && order?.load_status === LOAD_STATUS.DONE;
+}
+
+/**
+ * 상차 정보가 어긋난 건인지.
+ * 한쪽만 완료라 상차완료라고도, 상차대기라고도 할 수 없는 상태다.
+ * 당일상차리스트의 `상차완료 취소` 로 되돌린다.
+ */
+export function loadMismatch(order) {
+    return Boolean(order?.loaded_at) !== (order?.load_status === LOAD_STATUS.DONE);
 }

@@ -13,7 +13,7 @@ import {
 } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
-import { visibleSteps, stepsFlowHtml } from '../steps.js';
+import { visibleSteps, stepsFlowHtml, loadDone, loadMismatch } from '../steps.js';
 import { createScanner, scanSupported } from '../scanner.js';
 import { icon } from '../icons.js';
 import {
@@ -1220,7 +1220,8 @@ ${pallets.length ? pallets.map((p) => `
 async function stockRows(user) {
     const orders = (await db.listOrders({
         createdBy: can(user, 'viewAll') ? undefined : user.id,
-    })).filter((o) => o.stow_done_at && !o.loaded_at && !o.canceled_at);
+    // 상차완료된 건만 뺀다 (상차 정보가 어긋난 건은 아직 창고에 있으므로 남긴다)
+    })).filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at);
 
     const lists = await Promise.all(orders.map(async (o) => {
         const pallets = await db.listPallets(o.id);
@@ -1343,6 +1344,24 @@ function printStockSheet(rows) {
     win.focus();
 }
 
+/**
+ * 상차대기 상태 태그.
+ * 🔑 상차완료는 **단계 시각(loaded_at)과 상차 상태(load_status)가 모두 완료**일 때만이다.
+ * 한쪽만 완료인 어긋난 건은 상차완료라고 하지 않고 그대로 드러낸다
+ * (당일상차리스트의 `상차완료 취소` 로 되돌린다).
+ */
+function loadStatusTag(o) {
+    if (loadMismatch(o)) {
+        return `<span class="tag tag--red"
+            title="상차 정보가 어긋나 있습니다 (상차시각 ${o.loaded_at ? '있음' : '없음'} ·
+상차상태 ${esc(o.load_status)}). 당일상차리스트에서 상차완료를 취소해 되돌리세요."
+            >확인필요</span>`;
+    }
+    return loadDone(o)
+        ? '<span class="tag tag--green">상차완료</span>'
+        : '<span class="tag tag--gray">상차대기</span>';
+}
+
 /** 웹 - 상차대기 목록 표 */
 function loadWaitTable(rows) {
     return `
@@ -1358,14 +1377,10 @@ ${rows.map((o) => `
   <td class="center"><span class="seq">${o.group.rows.length}개 차수</span></td>
   <td>${esc(o.customer)}</td>
   <td class="num">${num(o.group.pallets.length)}</td>
-  <td class="center">${o.loaded_at
+  <td class="center">${loadDone(o)
         ? '<span class="muted">-</span>'
         : `<button class="btn btn--sm" data-loc="${o.id}" type="button">로케이션 보기</button>`}</td>
-  <td class="center">
-    <span class="tag ${o.loaded_at ? 'tag--green' : 'tag--gray'}">
-      ${o.loaded_at ? '상차완료' : '상차대기'}
-    </span>
-  </td>
+  <td class="center">${loadStatusTag(o)}</td>
 </tr>`).join('')}
 </tbody>`;
 }
@@ -1421,7 +1436,8 @@ async function renderLoadWaitTab(pane, user) {
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         });
         return rows
-            .filter((o) => o.stow_done_at && !o.loaded_at && !o.canceled_at)
+            // 상차완료된 건만 뺀다. 상차 정보가 어긋난 건은 남겨 눈에 띄게 한다
+            .filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at)
             // 추가주문은 1차수와 함께 실리므로 대표(가장 낮은 차수)만 남긴다
             .filter((o, _i, all) => !all.some(
                 (x) => (x.base_no ?? x.order_no) === (o.base_no ?? o.order_no) && x.seq < o.seq,
@@ -1532,6 +1548,14 @@ const DONE_FIELD = {
     extra: 'extra_done_at',
 };
 
+/**
+ * 탭의 처리가 끝났는지. 상차대기만 단계 시각과 상차 상태를 함께 본다
+ * (한쪽만 완료인 건을 완료로 세면 요약과 목록이 어긋난다).
+ */
+function tabDone(key, o) {
+    return key === 'load' ? loadDone(o) : Boolean(o[DONE_FIELD[key]]);
+}
+
 /** 탭별 검색어 (탭을 오가도 유지된다) */
 const searchKw = {
     ship: '', inspect: '', stow: '', load: '', extra: '',
@@ -1584,8 +1608,8 @@ async function renderPendingList(pane, key, user) {
     async function draw() {
         // 요약은 검색 결과 기준으로 집계한다 (검색어가 없으면 탭 전체)
         const all = matchKeyword(await tabRows(key, user), searchKw[key]);
-        const done = all.filter((r) => orderOf(r)[DONE_FIELD[key]]).length;
-        const rows = all.filter((r) => !orderOf(r)[DONE_FIELD[key]]);
+        const done = all.filter((r) => tabDone(key, orderOf(r))).length;
+        const rows = all.filter((r) => !tabDone(key, orderOf(r)));
         const listed = showsDone(key) ? all : rows;
 
         drawSummary(pane, all.length, done);

@@ -131,6 +131,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `listPallets(orderId)` | 파렛트 바코드 목록 |
 | `scanPallet(orderId, barcode, user)` | `{ok, msg, order}` 반환. 전량 스캔 시 `검수` 전환 |
 | `resetInspection(orderId, user)` | 상차검수 전체 초기화 (**상차완료된 묶음은 거부**) |
+| `loadDone(order)` · `loadMismatch(order)` | 상차완료 판정 (`steps.js`) — `loaded_at` 과 `load_status` 를 함께 본다 |
 | `completeLoading(orderId, user)` | **`검수` 상태에서만 성공.** 아니면 예외 |
 
 ### 이슈 · 사용자
