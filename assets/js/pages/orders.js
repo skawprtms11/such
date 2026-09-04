@@ -56,7 +56,9 @@ export async function render(root, { user }) {
     }
     if (canWrite(user)) {
         actions.insertAdjacentHTML('beforeend',
-            '<button class="btn btn--sm" id="btn-bulk" type="button">일괄등록</button>'
+            '<button class="btn btn--danger btn--sm" id="btn-del-picked" type="button" disabled>'
+            + '선택 삭제</button>'
+            + '<button class="btn btn--sm" id="btn-bulk" type="button">일괄등록</button>'
             + '<button class="btn btn--primary btn--sm" id="btn-new" type="button">주문 등록</button>');
     }
 
@@ -105,6 +107,31 @@ export async function render(root, { user }) {
                 counts[o.id] ? `${counts[o.id]}건` : '',
                 o.vehicle_type, o.team_name, o.item_count, o.qty, o.remark,
             ]));
+    });
+
+    // 일괄삭제 - 표에서 체크한 행(묶음이면 멤버 전부)을 지운다
+    root.querySelector('#btn-del-picked')?.addEventListener('click', async () => {
+        const ids = pickedIds(root);
+        if (!ids.length) return;
+        const nos = groups.filter((g) => g.rows.some((r) => ids.includes(r.id)))
+            .map((g) => g.head.rep_no || g.head.order_no);
+        const ok = await confirmDialog(
+            `선택한 ${nos.length}건(주문 ${ids.length}개)을 삭제하시겠습니까?\n\n`
+            + `${nos.slice(0, 5).join(', ')}${nos.length > 5 ? ` 외 ${nos.length - 5}건` : ''}\n\n`
+            + '삭제한 주문은 되돌릴 수 없습니다.',
+        );
+        if (!ok) return;
+        let done = 0;
+        try {
+            for (const id of ids) {
+                await db.deleteOrder(id, user);
+                done += 1;
+            }
+            toast(`${done}개 주문을 삭제했습니다.`, 'success');
+        } catch (err) {
+            toast(`${done}개 삭제 후 중단: ${err.message}`, 'error');
+        }
+        reload();
     });
 
     root.querySelector('#btn-new')?.addEventListener('click', () => openForm(null, user, reload));
@@ -332,6 +359,7 @@ function drawTable(root, groups, user, reload, stats = {}, names = {}) {
     }
     tbl.innerHTML = `
 <thead><tr>
+  ${canWrite(user) ? '<th class="center"><input type="checkbox" id="chk-all" title="전체 선택"></th>' : ''}
   <th class="num">연번</th><th>등록일자</th><th>전송일자</th>
   <th class="center">담당자</th><th class="center">차수</th>
   <th>주문번호</th><th>거래처명</th>
@@ -349,6 +377,7 @@ ${groups.map((g, i) => {
         const stat = groupStat(list, stats);
         return `
 <tr class="${list.every((r) => r.canceled_at) ? 'is-canceled' : ''}">
+  ${canWrite(user) ? `<td class="center">${pickBox(list, user)}</td>` : ''}
   <td class="num">${groups.length - i}</td>
   <td>${o.reg_date}</td>
   <td>${o.send_date}</td>
@@ -368,12 +397,49 @@ ${groups.map((g, i) => {
     tbl.querySelectorAll('[data-detail]').forEach((el) => {
         el.addEventListener('click', () => showDetail(el.dataset.detail, user, reload));
     });
+    // 체크박스 - 전체 선택과 개별 선택이 선택 삭제 버튼을 켜고 끈다
+    const syncDelBtn = () => {
+        const btn = root.querySelector('#btn-del-picked');
+        if (btn) btn.disabled = !pickedIds(root).length;
+    };
+    tbl.querySelector('#chk-all')?.addEventListener('change', (e) => {
+        tbl.querySelectorAll('input[data-pick]')
+            .forEach((el) => { el.checked = e.target.checked; });
+        syncDelBtn();
+    });
+    tbl.querySelectorAll('input[data-pick]')
+        .forEach((el) => el.addEventListener('change', syncDelBtn));
+    syncDelBtn();
     tbl.querySelectorAll('[data-packing]').forEach((el) => {
         el.addEventListener('click', () => {
             const o = groups.flatMap((g) => g.rows).find((x) => x.id === el.dataset.packing);
             if (o) openPackingNoteModal(o, user, reload);
         });
     });
+}
+
+/**
+ * 행 선택 체크박스 - 삭제할 수 있는 행에만 붙는다.
+ * 묶음 행은 살아 있는 멤버 전부를 한 번에 고른다 (value 에 id 목록).
+ * 상차완료된 주문이 섞여 있으면 고를 수 없다 (서버도 거부한다).
+ */
+function pickBox(list, user) {
+    const live = list.filter((r) => !r.canceled_at);
+    const targets = live.length ? live : list;
+    if (targets.some((r) => loadDone(r))) {
+        return '<span class="muted" title="상차완료된 주문은 삭제할 수 없습니다">-</span>';
+    }
+    // 본인 등록건만 보는 사용자는 자기 것만 지울 수 있다 (RLS 와 같은 규칙)
+    if (!can(user, 'viewAll') && targets.some((r) => r.created_by !== user.id)) {
+        return '<span class="muted">-</span>';
+    }
+    return `<input type="checkbox" data-pick="${targets.map((r) => r.id).join(',')}">`;
+}
+
+/** 표에서 체크된 주문 id 목록 (묶음은 멤버로 풀린다) */
+function pickedIds(root) {
+    return [...root.querySelectorAll('input[data-pick]:checked')]
+        .flatMap((el) => el.dataset.pick.split(','));
 }
 
 /**
