@@ -130,9 +130,13 @@ function canConfirm(user) {
     return allow(user, ORDER_POLICY.confirm);
 }
 
-/** 수정 가능 여부 - 상차완료 전까지만 수정할 수 있다 */
+/**
+ * 수정 가능 여부 - 상차완료 전까지만 수정할 수 있다.
+ * 🔑 취소된 주문도 수정 폼을 열 수 있다. 조정요청 '전체취소' 로 취소한 뒤
+ * 내용을 고치거나 **삭제**해야 하는 경우가 있어서다 (삭제 버튼은 수정 폼 안에 있다).
+ */
 function canEdit(user, o) {
-    return canWrite(user) && !loadDone(o) && !o.canceled_at;
+    return canWrite(user) && !loadDone(o);
 }
 
 /**
@@ -474,7 +478,8 @@ async function showDetail(id, user, reload) {
         const started = list.some((r) => r.ship_started_at || r.ship_done_at);
         const note = o.canceled_at
             ? `취소된 주문입니다. (${fmtDateTime(o.canceled_at)}${
-                o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''})`
+                o.canceled_by_name ? ` · ${o.canceled_by_name}` : ''})${
+                canEdit(user, o) ? ' 수정 버튼으로 내용을 고치거나 삭제할 수 있습니다.' : ''}`
             : loadDone(o) ? '상차완료된 주문이라 수정할 수 없습니다.' : '';
 
         // 조정요청 탭의 저장 버튼은 등록 카드 안에 있다 (목록 아래가 아니라 입력 바로 밑)
