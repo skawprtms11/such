@@ -3,6 +3,7 @@ import {
     LOAD_STATUS, stowStatus, STOW_STATUS, formatLocation, compareLocation,
 } from '../config.js';
 import { can } from '../auth.js';
+import { loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, rate, downloadCsv, toast, confirmDialog, openModal, fmtDateTime, isMobile,
@@ -271,8 +272,8 @@ async function openLocationModal(orderId, user, reload) {
   <span class="tag ${st === STOW_STATUS.DONE ? 'tag--green' : 'tag--gray'}">${st}</span>
   <span class="field__label">내림 ${picked}/${pallets.length}</span>
 </div>
-${o.loaded_at ? '<p class="form-note">상차완료된 주문이라 변경할 수 없습니다.</p>' : ''}
-${editable && !o.loaded_at ? `
+${loadDone(o) ? '<p class="form-note">상차완료된 주문이라 변경할 수 없습니다.</p>' : ''}
+${editable && !loadDone(o) ? `
 <p class="form-note" style="margin:0 0 10px">
   파렛트를 하나씩 내리면서 체크하세요. 체크한 항목은 초록으로 바뀝니다.
 </p>` : ''}
@@ -286,7 +287,7 @@ ${editable && !o.loaded_at ? `
         : '<span class="muted">미지정</span>'}</span>
     <input type="checkbox" class="pallet__check" data-pick="${p.id}"
            ${p.picked_at ? 'checked' : ''}
-           ${editable && !o.loaded_at && p.location ? '' : 'disabled'}>
+           ${editable && !loadDone(o) && p.location ? '' : 'disabled'}>
   </label>`).join('') : '<div class="empty">파렛트가 없습니다.</div>'}
 </div>`;
 

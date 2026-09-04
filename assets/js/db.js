@@ -8,7 +8,7 @@ import {
     RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, adjustCategory,
     formatLocation, isValidLocation,
 } from './config.js';
-import { readyToLoad } from './steps.js';
+import { readyToLoad, loadDone } from './steps.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
@@ -527,10 +527,10 @@ export async function setInspectDone(id, done, checks, user) {
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
     if (done && !o.ship_done_at) throw new Error('출고작업이 완료된 주문만 검수할 수 있습니다.');
-    if (!done && o.loaded_at) throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
+    if (!done && loadDone(o)) throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
     // 다시 완료 처리하면 파렛트수 변경으로 상차검수가 초기화되어(rebuildPallets)
     // loaded_at 만 남고 load_status 가 '대기' 로 어긋난다. 상차를 먼저 되돌려야 한다
-    if (done && o.loaded_at) {
+    if (done && loadDone(o)) {
         throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
     }
     // 적치가 끝난 주문은 순서대로 되돌린다. 적치를 남긴 채 검수만 취소하면
@@ -594,7 +594,7 @@ export async function setPackingNote(id, note, user) {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (o.loaded_at) throw new Error('상차완료된 주문은 패킹리스트를 고칠 수 없습니다.');
+    if (loadDone(o)) throw new Error('상차완료된 주문은 패킹리스트를 고칠 수 없습니다.');
     if (o.packing_yn !== YN.YES) {
         throw new Error('패킹리스트가 있음인 주문만 작성할 수 있습니다.');
     }
@@ -618,7 +618,7 @@ export async function setExtraWorkDone(id, done, user) {
     if (done && !o.inspect_done_at) {
         throw new Error('검수작업이 완료된 주문만 추가작업을 처리할 수 있습니다.');
     }
-    if (!done && o.loaded_at) throw new Error('상차완료된 주문은 추가작업을 취소할 수 없습니다.');
+    if (!done && loadDone(o)) throw new Error('상차완료된 주문은 추가작업을 취소할 수 없습니다.');
     if (done) fillWorker(o, 'extra', user);
     setStepAt(db, o, 'extra_done_at', '추가작업', done, user);
     await save(db);
@@ -1006,7 +1006,7 @@ export async function clearPalletLocation(palletId) {
     const p = db.pallets.find((x) => x.id === palletId);
     if (!p) throw new Error('파렛트를 찾을 수 없습니다.');
     const o = db.orders.find((x) => x.id === p.order_id);
-    if (o?.loaded_at) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
+    if (loadDone(o)) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
     p.location = '';
     if (o) syncStowDone(db, o);
     await save(db);
@@ -1022,7 +1022,7 @@ export async function cancelStow(orderId, user) {
     const o = db.orders.find((x) => x.id === orderId);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (o.loaded_at) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
+    if (loadDone(o)) throw new Error('상차완료된 주문은 적치를 되돌릴 수 없습니다.');
 
     const mine = db.pallets.filter((p) => p.order_id === o.id);
     const had = mine.filter((p) => p.location).length;
@@ -1076,7 +1076,7 @@ export async function setPalletPicked(palletId, done) {
     const p = db.pallets.find((x) => x.id === palletId);
     if (!p) throw new Error('파렛트를 찾을 수 없습니다.');
     const o = db.orders.find((x) => x.id === p.order_id);
-    if (o?.loaded_at) throw new Error('상차완료된 주문은 변경할 수 없습니다.');
+    if (loadDone(o)) throw new Error('상차완료된 주문은 변경할 수 없습니다.');
     if (done && !p.location) throw new Error('적치 로케이션이 없는 파렛트입니다.');
     p.picked_at = done ? new Date().toISOString() : null;
     await save(db);
@@ -1154,7 +1154,7 @@ export async function resetInspection(orderId, user) {
     const db = (await load());
     const group = groupOf(db, orderId);
     if (!group) throw new Error('주문을 찾을 수 없습니다.');
-    if (group.rows.some((r) => r.loaded_at)) {
+    if (group.rows.some((r) => loadDone(r))) {
         throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
     }
     const ids = new Set(group.rows.map((r) => r.id));
@@ -1226,7 +1226,7 @@ export async function closeOrder(id, done, user) {
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
     if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (done && !o.loaded_at) {
+    if (done && !loadDone(o)) {
         throw new Error('상차작업까지 완료된 주문만 완료처리할 수 있습니다.');
     }
     o.closed_at = done ? new Date().toISOString() : null;

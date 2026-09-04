@@ -13,7 +13,7 @@ import {
 } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
-import { visibleSteps, stepsFlowHtml, loadDone, loadMismatch } from '../steps.js';
+import { visibleSteps, stepsFlowHtml, loadDone } from '../steps.js';
 import { createScanner, scanSupported } from '../scanner.js';
 import { icon } from '../icons.js';
 import {
@@ -352,7 +352,7 @@ function drawInspect(body, o, user, editable, reload) {
     // 패킹리스트 내용은 주문정보등록 화면과 같은 값(packing_note)을 쓴다.
     // 편집 조건도 그 화면과 맞춘다 - 상차완료 전까지는 현장에서도 고칠 수 있다
     const written = Boolean((o.packing_note ?? '').trim());
-    const canWritePacking = editable && !o.loaded_at;
+    const canWritePacking = editable && !loadDone(o);
 
     if (!o.ship_done_at && !done) {
         body.innerHTML = `
@@ -505,7 +505,7 @@ async function renderExtraTab(pane, user, editable) {
     /** 대상 목록 = 요청이 있고, 아직 상차 전인 주문 (출고·검수 진행 여부는 보지 않는다) */
     async function targets() {
         const list = await db.listRequestTasks();
-        return list.filter(({ order: o }) => !o.canceled_at && !o.loaded_at);
+        return list.filter(({ order: o }) => !o.canceled_at && !loadDone(o));
     }
 
     async function drawPicked(orderId) {
@@ -1347,16 +1347,9 @@ function printStockSheet(rows) {
 /**
  * 상차대기 상태 태그.
  * 🔑 상차완료는 **단계 시각(loaded_at)과 상차 상태(load_status)가 모두 완료**일 때만이다.
- * 한쪽만 완료인 어긋난 건은 상차완료라고 하지 않고 그대로 드러낸다
- * (당일상차리스트의 `상차완료 취소` 로 되돌린다).
+ * 한쪽만 완료인 건은 아직 실리지 않은 것이므로 `상차대기` 로 본다.
  */
 function loadStatusTag(o) {
-    if (loadMismatch(o)) {
-        return `<span class="tag tag--red"
-            title="상차 정보가 어긋나 있습니다 (상차시각 ${o.loaded_at ? '있음' : '없음'} ·
-상차상태 ${esc(o.load_status)}). 당일상차리스트에서 상차완료를 취소해 되돌리세요."
-            >확인필요</span>`;
-    }
     return loadDone(o)
         ? '<span class="tag tag--green">상차완료</span>'
         : '<span class="tag tag--gray">상차대기</span>';
@@ -1691,7 +1684,7 @@ async function tabRows(key, user) {
     if (key === 'extra') {
         // 접수된 요청이 있고 아직 상차 전인 주문 (출고·검수 진행 여부는 보지 않는다)
         const list = await db.listRequestTasks();
-        return list.filter(({ order: o }) => !o.canceled_at && !o.loaded_at);
+        return list.filter(({ order: o }) => !o.canceled_at && !loadDone(o));
     }
     const rows = await db.listOrders({
         createdBy: can(user, 'viewAll') ? undefined : user.id,
@@ -1701,7 +1694,7 @@ async function tabRows(key, user) {
         .filter((o) => {
             if (o.canceled_at) return false;
             // 출고적치는 검수완료 후 상차 전까지, 상차대기는 적치완료 후 마감 전까지 본다
-            if (key === 'stow') return Boolean(o.inspect_done_at) && !o.loaded_at;
+            if (key === 'stow') return Boolean(o.inspect_done_at) && !loadDone(o);
             // 추가주문은 1차수와 함께 실리므로 대표(가장 낮은 차수)만 목록에 둔다
             if (key === 'load') {
                 if (!o.stow_done_at || o.closed_at) return false;
