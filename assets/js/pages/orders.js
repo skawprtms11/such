@@ -1,6 +1,6 @@
 /** 주문정보등록 화면 - 화주 영업사원이 출고 주문을 게시판 형태로 등록/수정한다 */
 import {
-    VEHICLE_TYPES, ORDER_STATE, ORDER_REGIONS, YN, YN_LIST,
+    VEHICLE_TYPES, ORDER_STATE, YN, YN_LIST,
     ORDER_POLICY, ADJUST_CATEGORIES, adjustCategory,
     RESTORE_TYPE, RESTORE_TYPE_LABEL, RESTORE_REASONS,
 } from '../config.js';
@@ -90,11 +90,11 @@ export async function render(root, { user }) {
         const [counts, users] = await Promise.all([db.countRestores(), db.listUsers()]);
         const names = Object.fromEntries(users.map((u) => [u.id, u.name]));
         downloadCsv(`주문등록내역_${today()}.csv`,
-            ['연번', '구분', '등록일자', '전송일자', '담당자', '차수', '주문번호', '거래처명',
+            ['연번', '등록일자', '전송일자', '담당자', '차수', '주문번호', '거래처명',
                 '추가작업', '패킹리스트', '요청사항', '출고요청일', '상태', '작업지시',
                 '수정횟수', '조정요청', '출고형태', '팀명', '품목수', '출고수량', '비고'],
             rows.map((o, i) => [
-                i + 1, o.region || '국내', o.reg_date, o.send_date, names[o.created_by] ?? '',
+                i + 1, o.reg_date, o.send_date, names[o.created_by] ?? '',
                 `${o.seq}차수`, o.order_no, o.customer,
                 o.extra_yn, o.packing_yn,
                 o.request_note, o.ship_req_date || '미정', stateOf(o), o.work_note,
@@ -287,7 +287,7 @@ function drawTable(root, rows, user, reload, stats = {}, names = {}) {
     }
     tbl.innerHTML = `
 <thead><tr>
-  <th class="num">연번</th><th class="center">구분</th><th>등록일자</th><th>전송일자</th>
+  <th class="num">연번</th><th>등록일자</th><th>전송일자</th>
   <th class="center">담당자</th><th class="center">차수</th>
   <th>주문번호</th><th>거래처명</th>
   <th class="center">추가작업</th><th class="center">패킹리스트</th><th>지시사항</th>
@@ -297,7 +297,6 @@ function drawTable(root, rows, user, reload, stats = {}, names = {}) {
 ${rows.map((o, i) => `
 <tr class="${o.canceled_at ? 'is-canceled' : ''}">
   <td class="num">${rows.length - i}</td>
-  <td class="center"><span class="tag">${esc(o.region || '국내')}</span></td>
   <td>${o.reg_date}</td>
   <td>${o.send_date}</td>
   <td class="center">${esc(names[o.created_by] ?? '-')}</td>
@@ -537,7 +536,6 @@ ${row('주문번호', o.order_no)}
 ${row('거래처명', o.customer)}
 ${row('담당자', owner?.name ?? '-')}
 ${row('차수', `${o.seq}차수`)}
-${row('구분', o.region || '국내')}
 ${row('출고형태', o.vehicle_type)}
 ${row('등록일자', o.reg_date)}
 ${row('전송일자', o.send_date)}
@@ -633,16 +631,6 @@ function openForm(o, user, reload) {
       <span class="field__label">전송일자<span class="req">*</span></span>
       <input type="date" name="send_date" required value="${v('send_date', today())}">
     </label>
-    <div class="field">
-      <span class="field__label">구분<span class="req">*</span></span>
-      <div class="checks">
-        ${ORDER_REGIONS.map((r) => `
-        <label class="check check--inline">
-          <input type="radio" name="region" value="${r}"
-                 ${(o?.region ?? ORDER_REGIONS[0]) === r ? 'checked' : ''} required> ${r}
-        </label>`).join('')}
-      </div>
-    </div>
     <label class="field">
       <span class="field__label">주문번호<span class="req">*</span></span>
       <input type="text" name="order_no" required placeholder="PO-00000000"
@@ -1144,7 +1132,6 @@ const BULK_COLS = [
         narrow: true,
         hint: BULK_KINDS.join('/'),
     },
-    { key: 'region', label: '구분', required: true, narrow: true, hint: ORDER_REGIONS.join('/') },
     { key: 'send_date', label: '전송일자', required: true, date: true, hint: '2026-08-30' },
     {
         key: 'ship_req_date',
@@ -1194,7 +1181,6 @@ function openBulkForm(user, reload) {
     <li><b>주문구분</b> — <code>${BULK_KIND.NEW}</code> 또는 <code>${BULK_KIND.ADD}</code>.
       <b>${BULK_KIND.ADD}</b> 은 이미 등록된 주문의 <b>다음 차수</b>로 들어갑니다
       (주문번호 칸에 <b>기존 주문번호</b>를 적으면 <code>번호-1</code> 처럼 자동으로 붙습니다).</li>
-    <li><b>구분</b> — ${ORDER_REGIONS.join(' 또는 ')}</li>
     <li><b>출고형태</b> — ${VEHICLE_TYPES.join(' 또는 ')}</li>
     <li><b>추가작업</b> — 일괄등록에서는 받지 않습니다. 등록 후 수정에서 지정하세요.</li>
   </ul>
@@ -1367,9 +1353,6 @@ ${rows.map((r, ri) => `
             });
             if (o.kind && !BULK_KINDS.includes(o.kind)) {
                 bad.push(`주문구분은 ${BULK_KINDS.join('/')} 만 가능 (입력값 '${o.kind}')`);
-            }
-            if (o.region && !ORDER_REGIONS.includes(o.region)) {
-                bad.push(`구분은 ${ORDER_REGIONS.join('/')} 만 가능 (입력값 '${o.region}')`);
             }
             if (o.vehicle_type && !VEHICLE_TYPES.includes(o.vehicle_type)) {
                 bad.push(`출고형태는 ${VEHICLE_TYPES.join('/')} 만 가능`);
