@@ -53,6 +53,8 @@ function normalize(db) {
         o.closed_at = o.closed_at ?? null;
         // 추가주문 묶음의 기준 번호 (1차수는 자기 주문번호와 같다)
         o.base_no = o.base_no ?? o.order_no;
+        // 대표주문번호 - 여러 주문번호를 한 검수·상차 단위로 묶는다 (없으면 null)
+        o.rep_no = String(o.rep_no ?? '').trim() || null;
         // 출고적치 - 파렛트 로케이션을 전량 입력하면 채워진다
         o.stow_done_at = o.stow_done_at ?? null;
         // 단계별 작업자 이름 (웹에서 직접 입력하거나 모바일 처리 시 자동으로 채워진다)
@@ -90,6 +92,120 @@ function save(db) {
 /** 저장 데이터를 시드 상태로 되돌린다 (mock 모드 전용) */
 export async function resetDb() {
     return storeReset();
+}
+
+/* ------------------- 묶음 (일괄 처리 = 대표주문번호 / 상차 = 대표주문번호 · 차수) ------------------- */
+
+/**
+ * 상차 묶음 키 🔑 (상차대기 · 당일상차리스트 · 상차검수 · 상차라벨 전용)
+ * 대표주문번호 > 차수 기준번호 > 주문번호 순으로 본다.
+ *   rep_no  - 여러 주문번호를 한 검수·상차 단위로 묶는다 (선택 입력)
+ *   base_no - 추가주문의 차수를 묶는다 (a11111 → a11111-1)
+ * 두 묶음은 겹칠 수 있다. 겹치면 대표주문번호가 이긴다.
+ *
+ * ⚠️ 접수·출고작업·검수·패킹리스트·완료처리의 **일괄 처리 범위는 이 키가 아니다.**
+ * 그쪽은 대표주문번호가 있을 때만 묶는다 (`repKeyOf` · `batchGroupOf` 참고).
+ */
+export function groupKeyOf(o) {
+    return o.rep_no || o.base_no || o.order_no;
+}
+
+/**
+ * 일괄 처리 묶음 키 🔑 (접수 · 출고작업 · 검수작업 · 패킹리스트 · 완료처리)
+ * **대표주문번호가 있을 때만 묶는다.** 없으면 주문 1건이 곧 하나의 묶음이다.
+ * 추가주문 차수(`base_no`)는 여기서 묶지 않는다 - 차수마다 따로 처리한다.
+ */
+function repKeyOf(o) {
+    return o.rep_no || `#${o.id}`;
+}
+
+/**
+ * 묶음 대표(head) 정렬 규칙.
+ * (1) 주문번호가 대표주문번호와 같은 건 → (2) 먼저 등록된 건 → (3) 낮은 차수.
+ * 차수 묶음만 있을 때는 1차수가 대표가 된다.
+ */
+function compareHead(a, b) {
+    const isRep = (o) => (o.rep_no && o.order_no === o.rep_no ? 0 : 1);
+    if (isRep(a) !== isRep(b)) return isRep(a) - isRep(b);
+    const at = String(a.created_at ?? '');
+    const bt = String(b.created_at ?? '');
+    if (at !== bt) return at < bt ? -1 : 1;
+    if ((a.seq ?? 1) !== (b.seq ?? 1)) return (a.seq ?? 1) - (b.seq ?? 1);
+    // 같은 시각·같은 차수면 id 로 순서를 고정한다.
+    // (서버 조회는 정렬을 보장하지 않아 대표가 화면마다 달라질 수 있다)
+    return String(a.id).localeCompare(String(b.id));
+}
+
+/**
+ * 넘긴 목록을 키별로 묶는다.
+ * ⚠️ **취소건을 걸러내지 않는다.** 넘기는 쪽이 정한다
+ *    (주문정보등록 목록은 취소건도 보여주고, 처리 화면은 미리 걸러서 넘긴다).
+ * 묶음 순서는 넘긴 목록에서 처음 나온 순서를 그대로 따른다.
+ * @returns {Array<{key:string, head:object, rows:object[]}>}
+ */
+function groupList(rows, keyOf) {
+    const map = new Map();
+    rows.forEach((o) => {
+        const key = keyOf(o);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(o);
+    });
+    return [...map.entries()].map(([key, list]) => {
+        const sorted = [...list].sort(compareHead);
+        return { key, head: sorted[0], rows: sorted };
+    });
+}
+
+/**
+ * 대표주문번호 묶음 목록 (주문정보등록 · 출고주문처리 웹 목록에서 1행으로 접을 때 쓴다).
+ * 대표주문번호가 없는 주문은 자기 혼자 1묶음이다.
+ */
+export function repGroups(rows) {
+    return groupList(rows, repKeyOf);
+}
+
+/** 상차 묶음 목록 (상차대기 · 상차라벨 - 추가주문 차수까지 함께 묶는다) */
+export function loadGroups(rows) {
+    return groupList(rows, groupKeyOf);
+}
+
+/**
+ * 일괄 처리 묶음 🔑
+ * 접수 · 출고작업 · 검수작업 · 패킹리스트 · 완료처리의 적용 범위다.
+ * **대표주문번호가 있을 때만 묶고**, 없으면 주문 1건만 담는다.
+ * @param {boolean} canceled 취소건까지 담을지 (상세 팝업의 묶인 주문번호 표에서만 쓴다)
+ * @returns {{key:string, head:object, rows:object[]}|null}
+ */
+function batchGroupOf(db, orderId, canceled = false) {
+    const o = db.orders.find((x) => x.id === orderId);
+    if (!o) return null;
+    if (!o.rep_no) return { key: repKeyOf(o), head: o, rows: [o] };
+    const rows = db.orders
+        .filter((x) => repKeyOf(x) === repKeyOf(o) && (canceled || !x.canceled_at))
+        .sort(compareHead);
+    return { key: repKeyOf(o), head: rows[0] ?? o, rows: rows.length ? rows : [o] };
+}
+
+/**
+ * 일괄 처리 대상 (처리 함수 공통 진입점).
+ * @returns {{rows:object[], head:object}}
+ */
+function groupFor(db, id) {
+    const o = db.orders.find((x) => x.id === id);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    const g = batchGroupOf(db, id);
+    return { rows: g.rows, head: g.head };
+}
+
+/** 이 주문이 대표주문번호 묶음의 대표인지 (묶이지 않은 주문은 언제나 대표다) */
+function isBatchHead(db, o) {
+    return batchGroupOf(db, o.id)?.head.id === o.id;
+}
+
+/** 주문번호 나열 (오류 메시지·안내 문구에 쓴다) */
+function nosOf(rows) {
+    return rows.map((r) => r.order_no).join(', ');
 }
 
 /**
@@ -286,7 +402,9 @@ export async function listOrders(f = {}) {
     if (f.shipDate) rows = rows.filter((o) => o.ship_req_date === f.shipDate);
     if (f.keyword) {
         const k = f.keyword.trim().toLowerCase();
-        rows = rows.filter((o) => `${o.order_no} ${o.customer}`.toLowerCase().includes(k));
+        rows = rows.filter(
+            (o) => `${o.order_no} ${o.rep_no ?? ''} ${o.customer}`.toLowerCase().includes(k),
+        );
     }
     rows.sort((a, b) => (b.created_at > a.created_at ? 1 : -1));
     return rows;
@@ -321,6 +439,45 @@ export async function listOpenOrderNos(f = {}) {
     return [...map.values()].sort((a, b) => a.order_no.localeCompare(b.order_no));
 }
 
+/**
+ * 🔑 대표주문번호 묶음은 **같은 등록자의 주문만** 묶을 수 있다.
+ * 화주영업팀은 본인 등록건만 보이므로(`viewAll` 없음) 남의 주문이 섞이면 묶음이
+ * 사람마다 다르게 보이고 일괄 처리 범위도 어긋난다. 그래서 등록자를 맞춘다.
+ * 이 검사는 화면에 보이는 행만 보므로, 서버의 `enforce_rep_owner` 트리거가 최종 판정이다.
+ * @param {string|null} repNo 붙이려는 대표주문번호
+ * @param {{id:string}} owner 묶음에 들어갈 주문의 등록자
+ * @param {string} [excludeId] 수정 중인 주문 자신
+ */
+function assertRepOwner(db, repNo, owner, excludeId) {
+    if (!repNo) return;
+    const other = db.orders.find((x) => x.rep_no === repNo && x.id !== excludeId
+        && x.created_by !== owner?.id);
+    if (other) {
+        throw new Error(`대표주문번호 '${repNo}' 는 다른 담당자가 등록한 묶음입니다. `
+            + '같은 담당자가 등록한 주문만 묶을 수 있습니다.');
+    }
+}
+
+/**
+ * 등록 폼에서 제안할 대표주문번호 목록.
+ * **종결된 주문(완료처리·취소)은 제외한다.**
+ * @returns {Promise<Array<{rep_no:string, customer:string, count:number}>>}
+ */
+export async function listOpenRepNos(f = {}) {
+    const db = (await load());
+    const map = new Map();
+    db.orders
+        .filter((o) => o.rep_no && !o.closed_at && !o.canceled_at)
+        .filter((o) => !f.createdBy || o.created_by === f.createdBy)
+        .forEach((o) => {
+            const cur = map.get(o.rep_no)
+                ?? { rep_no: o.rep_no, customer: o.customer, created_by: o.created_by, count: 0 };
+            cur.count += 1;
+            map.set(o.rep_no, cur);
+        });
+    return [...map.values()].sort((a, b) => a.rep_no.localeCompare(b.rep_no));
+}
+
 export async function getOrder(id) {
     return (await load()).orders.find((o) => o.id === id) ?? null;
 }
@@ -334,6 +491,9 @@ export async function createOrder(payload, user) {
     // 차수는 '추가주문' 으로 등록할 때만 올라간다.
     // 같은 주문번호라고 자동으로 올리지 않는다 (등록 화면에서 명시적으로 고른다).
     const { addition, base_no: baseNo, ...rest } = payload;
+    // 대표주문번호는 선택 입력이다. 빈 값은 null 로 저장한다
+    rest.rep_no = String(rest.rep_no ?? '').trim() || null;
+    assertRepOwner(db, rest.rep_no, user);
     // 추가주문은 기준 번호(1차수 주문번호)로 묶는다. 주문번호 자체는 `a11111-1` 처럼 따로 붙는다.
     const base = addition ? (baseNo || rest.order_no) : rest.order_no;
     const same = db.orders.filter((o) => o.base_no === base);
@@ -373,6 +533,7 @@ export async function createOrder(payload, user) {
         created_by: user.id,
         created_at: new Date().toISOString(),
         base_no: base,
+        rep_no: null,
         ...rest,
     };
     db.orders.push(row);
@@ -387,8 +548,14 @@ export async function updateOrder(id, patch, user, memo = '') {
     const db = (await load());
     const o = db.orders.find((x) => x.id === id);
     if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    // 대표주문번호는 빈 값이면 묶음 해제(null)로 다룬다
+    if ('rep_no' in patch) {
+        patch.rep_no = String(patch.rep_no ?? '').trim() || null;
+        // 묶음의 등록자는 원래 주문의 등록자로 본다 (수정하는 사람이 아니다)
+        if (patch.rep_no !== o.rep_no) assertRepOwner(db, patch.rep_no, { id: o.created_by }, o.id);
+    }
     const labels = {
-        send_date: '전송일자', order_no: '주문번호', customer: '거래처명',
+        send_date: '전송일자', order_no: '주문번호', rep_no: '대표주문번호', customer: '거래처명',
         ship_req_date: '출고요청일', vehicle_type: '출고형태', team_name: '팀명',
         region: '구분', extra_yn: '추가작업', packing_yn: '패킹리스트', work_note: '작업지시',
         packing_note: '패킹리스트 내용',
@@ -461,13 +628,22 @@ function fillWorker(o, step, user) {
     if (field && !o[field]) o[field] = user?.name ?? '';
 }
 
-/** 주문번호로 주문을 찾는다 (취소된 건은 제외, 차수 오름차순) */
+/**
+ * 주문번호로 주문을 찾는다 (취소된 건은 제외).
+ * **대표주문번호로도 찾는다.** 묶음 대표를 앞에 두고, 그다음 등록순·차수순이다.
+ */
 export async function findOrdersByNo(orderNo) {
     const key = String(orderNo).trim().toUpperCase();
     if (!key) return [];
-    return (await load()).orders
-        .filter((o) => o.order_no.toUpperCase() === key && !o.canceled_at)
-        .sort((a, b) => a.seq - b.seq);
+    const db = (await load());
+    const same = (v) => String(v ?? '').trim().toUpperCase() === key;
+    return db.orders
+        .filter((o) => !o.canceled_at && (same(o.order_no) || same(o.rep_no)))
+        .sort((a, b) => {
+            const ha = isBatchHead(db, a) ? 0 : 1;
+            const hb = isBatchHead(db, b) ? 0 : 1;
+            return ha === hb ? compareHead(a, b) : ha - hb;
+        });
 }
 
 /** 단계 완료 시각을 설정하거나 지우고 이력에 남긴다 */
@@ -476,114 +652,157 @@ function setStepAt(db, o, field, label, done, user, memo = '') {
     addHistory(db, o.id, label, done ? '' : '완료', done ? '완료' : '취소', user, memo);
 }
 
-/** 출고작업 시작 */
+/** 출고작업 시작 - 대표주문번호 묶음이면 아직 시작하지 않은 멤버 전체에 적용된다 */
 export async function startShipWork(id, user) {
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (!o.confirmed_at) {
-        throw new Error('주문정보등록에서 접수 처리되지 않은 주문입니다. 접수 후 시작할 수 있습니다.');
+    const { rows, head } = groupFor(db, id);
+    // 이미 끝낸 멤버는 건드리지 않는다 (뒤늦게 들어온 멤버만 시작할 수 있어야 한다)
+    const targets = rows.filter((r) => !r.ship_done_at);
+    if (!targets.length) throw new Error('이미 출고작업이 완료된 주문입니다.');
+    const waiting = targets.filter((r) => !r.confirmed_at);
+    if (waiting.length) {
+        throw new Error(`접수되지 않은 주문이 있습니다 (${nosOf(waiting)}). `
+            + '주문정보등록에서 접수 후 시작할 수 있습니다.');
     }
-    if (o.ship_done_at) throw new Error('이미 출고작업이 완료된 주문입니다.');
-    o.ship_started_at = new Date().toISOString();
-    fillWorker(o, 'ship', user);
-    addHistory(db, id, '출고작업', '', '작업시작', user);
+    const at = new Date().toISOString();
+    targets.forEach((r) => {
+        r.ship_started_at = at;
+        fillWorker(r, 'ship', user);
+        addHistory(db, r.id, '출고작업', '', '작업시작', user);
+    });
     await save(db);
-    return o;
-}
-
-/** 출고작업 완료 / 완료 취소 */
-export async function setShipWorkDone(id, done, user) {
-    const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (done && !o.confirmed_at) {
-        throw new Error('주문정보등록에서 접수 처리되지 않은 주문입니다. 접수 후 완료할 수 있습니다.');
-    }
-    if (done && o.inspect_done_at) {
-        throw new Error('검수작업이 완료된 주문입니다. 검수를 먼저 취소하세요.');
-    }
-    if (!done && o.inspect_done_at) {
-        throw new Error('검수작업이 완료된 주문은 출고작업을 취소할 수 없습니다.');
-    }
-    if (done && !o.ship_started_at) o.ship_started_at = new Date().toISOString();
-    if (done) fillWorker(o, 'ship', user);
-    setStepAt(db, o, 'ship_done_at', '출고작업', done, user);
-    if (!done) o.ship_started_at = null;
-    await save(db);
-    return o;
+    return head;
 }
 
 /**
- * 검수작업 완료 / 완료 취소
+ * 출고작업 완료 / 완료 취소 - 대표주문번호 묶음이면 **아직 처리되지 않은 멤버만** 대상이다.
+ * 🔑 이미 검수까지 끝난 멤버를 대상에서 빼야 뒤늦게 합류한 주문의 출고작업을 끝낼 수 있다.
+ * (완료 취소는 작업시작만 한 건도 대상이다 - 화면의 `작업시작 취소` 가 이 경로를 쓴다)
+ */
+export async function setShipWorkDone(id, done, user) {
+    const db = (await load());
+    const { rows, head } = groupFor(db, id);
+    const targets = done
+        ? rows.filter((r) => !r.ship_done_at)
+        : rows.filter((r) => r.ship_done_at || r.ship_started_at);
+    if (!targets.length) {
+        throw new Error(done
+            ? '이미 출고작업이 완료된 주문입니다.'
+            : '출고작업을 시작하지 않은 주문입니다.');
+    }
+    const waiting = targets.filter((r) => !r.confirmed_at);
+    if (done && waiting.length) {
+        throw new Error(`접수되지 않은 주문이 있습니다 (${nosOf(waiting)}). `
+            + '주문정보등록에서 접수 후 완료할 수 있습니다.');
+    }
+    if (targets.some((r) => r.inspect_done_at)) {
+        throw new Error(done
+            ? '검수작업이 완료된 주문입니다. 검수를 먼저 취소하세요.'
+            : '검수작업이 완료된 주문은 출고작업을 취소할 수 없습니다.');
+    }
+    const at = new Date().toISOString();
+    targets.forEach((r) => {
+        if (done && !r.ship_started_at) r.ship_started_at = at;
+        if (done) fillWorker(r, 'ship', user);
+        setStepAt(db, r, 'ship_done_at', '출고작업', done, user);
+        if (!done) r.ship_started_at = null;
+    });
+    await save(db);
+    return head;
+}
+
+/** 요청작업(추가작업) 대상인지 - 옛 데이터는 extra_works 배열로 판단한다 */
+function hasExtraWork(o) {
+    return o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
+}
+
+/**
+ * 검수작업 완료 / 완료 취소 🔑 **대표주문번호 묶음 전체에 한 번에 적용된다.**
+ * (대표주문번호가 없으면 주문 1건만 처리한다 - 추가주문 차수는 차수마다 따로 검수한다)
  * 검수는 시작 개념 없이 완료만 처리한다.
- * @param {{reqWork:boolean}} checks 요청작업 확인 여부와 검수 실측값
+ *
+ * 총 파렛트수·박스수는 **묶음 총량을 1회 입력**받아 대표(head)에 저장하고,
+ * 나머지 멤버는 0파렛트로 둔다 (혼적 추가건과 같은 처리 - 적치 단계도 함께 끝난다).
+ * @param {{reqWork:boolean, palletCount:number, boxCount:number}} checks
  */
 export async function setInspectDone(id, done, checks, user) {
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (done && !o.ship_done_at) throw new Error('출고작업이 완료된 주문만 검수할 수 있습니다.');
-    if (!done && loadDone(o)) throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
+    const { rows, head } = groupFor(db, id);
+
+    const notShipped = rows.filter((r) => !r.ship_done_at);
+    if (done && notShipped.length) {
+        throw new Error(`출고작업이 완료되지 않은 주문이 있습니다 (${nosOf(notShipped)}).`);
+    }
+    if (!done && rows.some((r) => loadDone(r))) {
+        throw new Error('상차완료된 주문은 검수를 취소할 수 없습니다.');
+    }
     // 다시 완료 처리하면 파렛트수 변경으로 상차검수가 초기화되어(rebuildPallets)
     // loaded_at 만 남고 load_status 가 '대기' 로 어긋난다. 상차를 먼저 되돌려야 한다
-    if (done && loadDone(o)) {
+    if (done && rows.some((r) => loadDone(r))) {
         throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
     }
     // 적치가 끝난 주문은 순서대로 되돌린다. 적치를 남긴 채 검수만 취소하면
-    // '검수 미완료 · 적치 완료' 라는 앞뒤 안 맞는 상태가 되고, 적치를 고칠 수도 없다
-    if (!done && o.pallet_count && o.stow_done_at) {
+    // '검수 미완료 · 적치 완료' 라는 앞뒤 안 맞는 상태가 되고, 적치를 고칠 수도 없다.
+    // 다시 완료 처리할 때도 같다 — 파렛트수가 바뀌면 rebuildPallets 가 로케이션을 지우는데
+    // stow_done_at 만 남으면 '적치 완료 · 로케이션 0건' 이 된다 (대표주문번호 묶음에
+    // 멤버가 늦게 합류해 재검수하는 경우에 실제로 도달한다)
+    if (rows.some((r) => r.pallet_count && r.stow_done_at)) {
         throw new Error('출고적치가 완료된 주문입니다. 출고적치 탭에서 적치취소를 먼저 하세요.');
     }
 
-    const hasExtra = o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
-    const hasPacking = o.packing_yn === YN.YES;
-    if (done && hasExtra && !checks.reqWork) {
+    // 요청작업·패킹리스트는 묶음 중 하나라도 있으면 확인 대상이 된다
+    const packings = rows.filter((r) => r.packing_yn === YN.YES);
+    if (done && rows.some(hasExtraWork) && !checks.reqWork) {
         throw new Error('요청작업 확인을 체크해야 검수를 완료할 수 있습니다.');
     }
-    // 패킹리스트는 주문 등록 시 '있음' 인 경우에만 확인한다.
-    // 별도 체크 없이 내용(packing_note)이 작성되어 있어야 완료로 본다
-    if (done && hasPacking && !(o.packing_note ?? '').trim()) {
+    // 패킹리스트는 별도 체크 없이 내용(packing_note)이 작성되어 있어야 완료로 본다
+    if (done && packings.some((r) => !(r.packing_note ?? '').trim())) {
         throw new Error('패킹리스트를 먼저 작성해야 검수를 완료할 수 있습니다.');
     }
 
-    // 검수 실측값 - 총 파렛트수와 총 박스수를 입력해야 완료할 수 있다
+    // 검수 실측값 - 묶음 총 파렛트수와 총 박스수를 입력해야 완료할 수 있다
     if (done) {
         const pallet = Number(checks.palletCount);
         const box = Number(checks.boxCount);
-        // 추가건(2차수 이상)은 기존 차수 파렛트에 혼적할 수 있어 0파렛트를 허용한다
-        const minPallet = o.seq > 1 ? 0 : 1;
+        // 추가건(2차수 이상)은 기존 차수 파렛트에 혼적할 수 있어 0파렛트를 허용한다.
+        // 입력값은 대표(head)에 실리므로 대표 기준으로 본다
+        // (묶음 멤버는 아래에서 자동으로 0파렛트가 된다)
+        const minPallet = head.seq > 1 ? 0 : 1;
         if (!Number.isInteger(pallet) || pallet < minPallet) {
-            throw new Error(o.seq > 1
+            throw new Error(minPallet === 0
                 ? '총 파렛트수를 0 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.'
                 : '총 파렛트수를 1 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.');
         }
         if (!Number.isInteger(box) || box < 1) {
             throw new Error('총 박스수를 1 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.');
         }
-        // 파렛트 수가 바뀌면 상차 검수 바코드를 그 수만큼 다시 만든다
-        const changed = o.pallet_count !== pallet;
-        o.pallet_count = pallet;
-        o.box_count = box;
-        if (changed || !db.pallets.some((x) => x.order_id === o.id)) rebuildPallets(db, o);
-        // 혼적 추가건(0파렛트)은 적치할 파렛트가 없다. 출고적치 단계를 함께 끝낸다.
-        o.stow_done_at = pallet === 0 ? new Date().toISOString() : o.stow_done_at;
+        const at = new Date().toISOString();
+        rows.forEach((r) => {
+            // 총량은 대표에 싣는다. 나머지 멤버는 0파렛트(혼적)로 둔다
+            const count = r.id === head.id ? pallet : 0;
+            const changed = r.pallet_count !== count;
+            r.pallet_count = count;
+            r.box_count = r.id === head.id ? box : 0;
+            // 파렛트 수가 바뀌면 상차 검수 바코드를 그 수만큼 다시 만든다
+            if (changed || !db.pallets.some((x) => x.order_id === r.id)) rebuildPallets(db, r);
+            // 0파렛트 건은 적치할 파렛트가 없다. 출고적치 단계를 함께 끝낸다
+            r.stow_done_at = count === 0 ? at : r.stow_done_at;
+        });
     }
 
-    if (!done && !o.pallet_count) o.stow_done_at = null;   // 혼적 건은 적치도 함께 되돌린다
-    if (done) fillWorker(o, 'inspect', user);
-    if (hasExtra) setStepAt(db, o, 'req_work_at', '요청작업', done, user);
-    o.packing_at = done && hasPacking ? new Date().toISOString() : null;
-    setStepAt(db, o, 'inspect_done_at', '검수작업', done, user);
+    rows.forEach((r) => {
+        if (!done && !r.pallet_count) r.stow_done_at = null;   // 혼적 건은 적치도 함께 되돌린다
+        if (done) fillWorker(r, 'inspect', user);
+        if (hasExtraWork(r)) setStepAt(db, r, 'req_work_at', '요청작업', done, user);
+        r.packing_at = done && r.packing_yn === YN.YES ? new Date().toISOString() : null;
+        setStepAt(db, r, 'inspect_done_at', '검수작업', done, user);
+    });
     await save(db);
-    return o;
+    return head;
 }
 
 /**
- * 패킹리스트 내용 작성/수정.
+ * 패킹리스트 내용 작성/수정 - **대표주문번호 묶음 전체에 같은 내용을 저장한다.**
  * 패킹리스트가 '있음' 인 주문만 대상이다.
  * 주문정보등록 목록의 패킹리스트 컬럼과 모바일 검수작업 탭이 **같은 값**을 다룬다.
  * 어느 쪽에서 쓰든 내용(`packing_note`)은 하나이고, 저장하면 양쪽에 그대로 반영된다.
@@ -591,22 +810,24 @@ export async function setInspectDone(id, done, checks, user) {
 export async function setPackingNote(id, note, user) {
     const text = String(note ?? '').trim();
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (loadDone(o)) throw new Error('상차완료된 주문은 패킹리스트를 고칠 수 없습니다.');
-    if (o.packing_yn !== YN.YES) {
+    const { rows, head } = groupFor(db, id);
+    if (rows.some((r) => loadDone(r))) {
+        throw new Error('상차완료된 주문은 패킹리스트를 고칠 수 없습니다.');
+    }
+    const targets = rows.filter((r) => r.packing_yn === YN.YES);
+    if (!targets.length) {
         throw new Error('패킹리스트가 있음인 주문만 작성할 수 있습니다.');
     }
     // 빈 내용은 저장하지 않는다. 검수완료(packing_at)된 주문의 내용이 지워지면
     // '패킹리스트 완료인데 내용 없음' 이라는 앞뒤 안 맞는 상태가 된다
     if (!text) throw new Error('패킹리스트 내용을 입력하세요.');
-    if ((o.packing_note ?? '') !== text) {
-        addHistory(db, id, '패킹리스트 내용', o.packing_note, text, user);
-        o.packing_note = text;
-        await save(db);
-    }
-    return o;
+    const changed = targets.filter((r) => (r.packing_note ?? '') !== text);
+    changed.forEach((r) => {
+        addHistory(db, r.id, '패킹리스트 내용', r.packing_note, text, user);
+        r.packing_note = text;
+    });
+    if (changed.length) await save(db);
+    return targets.find((r) => r.id === id) ?? head;
 }
 
 /** 추가작업 완료 / 완료 취소 */
@@ -693,40 +914,51 @@ export async function extraTaskMap() {
 /**
  * 주문 접수 - 물류 담당자가 상세 팝업에서 **작업지시를 작성해야** 접수된다.
  * 접수되면 확인 컬럼의 상태가 '접수' 로 바뀐다.
+ * 🔑 **대표주문번호 묶음 전체에 적용된다.** 작업지시는 1회 작성해 묶인 주문 모두에 복사되고,
+ * 이미 접수된 멤버가 섞여 있으면 미접수 멤버만 접수한다.
+ * (대표주문번호가 없으면 주문 1건만 접수한다)
  */
-export async function confirmOrder(id, workNote, user) {
+export async function confirmOrderGroup(id, workNote, user) {
     const note = String(workNote ?? '').trim();
     if (!note) throw new Error('작업지시를 작성해야 접수할 수 있습니다.');
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (o.confirmed_at) throw new Error('이미 접수된 주문입니다.');
-    o.confirmed_at = new Date().toISOString();
-    o.confirmed_by = user.id;
-    o.confirmed_by_name = user.name;
-    o.work_note = note;
-    addHistory(db, id, '접수', '대기', `접수 · 작업지시: ${note}`, user);
+    const { rows, head } = groupFor(db, id);
+    const targets = rows.filter((r) => !r.confirmed_at);
+    if (!targets.length) throw new Error('이미 접수된 주문입니다.');
+    const at = new Date().toISOString();
+    targets.forEach((r) => {
+        r.confirmed_at = at;
+        r.confirmed_by = user.id;
+        r.confirmed_by_name = user.name;
+        r.work_note = note;
+        addHistory(db, r.id, '접수', '대기', `접수 · 작업지시: ${note}`, user);
+    });
     await save(db);
-    return o;
+    return head;
 }
 
-/** 접수 취소 - 출고작업에 착수하기 전까지만 되돌릴 수 있다. 작업지시도 함께 초기화한다 */
-export async function revokeOrderConfirm(id, user) {
+/**
+ * 접수 취소 - 출고작업에 착수하기 전까지만 되돌릴 수 있다. 작업지시도 함께 초기화한다.
+ * 접수와 마찬가지로 대표주문번호 묶음 전체에 적용된다.
+ */
+export async function revokeOrderConfirmGroup(id, user) {
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (!o.confirmed_at) throw new Error('접수되지 않은 주문입니다.');
-    if (o.ship_started_at || o.ship_done_at) {
-        throw new Error('출고작업에 착수한 주문은 접수를 취소할 수 없습니다.');
+    const { rows, head } = groupFor(db, id);
+    const targets = rows.filter((r) => r.confirmed_at);
+    if (!targets.length) throw new Error('접수되지 않은 주문입니다.');
+    const started = rows.filter((r) => r.ship_started_at || r.ship_done_at);
+    if (started.length) {
+        throw new Error(`출고작업에 착수한 주문은 접수를 취소할 수 없습니다 (${nosOf(started)}).`);
     }
-    o.confirmed_at = null;
-    o.confirmed_by = null;
-    o.confirmed_by_name = '';
-    o.work_note = '';
-    addHistory(db, id, '접수', '접수', '접수취소 (작업지시 초기화)', user);
+    targets.forEach((r) => {
+        r.confirmed_at = null;
+        r.confirmed_by = null;
+        r.confirmed_by_name = '';
+        r.work_note = '';
+        addHistory(db, r.id, '접수', '접수', '접수취소 (작업지시 초기화)', user);
+    });
     await save(db);
-    return o;
+    return head;
 }
 
 /**
@@ -923,41 +1155,46 @@ export async function listLoading(shipDate) {
             && !o.canceled_at
             && readyToLoad(o, { task: tasks.has(o.order_no), adjust: adjust[o.id] }));
 
-    // 추가주문은 1차수와 함께 배송되므로 주문번호별로 묶어 대표 1건만 보여준다
-    const byNo = new Map();
+    // 대표주문번호·추가주문 차수는 한 거래처로 함께 배송되므로 묶어서 대표 1건만 보여준다
+    const byKey = new Map();
     ready.forEach((o) => {
-        const base = o.base_no ?? o.order_no;
-        const cur = byNo.get(base);
-        if (!cur || o.seq < cur.seq) byNo.set(base, o);
+        const key = groupKeyOf(o);
+        const cur = byKey.get(key);
+        if (!cur || compareHead(o, cur) < 0) byKey.set(key, o);
     });
-    return [...byNo.values()]
+    return [...byKey.values()]
         .map((head) => {
             const g = groupOf(db, head.id);
             return {
                 ...head,
+                // 목록·라벨에 보여줄 번호 (대표주문번호가 있으면 그것을 쓴다)
+                group_no: head.rep_no || head.order_no,
+                group_nos: g.rows.map((r) => r.order_no),
                 group_count: g.rows.length,
                 group_pallets: g.pallets.length,
                 group_inspected: g.pallets.filter((p) => p.scanned_at).length,
             };
         })
-        .sort((a, b) => (a.order_no > b.order_no ? 1 : -1));
+        .sort((a, b) => (a.group_no > b.group_no ? 1 : -1));
 }
 
 /**
- * 같은 주문번호의 차수들을 묶은 상차 단위.
- * 추가주문은 1차수와 함께 한 거래처로 배송되므로 검수·상차를 묶어서 본다.
+ * 상차 묶음 단위 (`groupKeyOf` 로 묶는다 - 대표주문번호 · 추가주문 차수).
+ * 대표주문번호로 묶인 주문과 추가주문 차수는 한 거래처로 함께 배송되므로
+ * **상차만은** 묶어서 본다 (적치 파렛트 합산 · 상차검수 · 상차완료).
  *
  * @returns {{head:object, rows:object[], pallets:object[]}}
- *   head    - 대표(1차수) 주문
- *   rows    - 취소되지 않은 차수 전체 (차수 오름차순)
- *   pallets - 모든 차수의 파렛트 (차수 → 파렛트 번호 순, seq/label 이 붙는다)
+ *   head    - 묶음 대표 (`compareHead` 규칙 - 차수 묶음만 있으면 1차수)
+ *   rows    - 취소되지 않은 묶음 전체 (대표부터 등록순)
+ *   pallets - 묶음 전체의 파렛트 (주문 순 → 파렛트 번호 순, seq/label 이 붙는다)
  */
 function groupOf(db, orderId) {
     const o = db.orders.find((x) => x.id === orderId);
     if (!o) return null;
+    const key = groupKeyOf(o);
     const rows = db.orders
-        .filter((x) => (x.base_no ?? x.order_no) === (o.base_no ?? o.order_no) && !x.canceled_at)
-        .sort((a, b) => a.seq - b.seq);
+        .filter((x) => groupKeyOf(x) === key && !x.canceled_at)
+        .sort(compareHead);
     const pallets = rows.flatMap((r) => db.pallets
         .filter((p) => p.order_id === r.id)
         .map((p, i) => ({
@@ -971,6 +1208,14 @@ function groupOf(db, orderId) {
 /** 상차 단위 조회 (화면용) */
 export async function getLoadGroup(orderId) {
     return groupOf((await load()), orderId);
+}
+
+/**
+ * 일괄 처리 단위 조회 (화면용) - 대표주문번호가 있을 때만 묶인다.
+ * @param {boolean} canceled 취소된 멤버까지 담을지 (상세 팝업의 묶인 주문번호 표에서 쓴다)
+ */
+export async function getBatchGroup(orderId, canceled = false) {
+    return batchGroupOf((await load()), orderId, canceled);
 }
 
 export async function listPallets(orderId) {
@@ -1083,12 +1328,6 @@ export async function setPalletPicked(palletId, done) {
     return p;
 }
 
-/** 주문별 적치 진행 수 { done, total } */
-export async function stowCount(orderId) {
-    const mine = (await load()).pallets.filter((p) => p.order_id === orderId);
-    return { done: mine.filter((p) => p.location).length, total: mine.length };
-}
-
 /**
  * 파렛트 바코드 스캔 처리 (상차 검수)
  * @returns {{ok:boolean, msg:string, order?:object}}
@@ -1116,7 +1355,11 @@ export async function scanPallet(orderId, barcode, user) {
     //
     // 🔑 추가주문은 라벨이 자기 번호(`a11111-1`)로 인쇄되고 1차수와 함께 실린다.
     // 대표 번호든 추가차수 번호든 **같은 묶음이면 모두 인식한다.**
-    const groupNos = new Set(group.rows.map((r) => String(r.order_no).trim().toUpperCase()));
+    // 대표주문번호로 찍은 라벨도 인식한다
+    const groupNos = new Set(group.rows
+        .flatMap((r) => [r.order_no, r.rep_no])
+        .filter(Boolean)
+        .map((v) => String(v).trim().toUpperCase()));
     const isOrderCode = groupNos.has(code);
     const target = isOrderCode
         ? mine.find((p) => !p.scanned_at)
@@ -1203,11 +1446,15 @@ export async function cancelLoading(orderId, user) {
     if (!group.rows.some((r) => r.loaded_at)) {
         throw new Error('상차완료된 주문이 아닙니다.');
     }
+    // 묶음에서 실제로 스캔된 파렛트가 있는지 (0파렛트 멤버의 상태 판단에 쓴다)
+    const scanned = group.pallets.filter((p) => p.scanned_at).length;
     group.rows.forEach((r) => {
         r.loaded_at = null;
         // 상차만 되돌린다. 상차검수는 실제 스캔한 수를 보고 상태를 정한다
         // (전량 검수돼 있으면 '검수', 아니면 '대기' — 값을 고정하면 어긋난 건이 남는다)
-        r.load_status = r.pallet_count > 0 && r.inspected >= r.pallet_count
+        // 🔑 0파렛트 멤버(혼적·대표주문번호 묶음)는 스캔할 파렛트가 없으므로
+        // `scanPallet` 과 같은 기준으로 본다. 그러지 않으면 '대기' 로 남아 재상차가 막힌다
+        r.load_status = scanned > 0 && r.inspected >= r.pallet_count
             ? LOAD_STATUS.INSPECTED
             : LOAD_STATUS.WAIT;
         addHistory(db, r.id, '상차작업', '완료', '취소', user);
@@ -1217,22 +1464,24 @@ export async function cancelLoading(orderId, user) {
 }
 
 /**
- * 출고 완료처리 / 완료처리 취소.
+ * 출고 완료처리 / 완료처리 취소 - 대표주문번호 묶음 전체에 적용된다.
  * 상차작업까지 끝난 주문을 용마담당자가 최종 마감하는 단계다.
  * 완료처리된 주문은 주문처리현황의 `현재진행` 탭에서 빠지고 `출고완료` 탭으로 간다.
  */
 export async function closeOrder(id, done, user) {
     const db = (await load());
-    const o = db.orders.find((x) => x.id === id);
-    if (!o) throw new Error('주문을 찾을 수 없습니다.');
-    if (o.canceled_at) throw new Error('취소된 주문입니다.');
-    if (done && !loadDone(o)) {
-        throw new Error('상차작업까지 완료된 주문만 완료처리할 수 있습니다.');
+    const { rows, head } = groupFor(db, id);
+    const left = rows.filter((r) => !loadDone(r));
+    if (done && left.length) {
+        throw new Error(`상차작업까지 완료된 주문만 완료처리할 수 있습니다 (${nosOf(left)}).`);
     }
-    o.closed_at = done ? new Date().toISOString() : null;
-    addHistory(db, id, '출고완료', done ? '진행' : '완료', done ? '완료' : '진행', user);
+    const at = done ? new Date().toISOString() : null;
+    rows.forEach((r) => {
+        r.closed_at = at;
+        addHistory(db, r.id, '출고완료', done ? '진행' : '완료', done ? '완료' : '진행', user);
+    });
     await save(db);
-    return o;
+    return head;
 }
 
 /** 전체 조정요청 (상세검색에서 본문을 훑을 때 쓴다) */

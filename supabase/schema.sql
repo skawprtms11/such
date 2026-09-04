@@ -92,6 +92,8 @@ create table if not exists public.orders (
     -- 추가주문 묶음의 기준 번호. 1차수는 자기 주문번호와 같다.
     -- 상차(당일상차리스트·상차검수)는 이 값으로 차수를 묶는다.
     base_no           text        not null,
+    -- 대표주문번호 (여러 주문번호를 한 검수·상차 단위로 묶는다. 없으면 null)
+    rep_no            text,
     customer          text        not null,                        -- 거래처명
     ship_req_date     date,                                        -- 출고요청일 (null 이면 미정)
     team_name         text        not null default '',             -- 팀명
@@ -147,6 +149,7 @@ create table if not exists public.orders (
 );
 
 create index if not exists orders_base_no_idx   on public.orders (base_no);
+create index if not exists orders_rep_no_idx    on public.orders (rep_no) where rep_no is not null;
 create index if not exists orders_order_no_idx  on public.orders (order_no);
 create index if not exists orders_ship_date_idx on public.orders (ship_req_date);
 create index if not exists orders_created_by_idx on public.orders (created_by);
@@ -254,6 +257,9 @@ alter table public.orders add column if not exists extra_yn   text not null defa
 alter table public.orders add column if not exists packing_yn text not null default '없음';
 alter table public.orders add column if not exists work_note  text not null default '';
 alter table public.orders add column if not exists packing_note text not null default '';
+-- 대표주문번호 - 여러 주문번호를 한 검수·상차 단위로 묶는다 (null 허용)
+alter table public.orders add column if not exists rep_no     text;
+create index if not exists orders_rep_no_idx on public.orders (rep_no) where rep_no is not null;
 alter table public.orders alter column ship_req_date drop not null;
 
 alter table public.issues add column if not exists assignee_id   uuid references public.profiles (id);
@@ -496,3 +502,25 @@ alter publication supabase_realtime add table public.restore_requests;
 alter publication supabase_realtime add table public.issues;
 alter publication supabase_realtime add table public.issue_comments;
 alter publication supabase_realtime add table public.profiles;
+
+-- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
+-- 화주영업팀은 본인 등록건만 보이므로(RLS) 앱의 assertRepOwner() 만으로는 남의 묶음을
+-- 못 본다. SECURITY DEFINER 로 전체 행을 보고 최종 판정한다.
+create or replace function public.enforce_rep_owner()
+    returns trigger language plpgsql security definer set search_path = public as $$
+begin
+    if new.rep_no is not null and exists (
+        select 1 from public.orders o
+         where o.rep_no = new.rep_no and o.id <> new.id and o.created_by <> new.created_by
+    ) then
+        raise exception '대표주문번호 ''%'' 는 다른 담당자가 등록한 묶음입니다. 같은 담당자가 등록한 주문만 묶을 수 있습니다.',
+            new.rep_no;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_rep_owner on public.orders;
+create trigger trg_enforce_rep_owner
+    before insert or update of rep_no, created_by on public.orders
+    for each row execute function public.enforce_rep_owner();

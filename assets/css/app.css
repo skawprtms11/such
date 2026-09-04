@@ -580,6 +580,11 @@ table.grid tbody tr:hover { background: #fafbfd; }
 table.grid tbody tr.is-clickable { cursor: pointer; }
 table.grid tbody tr.is-clickable:active { background: var(--gray-100); }
 
+/* 묶인 주문번호 표에서 지금 보고 있는 주문 */
+table.grid tbody tr.is-picked,
+table.grid tbody tr.is-picked:hover { background: var(--blue-soft); }
+table.grid tbody tr.is-picked td { font-weight: 600; }
+
 /* 취소된 주문 - 글자를 연하게 해서 구분한다 */
 table.grid tbody tr.is-canceled td { color: var(--gray-300); }
 table.grid tbody tr.is-canceled .link { color: var(--gray-300); }

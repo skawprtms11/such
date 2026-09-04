@@ -48,7 +48,7 @@ export async function render(root, { user, params }) {
     <div class="toolbar" style="margin-top:12px">
       <label class="field" style="flex:1">
         <span class="field__label">바코드 직접 입력</span>
-        <input type="text" id="manual" placeholder="${esc(order.order_no)}"
+        <input type="text" id="manual" placeholder="${esc(order.rep_no || order.order_no)}"
                autocomplete="off" enterkeyhint="done">
       </label>
       <button class="btn" id="btn-manual" type="button">검수 등록</button>
@@ -97,10 +97,13 @@ export async function render(root, { user, params }) {
         const pct = rate(done, pallets.length);
 
         root.querySelector('#scan-head').innerHTML = `
-<h2>${esc(o.order_no)} <span class="tag tag--blue">${g.rows.length}개 차수</span></h2>
+<h2>${esc(o.rep_no || o.order_no)}
+  ${o.rep_no ? '<span class="tag tag--amber">대표</span>' : ''}
+  <span class="tag tag--blue">${g.rows.length}건</span></h2>
 <p>${esc(o.customer)} · ${esc(o.vehicle_type)} · 출고 ${o.ship_req_date}</p>
 ${g.rows.length > 1 ? `
-<p class="field__label">추가주문 ${g.rows.length - 1}건이 함께 검수됩니다.</p>` : ''}
+<p class="field__label">묶인 주문 ${g.rows.length}건이 함께 검수됩니다
+ (${esc(g.rows.map((r) => r.order_no).join(', '))}).</p>` : ''}
 <div class="scan-stats">
   <div><span>총 파렛트</span><strong>${num(pallets.length)}</strong></div>
   <div><span>검수 파렛트</span><strong>${num(done)}</strong></div>
