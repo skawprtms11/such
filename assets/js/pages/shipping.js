@@ -9,7 +9,7 @@
  */
 import {
     adjustCategory, palletLabel, stowStatus, STOW_STATUS, YN,
-    formatLocation, isValidLocation, LOCATION_FORMAT,
+    formatLocation, isValidLocation, LOCATION_FORMAT, FLOOR_LOCATION,
 } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
@@ -804,6 +804,9 @@ async function mountStowPanel(host, { order, editable, user }) {
           적치취소</button>
         <button class="btn btn--success stow-tool" id="stow-done" type="button" hidden>
           적치완료</button>
+        <button class="btn stow-tool" id="loc-floor" type="button"
+                title="대상 파렛트를 랙이 아닌 바닥(평치)에 둔 것으로 기록합니다">
+          ${icon('floor')}평치로 이동</button>
         <button class="btn stow-tool" id="loc-cam" type="button">
           ${icon('camera')}카메라</button>
         <button class="btn stow-tool" id="loc-pad" type="button">
@@ -1055,7 +1058,8 @@ ${t.location
         lastValue = v;
         lastAt = now;
 
-        const dup = pallets.find((p) => p.id !== t.id && p.location
+        // 평치는 좌표가 없어 여러 파렛트가 같은 값을 가진다 - 중복 검사에서 뺀다
+        const dup = v === FLOOR_LOCATION ? null : pallets.find((p) => p.id !== t.id && p.location
             && formatLocation(p.location) === v);
         if (dup) {
             toast(`${v} 는 ${nameOf(dup)} 에 이미 들어간 로케이션입니다. 다시 스캔하세요.`, 'error');
@@ -1070,6 +1074,16 @@ ${t.location
     /* ------------------------------ 이벤트 연결 ------------------------------ */
 
     if (editable) {
+        // 평치로 이동 - 대상 파렛트(연속: 다음 대상, 건별: 고른 것)를 바닥 적치로 기록한다
+        host.querySelector('#loc-floor')?.addEventListener('click', () => {
+            const t = target();
+            if (!t) {
+                toast('평치로 옮길 파렛트가 없습니다.', 'error');
+                return;
+            }
+            save(t, FLOOR_LOCATION);
+        });
+
         host.querySelectorAll('[data-mode]').forEach((el) => {
             el.addEventListener('click', () => {
                 stowPrefs.mode = el.dataset.mode;

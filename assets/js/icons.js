@@ -73,6 +73,9 @@ const PATHS = {
     square: '<rect x="4.5" y="4.5" width="15" height="15" rx="2.5" />',
 
     // 다음 차례
+    /* 평치 - 바닥선 위에 놓인 파렛트 */
+    floor: '<path d="M3 20h18"/><rect x="6" y="9" width="12" height="8" rx="1"/>'
+        + '<path d="M9 9V6h6v3"/>',
     next: '<path d="M9 6.5l7 5.5-7 5.5z" />',
 };
 

@@ -183,19 +183,31 @@ export const STOW_STATUS = {
 export const LOCATION_FORMAT = 'IF-01-03-01';
 
 /**
+ * 평치(平置) 로케이션 - 랙이 아니라 바닥에 둔 파렛트. 구역·행·열·단 좌표가 없다.
+ * 출고적치의 `평치로 이동` 버튼이 이 값을 넣고, 형식 검사와 정렬이 특별 취급한다.
+ */
+export const FLOOR_LOCATION = '평치';
+
+/**
  * 입력값을 로케이션 형식으로 맞춘다.
  * 영문과 숫자만 추려 `AA-00-00-00` 으로 끊는다. 덜 채워졌으면 있는 만큼만 만든다.
  */
 export function formatLocation(raw) {
-    const s = String(raw ?? '').toUpperCase();
+    const s = String(raw ?? '').trim().toUpperCase();
+    if (s === FLOOR_LOCATION) return FLOOR_LOCATION;   // 평치는 좌표가 없다
     const zone = (s.match(/[A-Z]+/)?.[0] ?? '').slice(0, 2);
-    const digits = s.replace(/[^0-9]/g, '').slice(0, 6);
+    // 구분자(- 공백 / .)로 끊어 적은 값은 묶음마다 두 자리로 맞춘다: if-1-1-1 → IF-01-01-01
+    const parts = s.replace(/^[A-Z]+/, '').split(/[-\s/.]+/).filter((v) => /^\d+$/.test(v));
+    const digits = parts.length >= 2
+        ? parts.map((v) => v.slice(-2).padStart(2, '0')).join('').slice(0, 6)
+        : s.replace(/[^0-9]/g, '').slice(0, 6);
     return [zone, ...(digits.match(/\d{1,2}/g) ?? [])].filter(Boolean).join('-');
 }
 
 /** 형식이 다 채워졌는지 (구역 영문 2자 + 숫자 2자리 3묶음) */
 export function isValidLocation(raw) {
-    return /^[A-Z]{2}-\d{2}-\d{2}-\d{2}$/.test(formatLocation(raw));
+    const v = formatLocation(raw);
+    return v === FLOOR_LOCATION || /^[A-Z]{2}-\d{2}-\d{2}-\d{2}$/.test(v);
 }
 
 /**
@@ -206,6 +218,8 @@ export function compareLocation(a, b) {
     const parse = (v) => {
         const f = formatLocation(v);
         if (!f) return null;
+        // 평치는 랙 뒤, 미지정 앞에 둔다
+        if (f === FLOOR_LOCATION) return { zone: '\uffff', nums: [0, 0, 0] };
         const [zone, ...nums] = f.split('-');
         return { zone, nums: nums.map(Number) };
     };
