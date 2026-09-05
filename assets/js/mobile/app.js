@@ -6,28 +6,41 @@
  * 업무 규칙은 그대로 db.js · steps.js 에 둔다.
  */
 import { APP_TABS, APP_MENU } from '../config.js';
-import { requireLogin, signOut, roleLabel } from '../auth.js';
+import { requireLogin, signOut, roleLabel, can } from '../auth.js';
 import { icon } from '../icons.js';
 import { esc } from '../util.js';
+import { emptyState } from './ui.js';
 
 /** 새 버전을 받으려고 새로고침했는지 (무한 새로고침 방지) - 웹 셸과 같은 키를 쓴다 */
 const RELOAD_FLAG = 'tpl_chunk_reload';
 
-/** 홈은 첫 번째 탭(출고작업)이다. 앱을 열면 바로 스캔할 수 있어야 한다 */
-const HOME = APP_TABS[0].key;
-
-/** 라우트 메타 - 하단 탭 5개 + 상단바 메뉴 항목 */
-const ROUTES = [...APP_TABS, ...APP_MENU];
-
 const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
+
+/**
+ * 권한 게이트 - 탭·서랍·라우팅이 같은 기준을 쓴다.
+ * 역할명을 직접 비교하지 않고 config.js 의 `perm` 과 can() 으로만 판정한다.
+ */
+const allowed = (m) => !m.perm || can(user, m.perm);
+
+/** 이 사용자가 쓸 수 있는 탭·메뉴 */
+const TABS = APP_TABS.filter(allowed);
+const MENU = APP_MENU.filter(allowed);
+
+/** 라우트 메타 - 허용된 하단 탭 + 상단바 메뉴 항목 */
+const ROUTES = [...TABS, ...MENU];
+
+/** 홈은 첫 번째 탭(출고작업)이다. 앱을 열면 바로 스캔할 수 있어야 한다 */
+const HOME = ROUTES[0]?.key ?? null;
 
 /**
  * 화면 모듈 - 필요할 때 동적 import 한다.
  * 목록에 없는 라우트는 라우터가 "준비 중" 빈 화면을 그린다.
  * screens/<키>.js 를 만들 때마다 `<키>: () => import('./screens/<키>.js'),` 를 더한다.
  */
-const SCREENS = {};
+const SCREENS = {
+    load: () => import('./screens/load.js'),
+};
 
 const view = document.getElementById('view');
 const tabbar = document.getElementById('m-tabbar');
@@ -43,30 +56,34 @@ let cleanup = null;
 /** 화면 전환이 겹쳤을 때 마지막 요청만 그리기 위한 순번 */
 let renderSeq = 0;
 
-/** 진입 시점의 이력 길이 - 뒤로가기가 앱 밖으로 나가는 것을 막는 기준 */
-const entryHistoryLen = history.length;
-
 /**
- * 빈 화면. 다음 행동이 있으면 버튼을 함께 그린다.
- * 1단계에서 mobile/ui.js 로 옮겨 화면들이 함께 쓴다.
- * @param {string} msg 안내 문구
- * @param {{label:string, href:string}|null} action 다음 행동 버튼
+ * 이력 깊이 - 앱이 push 한 이력인지 판정한다 (history.length 는 앱 밖의 이력까지 센다).
+ * 새 항목(state 가 비어 있음)에만 도장을 찍고, 뒤로/앞으로는 찍힌 값을 그대로 따른다.
  */
-function emptyState(msg, action = null) {
-    const btn = action
-        ? `<a class="m-btn m-btn--primary" href="${esc(action.href)}">${esc(action.label)}</a>`
-        : '';
-    return `<div class="m-empty"><p class="m-empty__msg">${esc(msg)}</p>${btn}</div>`;
+let depth = -1;
+
+function stampHistory() {
+    const m = history.state?.m;
+    if (m == null) {
+        depth += 1;
+        history.replaceState({ ...history.state, m: depth }, '');
+    } else {
+        depth = m;
+    }
 }
+
+/** 직전 라우트 해시 - 뒤로가기가 같은 탭의 목록으로 가는지 확인할 때 쓴다 */
+let prevRoute = null;
+let curRoute = null;
 
 /** 하단 탭바 · 상단바 메뉴 · 사용자 정보를 한 번만 그린다 */
 function renderShell() {
-    tabbar.innerHTML = APP_TABS.map((t) => `
+    tabbar.innerHTML = TABS.map((t) => `
 <a class="m-tab" data-key="${t.key}" href="${t.route}">
   ${icon(t.icon, 'm-icon m-tab__icon')}<span class="m-tab__label">${esc(t.label)}</span>
 </a>`).join('');
 
-    document.getElementById('m-drawer-nav').innerHTML = APP_MENU.map((m) => `
+    document.getElementById('m-drawer-nav').innerHTML = MENU.map((m) => `
 <a class="m-drawer__item" data-key="${m.key}" href="${m.route}">
   ${icon(m.icon, 'm-icon')}<span>${esc(m.title)}</span>
 </a>`).join('');
@@ -93,20 +110,37 @@ function setDrawer(open) {
  */
 async function route() {
     const [key, ...params] = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+
+    // 🔑 화면을 떠나기 전에 반드시 이전 화면을 정리한다.
+    // 알 수 없는 라우트로 튕겨 나가는 경로에서도 먼저 돌아야 카메라·폴링이 남지 않는다.
+    // 정리 중에 예외가 나도 다음 화면은 떠야 한다
+    const prev = cleanup;
+    cleanup = null;
+    try {
+        prev?.();
+    } catch (err) {
+        console.warn('이전 화면 정리 실패', err);
+    }
+
     const meta = ROUTES.find((r) => r.key === key);
     if (!meta) {
-        location.replace(`#/${HOME}`);
+        // 권한이 없거나 없는 주소다. 쓸 수 있는 화면이 하나도 없으면 안내만 남긴다
+        if (HOME) location.replace(`#/${HOME}`);
+        else view.innerHTML = emptyState('이 계정으로 앱에서 쓸 수 있는 화면이 없습니다.');
         return;
     }
 
-    // 화면을 떠나기 전에 반드시 이전 화면을 정리한다
-    if (typeof cleanup === 'function') cleanup();
-    cleanup = null;
+    stampHistory();
+    prevRoute = curRoute;
+    curRoute = location.hash;
     const seq = ++renderSeq;
 
     titleEl.textContent = meta.title;
     backBtn.hidden = params.length === 0;
     tabbar.querySelectorAll('[data-key]').forEach((el) => {
+        el.classList.toggle('is-active', el.dataset.key === key);
+    });
+    drawer.querySelectorAll('[data-key]').forEach((el) => {
         el.classList.toggle('is-active', el.dataset.key === key);
     });
     setDrawer(false);
@@ -136,7 +170,15 @@ async function route() {
     sessionStorage.removeItem(RELOAD_FLAG);
     if (seq !== renderSeq) return;
 
-    const done = await mod.render(view, { user, params });
+    // 화면 하나가 죽어도 셸까지 멈추지 않게 감싼다
+    let done;
+    try {
+        done = await mod.render(view, { user, params });
+    } catch (err) {
+        console.warn('화면을 여는 중 오류', err);
+        if (seq === renderSeq) view.innerHTML = emptyState('화면을 여는 중 문제가 생겼습니다.');
+        return;
+    }
     // 불러오는 동안 다른 화면으로 옮겨 갔으면 방금 만든 화면을 바로 정리한다
     if (seq !== renderSeq) {
         if (typeof done === 'function') done();
@@ -146,14 +188,16 @@ async function route() {
     view.scrollTop = 0;
 }
 
-/** 상세에서 목록으로. 링크로 곧장 들어와 이력이 없으면 그 탭의 첫 화면으로 보낸다 */
+/**
+ * 상세에서 목록으로.
+ * 이 버튼은 상세에서만 보인다. 이력을 거슬러 **다른 탭의 상세로 새지 않도록**
+ * 뒤가 같은 탭의 목록일 때만 뒤로 가고, 아니면 그 탭의 목록으로 바꿔 넣는다.
+ */
 backBtn.addEventListener('click', () => {
-    if (history.length > entryHistoryLen) {
-        history.back();
-        return;
-    }
     const [key] = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-    location.replace(`#/${key ?? HOME}`);
+    const list = `#/${key ?? HOME}`;
+    if (history.state?.m > 0 && prevRoute === list) history.back();
+    else location.replace(list);
 });
 
 menuBtn.addEventListener('click', () => setDrawer(drawer.hidden));

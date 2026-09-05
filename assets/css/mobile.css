@@ -72,7 +72,7 @@ html, body {
 
 .m-app {
     max-width: var(--m-shell-w);
-    min-height: 100%;
+    height: 100%;
     margin: 0 auto;
     background: var(--m-card);
     display: flex;
@@ -117,8 +117,14 @@ html, body {
 .m-top__btn:active { background: rgba(255, 255, 255, .16); }
 .m-top__btn[hidden] { display: none; }
 
+/* 🔑 스크롤 주체는 뷰다 (웹 셸의 .view 와 같다).
+   그래야 라우터의 view.scrollTop = 0 이 먹고, 화면에 고정되는 하단 독이
+   본문 스크롤과 어긋나지 않는다 */
 .m-view {
     flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     padding: 12px 12px calc(var(--m-tab-h) + env(safe-area-inset-bottom) + 16px);
 }
 
@@ -220,6 +226,7 @@ html, body {
 
 .m-drawer__item:active { background: var(--m-gray-100); }
 .m-drawer__item.is-active { color: var(--m-blue); font-weight: 700; }
+.m-drawer__item.is-active .m-icon { color: var(--m-blue); }
 
 .m-drawer__item--foot {
     margin-top: var(--gap-danger);
@@ -282,6 +289,18 @@ html, body {
     color: #fff;
 }
 
+.m-btn--danger {
+    border-color: var(--m-red);
+    background: var(--m-red);
+    color: #fff;
+}
+
+.m-btn--sm {
+    min-height: var(--tap-min);
+    padding: 0 12px;
+    font-size: 14px;
+}
+
 .m-btn:disabled {
     opacity: .5;
     cursor: default;
@@ -290,10 +309,11 @@ html, body {
 /* --------------------------------- 토스트 --------------------------------- */
 /* util.js 의 toast() 가 만드는 요소라 클래스명을 바꿀 수 없다. app.css 와 같은 모양으로 둔다 */
 
+/* 하단 독(--dock-h)에 가리지 않도록 그 위로 띄운다 */
 #toast-box {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--m-tab-h) + env(safe-area-inset-bottom) + 16px);
+    bottom: calc(var(--m-tab-h) + var(--dock-h) + env(safe-area-inset-bottom) + 16px);
     transform: translateX(-50%);
     display: grid;
     gap: 8px;
@@ -315,3 +335,618 @@ html, body {
 #toast-box .toast--error { background: var(--m-red); }
 #toast-box .toast--success { background: var(--m-green); }
 #toast-box .toast.is-out { opacity: 0; transform: translateY(8px); }
+
+/* =========================== 공통 컴포넌트 (mobile/ui.js) =========================== */
+
+.m-muted { color: var(--m-gray-500); }
+
+.m-note {
+    margin: 8px 0 0;
+    color: var(--m-gray-500);
+    font-size: 12px;
+}
+
+.m-listtitle {
+    margin: 14px 0 6px;
+    color: var(--m-gray-500);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* -------------------------------- 배지 -------------------------------- */
+
+.m-tag {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 11px;
+    background: var(--m-gray-100);
+    color: var(--m-gray-700);
+    font-size: 12px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.m-tag--blue { background: var(--m-blue-soft); color: var(--m-blue); }
+.m-tag--green { background: var(--m-green-soft); color: var(--m-green); }
+.m-tag--amber { background: var(--m-amber-soft); color: var(--m-amber); }
+.m-tag--red { background: var(--m-red-soft); color: var(--m-red); }
+
+.m-seq {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 5px;
+    background: var(--m-gray-100);
+    color: var(--m-gray-500);
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.m-seq.is-multi { background: var(--m-amber-soft); color: var(--m-amber); }
+
+/* ------------------------------- 진행 막대 ------------------------------- */
+
+.m-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.m-bar__track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--m-gray-200);
+    overflow: hidden;
+}
+
+.m-bar__fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--m-blue);
+    transition: width .2s;
+}
+
+.m-bar__fill.is-done { background: var(--m-green); }
+
+.m-bar__label {
+    flex: none;
+    color: var(--m-gray-700);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+/* ------------------------------ 큰 카운터 ------------------------------ */
+
+.m-counter {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    padding: 18px 16px 14px;
+    margin-bottom: 4px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+}
+
+.m-counter__num {
+    font-size: 40px;
+    line-height: 1.1;
+    letter-spacing: -1px;
+    color: var(--m-blue);
+}
+
+.m-counter__num span { color: var(--m-gray-300); }
+.m-counter.is-done .m-counter__num { color: var(--m-green); }
+
+.m-counter__note {
+    color: var(--m-gray-500);
+    font-size: 13px;
+}
+
+.m-counter .m-bar { width: 100%; }
+
+/* ------------------------------- 단계 칩 ------------------------------- */
+
+.m-steps {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.m-step {
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: var(--m-gray-100);
+    color: var(--m-gray-500);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.m-step.is-done { background: var(--m-green-soft); color: var(--m-green); }
+.m-step.is-current { background: var(--m-amber-soft); color: var(--m-amber); }
+
+/* -------------------------------- 카드 -------------------------------- */
+
+.m-card {
+    padding: 12px;
+    margin-bottom: 10px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    box-shadow: var(--m-shadow);
+}
+
+.m-card.is-tap { cursor: pointer; }
+.m-card.is-tap:active { background: var(--m-gray-100); }
+
+.m-card__top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.m-card__title {
+    font-size: 15px;
+    font-weight: 600;
+    word-break: break-all;
+}
+
+.m-card__spacer { flex: 1; }
+
+.m-card__body {
+    display: grid;
+    gap: 2px;
+    margin-top: 6px;
+}
+
+.m-card__cust { font-size: 14px; }
+
+.m-card__meta {
+    color: var(--m-gray-500);
+    font-size: 12px;
+}
+
+.m-card__actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+/* 글자 수에 따라 폭이 달라지지 않게 min-width 를 푼다 */
+.m-card__actions .m-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 8px;
+}
+
+/* ------------------------------ 주문 요약 헤더 ------------------------------ */
+
+.m-ohead {
+    padding: 12px;
+    margin-bottom: 10px;
+    border-radius: var(--m-radius);
+    background: var(--m-navy);
+    color: #fff;
+}
+
+.m-ohead__row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.m-ohead__no {
+    font-size: 18px;
+    word-break: break-all;
+}
+
+.m-ohead__spacer { flex: 1; }
+
+.m-ohead__more {
+    display: grid;
+    place-items: center;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    margin: -8px -6px -8px 0;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.m-ohead__more:active { background: rgba(255, 255, 255, .18); }
+
+.m-ohead__meta,
+.m-ohead__note {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: rgba(255, 255, 255, .82);
+}
+
+/* ------------------------------ 스캔 결과 줄 ------------------------------ */
+
+.m-result {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 0;
+    padding: 10px 12px;
+    border-radius: var(--m-radius);
+    font-size: var(--font-target);
+    font-weight: 700;
+}
+
+.m-result[hidden] { display: none; }
+.m-result.is-ok { background: var(--m-green-soft); color: var(--m-green); }
+.m-result.is-bad { background: var(--m-red-soft); color: var(--m-red); }
+
+/* ------------------------------- 세그먼트 ------------------------------- */
+
+.m-seg {
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    margin-bottom: 10px;
+    border-radius: var(--m-radius);
+    background: var(--m-gray-100);
+}
+
+.m-seg__btn {
+    flex: 1;
+    min-height: 40px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--m-gray-500);
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.m-seg__btn.is-active {
+    background: var(--m-card);
+    color: var(--m-gray-900);
+    box-shadow: 0 1px 2px rgba(16, 32, 48, .12);
+}
+
+/* -------------------------------- 하단 독 -------------------------------- */
+
+/* 독은 화면에 고정되므로 본문 끝에 같은 높이의 빈 칸을 남긴다 */
+.m-dock__space { height: calc(var(--dock-h) + 12px); }
+
+.m-dock {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--m-tab-h) + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: var(--m-shell-w);
+    padding: 8px 12px;
+    background: var(--m-card);
+    border-top: 1px solid var(--m-gray-200);
+    z-index: 45;
+}
+
+.m-dock__note {
+    margin: 0 0 8px;
+    color: var(--m-amber);
+    font-size: 12px;
+}
+
+.m-dock__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.m-dock__input {
+    flex: 1;
+    min-width: 0;
+    height: var(--tap-min);
+    padding: 0 12px;
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    font-size: 16px;   /* iOS 는 16px 미만이면 포커스 시 화면을 확대한다 */
+}
+
+.m-dock__btn {
+    flex: none;
+    min-height: var(--tap-min);
+}
+
+.m-dock__btn--block {
+    flex: 1;
+    min-height: var(--tap-primary);
+    font-size: 17px;
+}
+
+/* ------------------------------- 카메라 프리뷰 ------------------------------- */
+
+.m-scanbox {
+    position: relative;
+    margin-top: 10px;
+    border-radius: var(--m-radius);
+    background: #000;
+    overflow: hidden;
+}
+
+.m-scanbox[hidden] { display: none; }
+
+.m-scanbox__video {
+    display: block;
+    width: 100%;
+    height: 40vh;
+    object-fit: cover;
+}
+
+/* 조준선 - 라벨을 가로로 맞추도록 가운데 한 줄만 둔다 */
+.m-scanbox__aim {
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    top: 50%;
+    height: 2px;
+    background: rgba(255, 64, 64, .85);
+}
+
+/* -------------------------------- 바텀시트 -------------------------------- */
+
+.m-sheet-back {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    background: rgba(16, 32, 48, .45);
+}
+
+.m-sheet {
+    width: 100%;
+    max-width: var(--m-shell-w);
+    max-height: 84vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--m-card);
+}
+
+.m-sheet__top { padding-top: 8px; }
+
+.m-sheet__grip {
+    display: block;
+    width: 40px;
+    height: 4px;
+    margin: 0 auto;
+    border-radius: 2px;
+    background: var(--m-gray-300);
+}
+
+.m-sheet__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 8px 8px 16px;
+}
+
+.m-sheet__head h3 {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    word-break: break-all;
+}
+
+.m-sheet__close {
+    display: grid;
+    place-items: center;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--m-gray-500);
+    cursor: pointer;
+}
+
+.m-sheet__body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 12px 12px;
+}
+
+.m-sheet__foot {
+    display: flex;
+    gap: var(--gap-danger);
+    padding: 10px 12px;
+    border-top: 1px solid var(--m-gray-200);
+}
+
+.m-menu {
+    display: grid;
+    gap: 6px;
+    padding-bottom: 6px;
+}
+
+.m-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: var(--tap-min);
+    padding: 0 12px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    color: var(--m-gray-900);
+    font-size: 15px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.m-menu__item.is-danger { color: var(--m-red); border-color: var(--m-red-soft); }
+.m-menu__item:active { background: var(--m-gray-100); }
+
+/* -------------------------------- 숫자 자판 -------------------------------- */
+
+.m-keypad {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.m-keypad[hidden] { display: none; }
+
+.m-keypad__key {
+    min-height: var(--tap-primary);
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    font-size: 20px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.m-keypad__key:active { background: var(--m-gray-100); }
+
+/* =============================== 상차작업 화면 =============================== */
+
+.m-datebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.m-datebar__nav {
+    display: grid;
+    place-items: center;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    flex: none;
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    color: var(--m-gray-700);
+    cursor: pointer;
+}
+
+.m-datebar__date {
+    flex: 1;
+    min-width: 0;
+}
+
+.m-datebar__date input {
+    width: 100%;
+    height: var(--tap-min);
+    padding: 0 10px;
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    font-size: 15px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.m-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--tap-min);
+    padding: 0 12px;
+    margin-bottom: 10px;
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    color: var(--m-gray-500);
+}
+
+.m-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    outline: 0;
+    background: none;
+    font-size: 16px;
+}
+
+.m-sum {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px;
+    color: var(--m-gray-500);
+    font-size: 13px;
+}
+
+.m-sum:empty { display: none; }
+.m-sum b { color: var(--m-gray-900); }
+.m-sum__rate { margin-left: auto; }
+
+.m-statline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    color: var(--m-gray-700);
+    font-size: 13px;
+}
+
+.m-statline__pick { margin-left: auto; font-weight: 700; }
+
+/* 파렛트 한 줄 - 검수/내림이 끝나면 초록으로 바뀐다 */
+.m-pallet {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: var(--tap-min);
+    padding: 6px 12px;
+    margin-bottom: 6px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    font-size: var(--font-target);
+}
+
+.m-pallet.is-done {
+    border-color: var(--m-green);
+    background: var(--m-green-soft);
+    color: var(--m-green);
+}
+
+.m-pallet__mark { display: flex; color: var(--m-gray-300); }
+.m-pallet.is-done .m-pallet__mark { color: var(--m-green); }
+
+.m-pallet__name {
+    flex: 1;
+    min-width: 0;
+    word-break: break-all;
+}
+
+.m-pallet__name small { color: var(--m-gray-500); font-size: 13px; }
+
+.m-pallet__loc {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+}
+
+.m-pallet__check {
+    width: 26px;
+    height: 26px;
+    flex: none;
+    accent-color: var(--m-green);
+}
