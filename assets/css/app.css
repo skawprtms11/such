@@ -133,6 +133,17 @@ button { font: inherit; }
     gap: 10px;
 }
 
+/* 로그아웃 · 앱 화면으로 - 한 줄에 반씩 나눠 놓는다 */
+.sidebar__acts {
+    display: flex;
+    gap: 8px;
+}
+
+.sidebar__acts .btn {
+    flex: 1;
+    min-width: 0;
+}
+
 /* 단색 라인 아이콘 - 놓인 자리의 글자색(currentColor)을 따른다 */
 .icon {
     width: 20px;

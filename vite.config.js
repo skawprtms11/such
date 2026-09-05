@@ -1,4 +1,7 @@
-/** Vite 빌드 설정 - 로그인(index.html)과 앱 셸(app.html) 2개 페이지를 진입점으로 사용한다 */
+/**
+ * Vite 빌드 설정 - 진입점 3개.
+ *   index.html 로그인 · app.html 웹 셸 · m.html 모바일 앱 셸
+ */
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import basicSsl from '@vitejs/plugin-basic-ssl';
@@ -75,6 +78,7 @@ export default defineConfig({
             input: {
                 login: resolve(process.cwd(), 'index.html'),
                 app: resolve(process.cwd(), 'app.html'),
+                mobile: resolve(process.cwd(), 'm.html'),
             },
         },
     },
@@ -96,7 +100,8 @@ export default defineConfig({
                 short_name: '더퓨어랩',
                 description: '주문 등록부터 검수·상차까지 실시간으로 확인하는 수출 모니터링 시스템',
                 lang: 'ko',
-                start_url: 'app.html',
+                // 설치 아이콘은 하나만 둔다. 로그인 화면이 기기·소속으로 셸을 고른다
+                start_url: 'index.html',
                 scope: './',
                 display: 'standalone',
                 orientation: 'portrait',
@@ -115,9 +120,10 @@ export default defineConfig({
                     },
                     { src: 'icons/icon.svg', sizes: 'any', type: 'image/svg+xml' },
                 ],
+                // 설치한 아이콘을 길게 눌러 바로 여는 현장 작업 화면 (앱 셸)
                 shortcuts: [
-                    { name: '당일상차리스트', url: 'app.html#/loading' },
-                    { name: '주문처리현황', url: 'app.html#/status' },
+                    { name: '상차작업', url: 'm.html#/load' },
+                    { name: '출고작업', url: 'm.html#/ship' },
                 ],
             },
             workbox: {

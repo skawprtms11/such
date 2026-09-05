@@ -1,35 +1,73 @@
 # 공통 규약
 
 > 새 화면을 추가하거나 데이터 계층·권한을 건드릴 때 먼저 읽는다.
-> 메뉴별 문서: [orders](orders.md) · [status](status.md) · [loading](loading.md) ·
-> [inspect](inspect.md) · [issues](issues.md) · [users](users.md)
+> 메뉴별 문서: [orders](orders.md) · [status](status.md) · [shipping](shipping.md) ·
+> [loading](loading.md) · [inspect](inspect.md) · [issues](issues.md) · [users](users.md) ·
+> 모바일 앱 셸 전체는 [mobile](mobile.md)
 
 ---
 
-## 0. 웹과 모바일(앱)의 차이 🔑
+## 0. 웹/앱 셸 분기 🔑
 
-**모바일(860px 이하)은 앱처럼 쓴다.** 좌측 메뉴와 상단 햄버거 버튼을 감추고
-하단 탭바만 남긴다 (`app.css` 의 `@media (max-width: 860px)`).
+**셸이 둘이다** — `app.html`(웹) · `m.html`(모바일 앱, 상세는 [docs/mobile.md](mobile.md)).
+두 셸은 화면 코드를 공유하지 않고, `db.js` `steps.js` `auth.js` `config.js` `scanner.js`
+`util.js` `icons.js` 만 같이 쓴다. 판정은 **`assets/js/shell.js` 한 곳뿐**이다.
 
-| | 웹 | 모바일(앱) |
-|---|---|---|
-| 좌측 메뉴 | 보인다 | **없다** |
-| 접근 가능한 메뉴 | 전체 | `MENUS` 의 `mobile: true` 4개 |
-| 첫 화면 | 주문정보등록 | **주문처리현황** |
+### 진입 판정
 
-⚠️ **협력사 소속은 기기와 무관하게 앱 메뉴만 쓴다** (`config.js` 의 `appOnlyCompany()`).
-PC 로 접속해도 좌측 메뉴에 앱 메뉴 4개만 나오고, 웹 전용 주소로 들어오면 되돌려진다.
+로그인 화면(`index.html`)이 로그인 직후·재방문 모두 `shellUrl(user)` 로 보낸다.
 
-- 앱 메뉴는 주문처리현황 · 출고주문처리 · 당일상차리스트 · 이슈등록이다
-- 주문정보등록·사용자관리는 웹 전용이다. 모바일에서 그 주소로 들어오면
-  `app.js` 의 라우터가 **주문처리현황으로 되돌린다**
-- 창 크기가 기준점을 넘나들면 라우터가 다시 판정한다
-  (`matchMedia(...).addEventListener('change', render)`)
-- 검수 화면(`#/inspect/:id`)은 메뉴가 아니라 당일상차리스트에서 들어가므로 막지 않는다
+```
+고정값(localStorage.tpl_force_shell) → 화면 폭 860px → 협력사 소속(appOnlyCompany) 순서
+```
+
+| 조건 | 결과 |
+|---|---|
+| `tpl_force_shell === 'web'` | `app.html` |
+| `tpl_force_shell === 'app'` | `m.html` |
+| 화면 폭 860px 이하 또는 협력사(`COMPANY.PARTNER`) 소속 | `m.html` |
+| 그 밖 | `app.html` |
+
+- 🔑 **협력사는 기기와 무관하게 앱(`m.html`)으로 간다.** PC 로 접속해도 마찬가지다.
+- 두 셸은 **자기가 갈 곳이 상대 셸일 때만** 서로 넘긴다(백스톱). 판정 함수가 하나라
+  되튕기는 무한 루프가 생기지 않는다.
+- 옛 주소·설치된 PWA 의 해시는 `shell.js` 의 `appRoute()` 가 옮긴다:
+  `#/shipping→#/ship` · `#/loading→#/load` ·
+  **`#/inspect/:id→#/load/:id`**(웹 inspect 는 상차검수) · `#/status` `#/issues` 는
+  뒷조각을 보존해 유지 · 나머지(`#/orders` `#/users` 등 앱에 없는 메뉴)는 홈으로.
+
+### 탈출구
+
+`?shell=web` / `?shell=app` 쿼리로 들어오면 그 값을 고정하고 이후 그 셸로 유지된다.
+화면 버튼도 양쪽에 하나씩 있다 — 앱 `계정` 화면의 `웹 화면으로`, 웹 사이드바 하단의
+`앱 화면으로`(둘 다 `forceShell()`). 태블릿을 쓰는 용마담당자가 웹 화면을 계속 봐야 할 때 쓴다.
+
+### 알려진 제약
+
+- ⚠️ **앱→웹 백스톱은 해시를 버리고 웹 홈으로 간다.** 웹 해시로 옮기는 역방향 표가 없어서다.
+- ⚠️ **설치된 PWA 는 셸을 바꾼 당일 첫 실행이 옛 캐시로 열릴 수 있다.** 서비스워커가 새 셸을
+  받아오는 것은 그 실행 이후다. "앱을 껐다가 다시 열어 주세요" 로 안내한다(재설치 불요).
+
+### 웹 셸(`app.html`) 자체의 반응형 (기존 동작 · 6단계 정리 전까지 공존) 🔑
+
+`app.html` 안에서도 창 폭이 860px 이하로 좁아지면 좌측 메뉴·상단 햄버거를 감추고
+하단 탭바만 남기는 반응형 레이아웃이 남아 있다 (`app.css` 의 `@media (max-width: 860px)`).
+로그인·재방문 시의 셸 분기와는 별개로, **이미 `app.html` 을 연 채로 창을 줄이는 경우**에만
+보인다(자동으로 `m.html` 로 튕기지 않는다). 이 반응형 블록은 웹 코드 정리(6단계, 앱 운영
+1주 후 예정)에서 걷어낼 예정이다. 그때까지는 `MENUS` 의 `mobile: true` 4개(주문처리현황·
+출고주문처리·당일상차리스트·이슈등록)만 이 좁은 탭바에 나온다. 검수 화면(`#/inspect/:id`)은
+메뉴가 아니라 당일상차리스트에서 들어가므로 막지 않는다.
+
+실제 사용자는 로그인 시점의 `shellUrl()` 분기로 대부분 `m.html` 만 보게 되므로, 위 반응형
+블록은 실사용 경로라기보다 과도기 코드다. **모바일 화면을 고칠 때는 [docs/mobile.md](mobile.md)
+를 본다.** 이 문서(`app.html` 반응형)는 6단계 정리 대상이라 새 기능을 얹지 않는다.
 
 ---
 
 ## 1. 화면 모듈 인터페이스
+
+`assets/js/pages/*.js`(웹) 와 `assets/js/mobile/screens/*.js`(앱)는 **같은 계약**을 지킨다.
+두 층은 서로 import 하지 않지만(`pages/**` ↔ `mobile/**` 상호 참조 금지), 인터페이스는 하나다.
 
 `assets/js/pages/*.js` 는 모두 아래 형태를 지킨다.
 
@@ -96,6 +134,10 @@ export async function render(root, { user, params }) {
 
 탭바에 없는 메뉴도 **모바일에서 햄버거 버튼(☰)의 서랍으로 접근할 수 있다.**
 탭바를 4개 이상으로 늘리면 좁은 화면에서 라벨이 겹치므로 3개를 유지한다.
+
+⚠️ 위 `MENUS`/`mobile` 플래그는 **웹 셸(`app.html`)의 반응형 탭바 전용**이다.
+앱 셸(`m.html`)은 별도 상수 `config.js` 의 `APP_TABS`(하단 탭 5개) · `APP_MENU`(상단바 메뉴)를
+쓴다. 자세한 내용은 [docs/mobile.md](mobile.md#2-하단-탭-5개-configjs-의-app_tabs) 참고.
 
 ---
 
@@ -166,6 +208,20 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 | `resetInspection(orderId, user)` | 상차검수 전체 초기화 (**상차완료된 묶음은 거부**) |
 | `loadDone(order)` | 상차완료 판정 (`steps.js`) — `loaded_at` 과 `load_status` 를 함께 본다 |
 | `completeLoading(orderId, user)` | **`검수` 상태에서만 성공.** 아니면 예외 |
+
+### 모바일 앱 전용 조회 조합 🔑
+
+**새 업무 규칙이 아니다.** 기존 조회(`groupOf` · `loadGroups` · `stowStatus` 등)를
+모바일 화면이 쓰기 좋게 한 번 더 조합한 것뿐이다.
+
+| 함수 | 쓰는 화면 | 하는 일 |
+|---|---|---|
+| `listStowTargets(f)` | `#/stow` 목록 진입 | 검수 끝나고 상차 전인 주문을 **상차 묶음 대표 1건**으로 모아 적치 상태(`stow_status`)까지 계산 |
+| `stowProgress(orderId)` | `#/stow/:id` | 그 묶음의 `{done, total, left, status, stowed}` — `getLoadGroup` 과 같은 범위로 센다 |
+| `listStowWaiting(f)` | `#/wait` 상차대기 · `#/stock` 재고실사표 | 적치완료 + 상차 전 묶음을 `{head, rows, pallets}` 배열로. `groupOf` 로 다시 펼치지 않고 **대상 주문만으로** 묶어 조회 범위 밖 멤버가 섞이지 않게 한다 |
+| `hasExtraWork(o)` | `#/inspect` 요청작업 표시 여부 | `extra_yn === '있음'` 또는 옛 데이터의 `extra_works` 배열 유무 |
+| `minPalletOf(o)` | `#/inspect` 검수완료 검증 | 검수에서 받을 수 있는 최소 파렛트수 — 2차수 이상은 혼적(0) 허용, 1차수는 1 이상 |
+| `canAcceptIssue(user, issue)` | `#/issues` 이슈접수 버튼 노출·처리 | 접수대기 상태에서 접수 가능한 역할인지 (웹과 **같은 함수**를 써서 판정이 갈라지지 않는다) |
 
 ### 이슈 · 사용자
 
