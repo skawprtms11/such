@@ -9,7 +9,7 @@
  */
 import {
     adjustCategory, palletLabel, stowStatus, STOW_STATUS, YN,
-    formatLocation, isValidLocation, LOCATION_FORMAT,
+    formatLocation, isValidLocation, LOCATION_FORMAT, FLOOR_LOCATION,
 } from '../config.js';
 import { can } from '../auth.js';
 import * as db from '../db.js';
@@ -17,7 +17,8 @@ import { visibleSteps, stepsFlowHtml, loadDone } from '../steps.js';
 import { createScanner, scanSupported } from '../scanner.js';
 import { icon } from '../icons.js';
 import {
-    esc, num, today, fmtDateTime, toast, confirmDialog, openModal, downloadCsv, isMobile,
+    esc, num, today, fmtDateTime, toast, confirmDialog,
+    promptDialog, openModal, downloadCsv, isMobile,
     monthDay, addBadge, seqTag, MOBILE_QUERY,
 } from '../util.js';
 
@@ -384,6 +385,8 @@ function drawInspect(body, o, user, editable, reload, list = [o]) {
     // 편집 조건도 그 화면과 맞춘다 - 상차완료 전까지는 현장에서도 고칠 수 있다
     const written = Boolean((o.packing_note ?? '').trim());
     const canWritePacking = editable && !loadDone(o);
+    // 검수 실측값(파렛트수·박스수)은 검수완료 뒤에도 상차완료 전까지 고칠 수 있다
+    const canFix = editable && done && !loadDone(o);
 
     const notShipped = list.filter((r) => !r.ship_done_at);
     if (notShipped.length && !done) {
@@ -443,8 +446,10 @@ ${done ? '' : `
 </p>`}
 
 <table class="grid" style="margin-top:14px"><tbody>
-  <tr><th>총 파렛트수</th><td>${o.pallet_count ? `${num(o.pallet_count)} PLT` : '-'}</td></tr>
-  <tr><th>총 박스수</th><td>${o.box_count ? `${num(o.box_count)} 박스` : '-'}</td></tr>
+  <tr><th>총 파렛트수</th><td>${o.pallet_count ? `${num(o.pallet_count)} PLT` : '-'}${
+    canFix ? ' <button class="btn btn--sm" id="btn-fix-pallet" type="button">수정</button>' : ''}</td></tr>
+  <tr><th>총 박스수</th><td>${o.box_count ? `${num(o.box_count)} 박스` : '-'}${
+    canFix ? ' <button class="btn btn--sm" id="btn-fix-box" type="button">수정</button>' : ''}</td></tr>
   <tr><th>작업자</th><td>${workerCell(o.inspect_worker)}</td></tr>
   <tr><th>검수완료</th><td>${o.inspect_done_at ? fmtDateTime(o.inspect_done_at) : '-'}</td></tr>
 </tbody></table>
@@ -455,6 +460,50 @@ ${editable ? `
         ? '<button class="btn btn--danger btn--lg" id="btn-cancel" type="button">완료 취소</button>'
         : '<button class="btn btn--success btn--lg" id="btn-done" type="button">검수완료</button>'}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
+
+    // 검수 실측값 수정 - 값을 물어보고 단계별 허용 규칙은 데이터 계층에 맡긴다
+    body.querySelector('#btn-fix-box')?.addEventListener('click', async () => {
+        const v = await promptDialog('총 박스수를 입력하세요.', o.box_count || '');
+        if (v === null) return;
+        try {
+            await db.setBoxCount(o.id, v, user);
+            toast('박스수를 고쳤습니다.', 'success');
+            reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
+    body.querySelector('#btn-fix-pallet')?.addEventListener('click', async () => {
+        const v = await promptDialog(
+            '총 파렛트수를 입력하세요.\n\n기존 로케이션은 그대로 두고 끝에서만 늘리거나 줄입니다.',
+            o.pallet_count ?? '',
+        );
+        if (v === null) return;
+        try {
+            await db.setPalletCount(o.id, v, user);
+        } catch (err) {
+            if (!err.needConfirm) {
+                toast(err.message, 'error');
+                return;
+            }
+            // 로케이션이 든 파렛트가 빠진다 - 어떤 것인지 보여주고 한 번 더 묻는다
+            const ok = await confirmDialog(`${err.message}\n\n${err.removing.join('\n')}\n\n`
+                + '이 파렛트들을 지우고 파렛트수를 줄이시겠습니까?');
+            if (!ok) return;
+            try {
+                await db.setPalletCount(o.id, v, user, { confirmRemove: true });
+            } catch (err2) {
+                toast(err2.message, 'error');
+                return;
+            }
+        }
+        // 늘어난 파렛트는 로케이션이 비어 있다 - 출고적치에서 마저 넣도록 안내한다
+        const added = Number(v) - (o.pallet_count ?? 0);
+        toast(added > 0
+            ? `파렛트수를 고쳤습니다. 새 파렛트 ${added}개는 출고적치에서 로케이션을 넣으세요.`
+            : '파렛트수를 고쳤습니다. 상차 검수 바코드 수가 함께 바뀝니다.', 'success');
+        reload();
+    });
 
     // 패킹리스트 내용 작성/수정 - 입력칸을 그 자리에 펼친다
     body.querySelector('#btn-packing-note')?.addEventListener('click', () => {
@@ -804,6 +853,9 @@ async function mountStowPanel(host, { order, editable, user }) {
           적치취소</button>
         <button class="btn btn--success stow-tool" id="stow-done" type="button" hidden>
           적치완료</button>
+        <button class="btn stow-tool" id="loc-floor" type="button"
+                title="대상 파렛트를 랙이 아닌 바닥(평치)에 둔 것으로 기록합니다">
+          ${icon('floor')}평치로 이동</button>
         <button class="btn stow-tool" id="loc-cam" type="button">
           ${icon('camera')}카메라</button>
         <button class="btn stow-tool" id="loc-pad" type="button">
@@ -1055,7 +1107,8 @@ ${t.location
         lastValue = v;
         lastAt = now;
 
-        const dup = pallets.find((p) => p.id !== t.id && p.location
+        // 평치는 좌표가 없어 여러 파렛트가 같은 값을 가진다 - 중복 검사에서 뺀다
+        const dup = v === FLOOR_LOCATION ? null : pallets.find((p) => p.id !== t.id && p.location
             && formatLocation(p.location) === v);
         if (dup) {
             toast(`${v} 는 ${nameOf(dup)} 에 이미 들어간 로케이션입니다. 다시 스캔하세요.`, 'error');
@@ -1070,6 +1123,16 @@ ${t.location
     /* ------------------------------ 이벤트 연결 ------------------------------ */
 
     if (editable) {
+        // 평치로 이동 - 대상 파렛트(연속: 다음 대상, 건별: 고른 것)를 바닥 적치로 기록한다
+        host.querySelector('#loc-floor')?.addEventListener('click', () => {
+            const t = target();
+            if (!t) {
+                toast('평치로 옮길 파렛트가 없습니다.', 'error');
+                return;
+            }
+            save(t, FLOOR_LOCATION);
+        });
+
         host.querySelectorAll('[data-mode]').forEach((el) => {
             el.addEventListener('click', () => {
                 stowPrefs.mode = el.dataset.mode;
