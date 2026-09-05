@@ -226,7 +226,8 @@ export function segment(host, items, activeKey, onChange) {
  * @param {Element} host 독을 놓을 자리 (독 자체는 화면 하단에 고정된다)
  * @param {object} spec 아래 set() 참고
  * @returns {{el:Element, input:HTMLInputElement, set:Function, value:Function,
- *            values:Function, clear:Function, focus:Function, destroy:Function}}
+ *            values:Function, clear:Function, focus:Function, softKeyboard:Function,
+ *            destroy:Function}}
  */
 export function dock(host, spec = {}) {
     // 독은 화면 하단에 고정되므로 본문이 가리지 않도록 같은 높이의 빈 칸을 남긴다
@@ -263,20 +264,36 @@ export function dock(host, spec = {}) {
 
     let cur = {};
 
+    // 폰 소프트키보드 허용 여부. 막아도 포커스는 유지되므로 블루투스 스캐너(HID)는 그대로 들어온다
+    let softOn = true;
+    let baseMode = 'text';
+
+    function applyInputMode() {
+        input.inputMode = softOn ? baseMode : 'none';
+    }
+
     function button(b, onClick, block = false) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = ['m-btn', 'm-dock__btn', block ? 'm-dock__btn--block' : '',
-            TONE[b.tone] ?? ''].filter(Boolean).join(' ');
+            b.compact ? 'm-dock__btn--icon' : '', TONE[b.tone] ?? ''].filter(Boolean).join(' ');
         btn.disabled = Boolean(b.disabled);
-        btn.innerHTML = `${b.icon ? icon(b.icon, 'm-icon') : ''}<span>${esc(b.label)}</span>`;
+        if (b.compact) {
+            btn.setAttribute('aria-label', b.label);
+            btn.innerHTML = icon(b.icon, 'm-icon');
+        } else {
+            btn.innerHTML = `${b.icon ? icon(b.icon, 'm-icon') : ''}<span>${esc(b.label)}</span>`;
+        }
+        // 입력칸의 포커스를 뺏지 않는다 (스캐너 입력이 끊기지 않게)
+        if (b.hold) btn.addEventListener('pointerdown', (e) => e.preventDefault());
         btn.addEventListener('click', onClick);
         return btn;
     }
 
     /** 겉모습이 같은지 - 핸들러만 바뀐 재호출에서는 다시 그리지 않는다 */
     function sameLook(a, b) {
-        const btn = (x) => (x ? `${x.label}|${x.tone}|${x.icon}|${x.disabled ? 1 : 0}` : '');
+        const btn = (x) => (x
+            ? `${x.label}|${x.tone}|${x.icon}|${x.disabled ? 1 : 0}|${x.compact ? 1 : 0}` : '');
         const one = (x) => (x ? `${x.placeholder ?? ''}|${x.inputmode ?? ''}` : '');
         return (a.mode ?? 'input') === (b.mode ?? 'input')
             && (a.note ?? '') === (b.note ?? '')
@@ -287,6 +304,7 @@ export function dock(host, spec = {}) {
 
     /**
      * 독의 내용을 바꾼다.
+     * 버튼 spec 의 `compact` 는 아이콘만 그리고, `hold` 는 입력칸 포커스를 지킨다.
      * @param {{mode?:'input'|'action'|'pair', note?:string,
      *          input?:{placeholder?:string, inputmode?:string},
      *          primary?:object, secondary?:object,
@@ -310,8 +328,12 @@ export function dock(host, spec = {}) {
 
         if (mode === 'input') {
             input.placeholder = next.input?.placeholder ?? '';
-            input.inputMode = next.input?.inputmode ?? 'text';
+            baseMode = next.input?.inputmode ?? 'text';
+            applyInputMode();
             if (input.parentNode !== row) row.appendChild(input);
+            if (next.secondary) {
+                row.appendChild(button(next.secondary, () => next.onSecondary?.()));
+            }
             if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.()));
             return;
         }
@@ -337,6 +359,20 @@ export function dock(host, spec = {}) {
         focus() {
             input.focus();
             input.select();
+        },
+        /**
+         * 폰 소프트키보드를 열지 말지 정한다 (`inputmode` 를 원래 값 ↔ `none` 으로 바꾼다).
+         * 막아도 포커스는 그대로라 블루투스 스캐너·앱 자판 입력은 계속 들어온다.
+         */
+        softKeyboard(on) {
+            if (Boolean(on) === softOn) return;
+            softOn = Boolean(on);
+            applyInputMode();
+            // 포커스를 잡은 채로 바꾼 inputmode 는 곧바로 반영되지 않는다 - 포커스를 다시 잡는다
+            if (document.activeElement === input) {
+                input.blur();
+                input.focus();
+            }
         },
         destroy() {
             el.remove();
@@ -452,53 +488,6 @@ export function menuSheet(items, title = '작업') {
     return s;
 }
 
-/* ---------------------------------- 숫자 자판 ---------------------------------- */
-
-const KEYPAD_KEYS = ['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '←'];
-
-/**
- * 계산기 배열 숫자 자판. 장갑을 낀 손으로 로케이션·수량을 넣을 때 쓴다.
- * @param {Element} host 그릴 자리 (독 바로 아래에 붙인다)
- * @param {{target:HTMLInputElement, onToggle?:(open:boolean)=>void}} opt
- *   target   - 값을 넣을 입력창 (setTarget 으로 바꿀 수 있다)
- *   onToggle - 펼치고 접을 때 알린다 (하단 고정 영역의 높이 보정에 쓴다)
- */
-export function keypad(host, { target, onToggle } = {}) {
-    let box = target;
-    const el = document.createElement('div');
-    el.className = 'm-keypad';
-    el.hidden = true;
-    el.innerHTML = KEYPAD_KEYS.map((k) => `
-<button class="m-keypad__key" type="button" data-k="${k}">${k}</button>`).join('');
-    host.appendChild(el);
-
-    el.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-k]');
-        if (!btn || !box) return;
-        const k = btn.dataset.k;
-        if (k === 'C') box.value = '';
-        else if (k === '←') box.value = box.value.slice(0, -1);
-        else box.value += k;
-        box.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-
-    return {
-        /** 값을 넣을 입력창을 바꾼다 (독의 모드가 바뀌면 입력창도 바뀐다) */
-        setTarget(el2) {
-            box = el2;
-        },
-        isOpen: () => !el.hidden,
-        toggle(on = el.hidden) {
-            el.hidden = !on;
-            onToggle?.(!el.hidden);
-            return !el.hidden;
-        },
-        destroy() {
-            el.remove();
-        },
-    };
-}
-
 /* ---------------------------------- 스캔 바 ---------------------------------- */
 
 /**
@@ -509,6 +498,10 @@ export function keypad(host, { target, onToggle } = {}) {
  *
  * 독은 화면이 만들어 넘긴다(`dock` 옵션). 스캔 바는 독을 만들지도 없애지도 않는다.
  *
+ * 🔑 입력칸은 기본 `inputmode="none"` 이다. 탭에 들어오자마자 폰 키보드가 화면 절반을
+ * 덮는 것을 막으면서도 포커스는 유지해 블루투스 스캐너(HID) 입력은 그대로 받는다.
+ * 손으로 칠 때는 `자판` 버튼을 눌러 연다. 제출하거나 화면을 떠나면 다시 막는다.
+ *
  * @param {Element} host 프리뷰·결과 줄을 그릴 자리 (독 바로 위)
  * @param {{dock:object, placeholder?:string, autoFocus?:boolean, camera?:boolean,
  *          keepFocus?:boolean, onSubmit?:(code:string)=>Promise,
@@ -518,7 +511,7 @@ export function keypad(host, { target, onToggle } = {}) {
  */
 export function scanBar(host, {
     dock: d,
-    placeholder = '바코드 직접 입력',
+    placeholder = '스캔하거나 자판 버튼',
     autoFocus = false,
     camera = true,
     keepFocus = true,
@@ -543,6 +536,8 @@ export function scanBar(host, {
 
     // 처리 중에 다음 코드가 들어오면 순서가 뒤엉킨다 (블루투스 스캐너는 매우 빠르다)
     let busy = false;
+    // 폰 키보드를 열어 둔 상태인지 - 기본은 닫혀 있다(스캔 전용)
+    let typing = false;
 
     async function handle(code) {
         const v = String(code ?? '').trim();
@@ -565,11 +560,38 @@ export function scanBar(host, {
             mode: 'input',
             note: useCam ? '' : '이 기기·접속에서는 카메라를 쓸 수 없습니다.'
                 + ' 바코드를 직접 입력하거나 블루투스 스캐너로 스캔하세요.',
-            input: { placeholder },
+            input: { placeholder: typing ? placeholder : `${placeholder} · 자판 버튼` },
+            secondary: {
+                label: typing ? '직접 입력 중' : '자판',
+                icon: 'keypad',
+                tone: typing ? 'primary' : 'plain',
+                compact: true,
+                hold: true,
+            },
             primary: useCam ? camBtn : null,
+            onSecondary: openTyping,
             onPrimary: () => (scanner?.isOn() ? stop() : start()),
             onSubmit: manual,
         };
+    }
+
+    /** 손으로 치도록 폰 키보드를 연다 (`자판` 버튼) */
+    function openTyping() {
+        typing = true;
+        d.softKeyboard(true);
+        d.set(spec());
+        d.focus();
+    }
+
+    /** 다시 스캔 전용으로 - 폰 키보드를 막고 포커스만 남긴다 */
+    function closeTyping() {
+        if (!typing) {
+            d.softKeyboard(false);
+            return;
+        }
+        typing = false;
+        d.softKeyboard(false);
+        d.set(spec());
     }
 
     async function manual(value) {
@@ -578,6 +600,7 @@ export function scanBar(host, {
             return;
         }
         d.clear();          // 다음 코드가 이어붙지 않게 먼저 비운다
+        closeTyping();      // 제출했으면 폰 키보드를 다시 닫는다
         await handle(value);
         if (keepFocus) d.focus();
     }
@@ -603,6 +626,7 @@ export function scanBar(host, {
     }
 
     d.set(spec());
+    d.softKeyboard(false);
     if (autoFocus) d.focus();
 
     return {
@@ -618,6 +642,7 @@ export function scanBar(host, {
         resetDock: () => d.set(spec()),
         /** 독은 화면 것이므로 없애지 않는다 - 카메라와 자기 조각만 정리한다 */
         destroy() {
+            closeTyping();
             stop();
             line.destroy();
             box.remove();
