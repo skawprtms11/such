@@ -14,8 +14,13 @@ export const APP_SHELL = 'm.html';
 /** 셸 고정 키 - 태블릿 사용자의 탈출구. '?shell=web' / '?shell=app' 로 심는다 */
 const FORCE_KEY = 'tpl_force_shell';
 
-/** 셸을 고정한다 (앱의 `웹 화면으로` 버튼 등에서 사용) */
+/**
+ * 셸을 고정한다 (앱의 `웹 화면으로` · 웹의 `앱 화면으로` 버튼에서 쓴다).
+ * 아는 값만 저장한다 - 엉뚱한 값이 들어가면 `shellUrl` 이 폭 판정으로 되돌아가
+ * 고정한 줄 알았던 사용자가 다시 튕긴다.
+ */
 export function forceShell(kind) {
+    if (kind !== 'web' && kind !== 'app') return;
     localStorage.setItem(FORCE_KEY, kind);
 }
 
@@ -56,6 +61,9 @@ export function appRoute(hash) {
     if (key === 'shipping') return '#/ship';
     if (key === 'loading') return '#/load';
     if (key === 'inspect') return rest[0] ? `#/load/${rest[0]}` : '#/load';
-    if (key === 'status' || key === 'issues') return `#/${key}`;
+    // 이름이 같은 화면은 뒷조각(상세 id 등)을 그대로 물려준다
+    if (key === 'status' || key === 'issues') {
+        return rest.length ? `#/${key}/${rest.join('/')}` : `#/${key}`;
+    }
     return '';
 }

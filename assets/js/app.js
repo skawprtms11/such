@@ -2,8 +2,10 @@
 import { MENUS, ROLE, appOnlyCompany } from './config.js';
 import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
-import { esc, isMobile, MOBILE_QUERY } from './util.js';
-import { shellUrl, appRoute, applyShellQuery, APP_SHELL } from './shell.js';
+import { esc, isMobile, MOBILE_QUERY, confirmDialog } from './util.js';
+import {
+    shellUrl, appRoute, applyShellQuery, forceShell, APP_SHELL,
+} from './shell.js';
 
 /** 새 버전을 받으려고 새로고침했는지 (무한 새로고침 방지) */
 const RELOAD_FLAG = 'tpl_chunk_reload';
@@ -145,6 +147,14 @@ async function logout() {
 
 document.getElementById('btn-logout').addEventListener('click', logout);
 document.getElementById('btn-top-logout').addEventListener('click', logout);
+
+// 앱 셸로 가는 진입점 - 앱 계정 화면의 `웹 화면으로` 와 짝이다.
+// 이게 없으면 ?shell=web 을 한 번 쓴 사용자가 앱으로 돌아올 길이 주소 입력밖에 없다
+document.getElementById('btn-app').addEventListener('click', async () => {
+    if (!await confirmDialog('앱 화면으로 이동하시겠습니까?')) return;
+    forceShell('app');
+    location.href = APP_SHELL;
+});
 
 document.getElementById('btn-menu').addEventListener('click', () => {
     sidebar.classList.toggle('is-open');

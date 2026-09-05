@@ -3,10 +3,11 @@
  *
  *   #/issues   탭(이슈등록 및 확인 · 완료 · 취소) · 검색 · 카드 목록 → 상세 시트(댓글 포함)
  *
- * 🔑 처리 주체 판정은 화면이 하지 않는다. db.canConfirmAssignee / canRequestClose /
- * canApproveClose / canCancelIssue 가 준 값으로만 버튼을 낸다 (docs/issues.md).
- * 이슈접수만 '이슈 상태를 바꿀 수 있는 역할'이라 can() 두 개를 겹쳐 본다 - 웹과 같은 조건이다.
- * 등록 버튼은 can(user,'createIssue') 가 있을 때만 나온다. 현장작업자는 조회만 한다.
+ * 🔑 처리 주체 판정은 화면이 하지 않는다. db.canAcceptIssue / canConfirmAssignee /
+ * canRequestClose / canApproveClose / canCancelIssue 가 준 값으로만 버튼을 낸다
+ * (docs/issues.md). 웹 이슈등록도 같은 함수를 쓴다.
+ * 등록 버튼은 can(user,'createIssue') 가 있을 때만 나온다 - 현장작업자에게는 없다.
+ * 단 **댓글은 웹과 마찬가지로 누구나 쓴다** (현장작업자 포함) - 현장 상황 공유가 목적이다.
  */
 import {
     ISSUE_TYPES, ISSUE_WORK_TYPES, ISSUE_STATUS, ISSUE_STATE,
@@ -228,9 +229,7 @@ function drawActions(s, issue, user, reload) {
         }
     }
 
-    // 이슈접수는 이슈 상태를 바꿀 수 있는 역할(관리자·용마담당자)만 한다 (웹과 같은 조건)
-    const canManage = (can(user, 'updateStatus') && can(user, 'createIssue'))
-        || can(user, 'manageUsers');
+    const canManage = db.canAcceptIssue(user, issue);
     const cancelBtn = '<button class="m-btn" type="button" id="btn-cancel-issue">이슈취소</button>';
 
     const wireCancel = () => {
@@ -308,7 +307,7 @@ async function openAccept(s, box, issue, user, reload) {
     });
     box.querySelector('#btn-accept-ok').addEventListener('click', async () => {
         try {
-            await db.acceptIssue(issue.id, box.querySelector('#sel-assignee').value);
+            await db.acceptIssue(issue.id, box.querySelector('#sel-assignee').value, user);
         } catch (err) {
             toast(err.message, 'error');
             return;

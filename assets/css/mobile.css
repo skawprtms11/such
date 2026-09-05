@@ -1481,6 +1481,16 @@ button.m-pallet:disabled { cursor: default; }
     font-size: 13px;
 }
 
+/* 대표주문번호 - 파렛트 소유 주문번호와 다를 때만 붙는다 */
+.m-stockrow__rep {
+    flex: none;
+    padding: 1px 6px;
+    border: 1px solid var(--m-gray-200);
+    border-radius: 999px;
+    color: var(--m-gray-500);
+    font-size: 11px;
+}
+
 .m-stockrow__cust {
     flex: 1;
     min-width: 0;

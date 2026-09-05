@@ -11,7 +11,7 @@
  *
  * 🔑 스캔 대상이 아니다. 목록에서 골라 연다.
  */
-import { adjustCategory } from '../../config.js';
+import { adjustCategory, EXTRA_TASK_TYPE } from '../../config.js';
 import { can } from '../../auth.js';
 import { visibleSteps, loadDone } from '../../steps.js';
 import * as db from '../../db.js';
@@ -39,16 +39,16 @@ export async function render(root, { user, params }) {
  */
 async function targets(user) {
     const all = await db.listRequestTasks();
-    const mine = can(user, 'viewAll');
+    const viewAll = can(user, 'viewAll');
     return all.filter(({ order: o }) => !o.canceled_at && !loadDone(o)
-        && (mine || o.created_by === user.id));
+        && (viewAll || o.created_by === user.id));
 }
 
 /** 요청 갈래 배지 - 조정요청은 항목명, 작업요청은 그대로 */
 function sourceTag(t) {
     return t.source === 'adjust'
         ? tag(adjustCategory(t.category).label, 'amber')
-        : tag('작업요청', 'blue');
+        : tag(EXTRA_TASK_TYPE, 'blue');
 }
 
 /* =================================== 목록 =================================== */
@@ -127,8 +127,9 @@ function taskCard(t) {
 
 async function renderDetail(root, user, orderId) {
     const editable = can(user, 'updateStatus');
-    // 목록에서 요청을 연 사람이 이 단계의 작업자가 된다 (조회 권한만 있으면 기록하지 않는다)
-    if (editable) await db.recordWorker(orderId, 'extra', user);
+    // 목록에서 요청을 연 사람이 이 단계의 작업자가 된다 (조회 권한만 있으면 기록하지 않는다).
+    // 대상이 맞는지 확인한 뒤 첫 그리기에서 한 번만 기록한다 - 폴링마다 다시 쓰지 않는다
+    let workerDone = !editable;
 
     root.innerHTML = `
 <div id="head"></div>
@@ -151,6 +152,10 @@ async function renderDetail(root, user, orderId) {
         }
 
         const o = rows[0].order;
+        if (!workerDone) {
+            workerDone = true;
+            await db.recordWorker(orderId, 'extra', user);
+        }
         const done = Boolean(o.extra_done_at);
         const opt = await stepOpt(o);
 

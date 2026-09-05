@@ -16,8 +16,8 @@ import {
 } from '../../util.js';
 import { emptyState, pollGuard } from '../ui.js';
 
-/** CSV 머리글 - 웹 재고실사표와 같은 순서 */
-const HEADERS = ['로케이션', '주문번호', '거래처명', '적치확인', '비고'];
+/** CSV 머리글 - 파렛트를 가진 주문번호와 묶음 대표주문번호를 함께 낸다 */
+const HEADERS = ['로케이션', '주문번호', '대표주문번호', '거래처명', '적치확인', '비고'];
 
 export async function render(root, { user }) {
     root.innerHTML = `
@@ -43,6 +43,8 @@ export async function render(root, { user }) {
 <div class="m-stockrow">
   <b class="m-stockrow__loc">${esc(r.location)}</b>
   <span class="m-stockrow__no">${esc(r.order_no)}</span>
+  ${r.rep_no === r.order_no ? '' : `
+  <span class="m-stockrow__rep">대표 ${esc(r.rep_no)}</span>`}
   <span class="m-stockrow__cust">${esc(r.customer)}</span>
 </div>`).join('')
             : emptyState('대상이 없습니다. (적치완료 · 상차 전 파렛트만 나옵니다)');
@@ -54,7 +56,7 @@ export async function render(root, { user }) {
             return;
         }
         downloadCsv(`재고실사표_${today()}.csv`, HEADERS,
-            rows.map((r) => [r.location, r.order_no, r.customer, '', '']));
+            rows.map((r) => [r.location, r.order_no, r.rep_no, r.customer, '', '']));
     });
 
     await reload();
@@ -66,17 +68,28 @@ export async function render(root, { user }) {
  * 재고실사표 행 - 로케이션이 들어간 파렛트를 로케이션 순으로 모은다.
  * 대상 판정(적치완료 · 상차 전)과 조회 범위 제한은 db.listStowWaiting 이 한다 -
  * 상차대기 화면과 같은 묶음을 본다.
+ *
+ * 🔑 주문번호는 **파렛트를 가진 주문** 기준이다 (웹 재고실사표와 같다).
+ * 묶음 대표로 적으면 실물 라벨(`{주문번호}-01`)과 번호가 달라져 현장에서 못 찾는다.
+ * 묶음을 알아볼 수 있게 대표주문번호는 별도 칸으로 함께 낸다.
  */
 async function stockRows(user) {
     const groups = await db.listStowWaiting({
         createdBy: can(user, 'viewAll') ? undefined : user.id,
     });
     return groups
-        .flatMap((g) => g.pallets.filter((p) => p.location).map((p) => ({
-            location: formatLocation(p.location),
-            // 라벨과 같은 번호로 찾을 수 있게 묶음 대표주문번호를 보여준다
-            order_no: g.head.rep_no || g.head.order_no,
-            customer: g.head.customer,
-        })))
+        .flatMap((g) => {
+            const owner = new Map(g.rows.map((r) => [r.id, r]));
+            const repNo = g.head.rep_no || g.head.order_no;
+            return g.pallets.filter((p) => p.location).map((p) => {
+                const o = owner.get(p.order_id) ?? g.head;
+                return {
+                    location: formatLocation(p.location),
+                    order_no: o.order_no,
+                    rep_no: repNo,
+                    customer: o.customer,
+                };
+            });
+        })
         .sort((a, b) => a.location.localeCompare(b.location));
 }

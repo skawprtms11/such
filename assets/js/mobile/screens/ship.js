@@ -125,15 +125,15 @@ function shipCard(g) {
 
 async function renderDetail(root, user, orderId) {
     const editable = can(user, 'updateStatus');
-    // 스캔해서 작업을 연 사람이 이 단계의 작업자가 된다 (조회 권한만 있으면 기록하지 않는다)
-    if (editable) await db.recordWorker(orderId, 'ship', user);
-
     let g = await db.getBatchGroup(orderId);
     if (!g) {
         root.innerHTML = emptyState('주문을 찾을 수 없습니다.',
             { label: '출고작업 목록으로', href: '#/ship' });
         return null;
     }
+    // 스캔해서 작업을 연 사람이 이 단계의 작업자가 된다 (조회 권한만 있으면 기록하지 않는다).
+    // 주문이 있는지 확인한 뒤에 기록한다
+    if (editable) await db.recordWorker(orderId, 'ship', user);
     let opt = await stepOpt(g.head);
 
     root.innerHTML = `

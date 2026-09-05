@@ -1261,6 +1261,20 @@ export async function listLoading(shipDate) {
 }
 
 /**
+ * 넘긴 주문들의 파렛트를 주문 순으로 모은다.
+ * 라벨 번호는 **주문 안에서** 매기므로, 묶음에서 일부 주문만 넘겨도 번호가 흔들리지 않는다.
+ */
+function palletsOf(db, rows) {
+    return rows.flatMap((r) => db.pallets
+        .filter((p) => p.order_id === r.id)
+        .map((p, i) => ({
+            ...p,
+            seq: r.seq,
+            label: `${r.order_no}-${String(i + 1).padStart(2, '0')}`,
+        })));
+}
+
+/**
  * 상차 묶음 단위 (`groupKeyOf` 로 묶는다 - 대표주문번호 · 추가주문 차수).
  * 대표주문번호로 묶인 주문과 추가주문 차수는 한 거래처로 함께 배송되므로
  * **상차만은** 묶어서 본다 (적치 파렛트 합산 · 상차검수 · 상차완료).
@@ -1277,14 +1291,7 @@ function groupOf(db, orderId) {
     const rows = db.orders
         .filter((x) => groupKeyOf(x) === key && !x.canceled_at)
         .sort(compareHead);
-    const pallets = rows.flatMap((r) => db.pallets
-        .filter((p) => p.order_id === r.id)
-        .map((p, i) => ({
-            ...p,
-            seq: r.seq,
-            label: `${r.order_no}-${String(i + 1).padStart(2, '0')}`,
-        })));
-    return { head: rows[0] ?? o, rows, pallets };
+    return { head: rows[0] ?? o, rows, pallets: palletsOf(db, rows) };
 }
 
 /** 상차 단위 조회 (화면용) */
@@ -1618,13 +1625,14 @@ export async function listIssueAssignees() {
 }
 
 /** 이슈접수 - 확인담당자를 지정하면 상태가 접수대기 → 접수완료 로 바뀐다 */
-export async function acceptIssue(id, assigneeId) {
+export async function acceptIssue(id, assigneeId, user) {
     const db = (await load());
     const i = db.issues.find((x) => x.id === id);
     if (!i) throw new Error('이슈를 찾을 수 없습니다.');
     if (i.status !== ISSUE_STATE.WAIT) {
         throw new Error(`${ISSUE_STATE.WAIT} 상태의 이슈만 접수할 수 있습니다.`);
     }
+    if (!canAcceptIssue(user, i)) throw new Error('이슈를 접수할 권한이 없습니다.');
     const u = db.users.find((x) => x.id === assigneeId);
     if (!u) throw new Error('확인담당자를 찾을 수 없습니다.');
     Object.assign(i, {
@@ -1637,6 +1645,17 @@ export async function acceptIssue(id, assigneeId) {
 }
 
 /* 이슈 단계별 처리 권한 - 팝업의 버튼 노출과 실제 처리에 같은 판정을 쓴다 */
+
+/**
+ * 이슈접수 가능 여부 - 접수대기 상태에서 **이슈 상태를 바꿀 수 있는 역할**만 접수한다
+ * (출고·검수를 처리하면서 이슈도 등록하는 역할 = 관리자·용마담당자).
+ * 다른 단계와 달리 담당자 지정이 아니라 역할로 판정한다.
+ */
+export function canAcceptIssue(user, issue) {
+    if (!user || issue?.status !== ISSUE_STATE.WAIT) return false;
+    const perm = PERMISSION[user.role] ?? {};
+    return Boolean((perm.updateStatus && perm.createIssue) || perm.manageUsers);
+}
 
 /** 담당자확인 가능 여부 - 접수완료 상태에서 선정된 담당자 본인 또는 관리자 */
 export function canConfirmAssignee(user, issue) {
@@ -1866,17 +1885,19 @@ export async function stowProgress(orderId) {
  * 상차대기 묶음 목록 (모바일 앱 `#/wait` · `#/stock`).
  * 적치가 끝났고 아직 상차되지 않은 주문을 **상차 묶음 단위**로 돌려준다.
  *
- * 🔑 조회 범위 제한(viewAll 없음)을 행이 아니라 **묶음에** 건다.
- * 행을 먼저 걸러내면 묶음 대표가 남의 주문일 때 대표가 바뀌어 파렛트 수가 어긋난다.
+ * 🔑 **대상 주문(live)만으로 묶는다.** `groupOf` 로 묶음을 다시 펼치면 아직 적치 전이거나
+ * 조회 범위 밖인 멤버까지 딸려 들어와, 대기 목록이 아닌 주문이 대표가 되고 파렛트 수가
+ * 어긋난다. 웹 출고주문처리의 상차대기 탭도 같은 순서다 (행을 먼저 거르고 `loadGroups`).
  *
- * @param {{createdBy?:string}} f createdBy - 본인이 낀 묶음만 본다
- * @returns {Promise<Array<object>>} getLoadGroup 결과 배열
+ * @param {{createdBy?:string}} f createdBy - 본인 등록건만 본다 (viewAll 권한 없음)
+ * @returns {Promise<Array<object>>} getLoadGroup 과 같은 모양 `{head, rows, pallets}` 배열
  */
 export async function listStowWaiting(f = {}) {
     const db = (await load());
     // 상차완료된 건만 뺀다. 상차 정보가 어긋난 건은 남겨 눈에 띄게 한다 (웹 상차대기 탭과 같다)
-    const live = db.orders.filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at);
-    const groups = loadGroups(live)
-        .filter((g) => !f.createdBy || g.rows.some((r) => r.created_by === f.createdBy));
-    return groups.map((g) => groupOf(db, g.head.id)).filter(Boolean);
+    const live = db.orders
+        .filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at)
+        .filter((o) => !f.createdBy || o.created_by === f.createdBy);
+    return loadGroups(live)
+        .map((g) => ({ head: g.head, rows: g.rows, pallets: palletsOf(db, g.rows) }));
 }

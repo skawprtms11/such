@@ -304,9 +304,8 @@ ${issue.auto_created ? `<div class="issue-auto-note">
         }
     }
 
-    // 이슈접수는 이슈 상태를 바꿀 수 있는 역할(관리자·용마담당자)만 한다
-    const canManage = (can(user, 'updateStatus') && can(user, 'createIssue'))
-        || can(user, 'manageUsers');
+    // 이슈접수 판정은 db.canAcceptIssue 하나로 본다 (앱 화면·실제 처리와 같은 조건)
+    const canManage = db.canAcceptIssue(user, issue);
 
     const cancelBtnHtml = '<button class="btn" id="btn-cancel-issue" type="button">'
         + '이슈취소</button>';
@@ -348,7 +347,7 @@ ${issue.auto_created ? `<div class="issue-auto-note">
             });
             box.querySelector('#btn-accept-ok').addEventListener('click', async () => {
                 try {
-                    await db.acceptIssue(issue.id, box.querySelector('#sel-assignee').value);
+                    await db.acceptIssue(issue.id, box.querySelector('#sel-assignee').value, user);
                     m.close();
                     toast('이슈가 접수되었습니다.', 'success');
                     reload();
