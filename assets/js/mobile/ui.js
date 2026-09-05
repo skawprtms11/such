@@ -219,10 +219,13 @@ export function segment(host, items, activeKey, onChange) {
  * 하단 고정 액션 독.
  * 위험 조작(초기화·취소)은 여기 두지 않는다 - `···` 메뉴 + 확인 대화상자로만 처리한다.
  *
+ * 🔑 독은 **화면(screens/**)이 만들어 소유한다.** scanBar 처럼 독을 쓰는 부품에는
+ * 만들어 둔 독을 넘겨 준다. 한 화면에 독이 둘 생기지 않게 하기 위해서다.
+ *
  * @param {Element} host 독을 놓을 자리 (독 자체는 화면 하단에 고정된다)
  * @param {object} spec 아래 set() 참고
  * @returns {{el:Element, input:HTMLInputElement, set:Function, value:Function,
- *            clear:Function, focus:Function, destroy:Function}}
+ *            values:Function, clear:Function, focus:Function, destroy:Function}}
  */
 export function dock(host, spec = {}) {
     // 독은 화면 하단에 고정되므로 본문이 가리지 않도록 같은 높이의 빈 칸을 남긴다
@@ -234,7 +237,18 @@ export function dock(host, spec = {}) {
     el.className = 'm-dock';
     host.appendChild(el);
 
-    // 입력창은 다시 그려도 같은 노드를 재사용한다 (블루투스 스캐너 연속 입력 시 커서 유지)
+    const note = document.createElement('p');
+    note.className = 'm-dock__note';
+    note.hidden = true;
+    el.appendChild(note);
+
+    // 🔑 줄(row)과 입력창은 다시 그려도 **같은 노드를 유지한다.**
+    // innerHTML 로 통째로 갈아 끼우면 입력창이 문서에서 떨어져 나가
+    // 모바일 키보드가 닫히고 한글 조합(IME)이 끊긴다
+    const row = document.createElement('div');
+    row.className = 'm-dock__row';
+    el.appendChild(row);
+
     const input = document.createElement('input');
     input.className = 'm-dock__input';
     input.type = 'text';
@@ -247,6 +261,7 @@ export function dock(host, spec = {}) {
     });
 
     let cur = {};
+    let fields = [];        // mode:'form' 에서 만든 입력창들
 
     function button(b, onClick, block = false) {
         const btn = document.createElement('button');
@@ -259,45 +274,83 @@ export function dock(host, spec = {}) {
         return btn;
     }
 
+    /** 겉모습이 같은지 - 핸들러만 바뀐 재호출에서는 다시 그리지 않는다 */
+    function sameLook(a, b) {
+        const btn = (x) => (x ? `${x.label}|${x.tone}|${x.icon}|${x.disabled ? 1 : 0}` : '');
+        const one = (x) => (x ? `${x.placeholder ?? ''}|${x.inputmode ?? ''}` : '');
+        const many = (x) => (x ?? []).map((f) => `${f.key}|${f.label}|${f.value ?? ''}`).join(',');
+        return (a.mode ?? 'input') === (b.mode ?? 'input')
+            && (a.note ?? '') === (b.note ?? '')
+            && one(a.input) === one(b.input)
+            && many(a.inputs) === many(b.inputs)
+            && btn(a.primary) === btn(b.primary)
+            && btn(a.secondary) === btn(b.secondary);
+    }
+
+    /** mode:'form' 의 입력칸 한 줄 */
+    function field(f) {
+        const lab = document.createElement('label');
+        lab.className = 'm-dock__field';
+        const cap = document.createElement('span');
+        cap.className = 'm-dock__cap';
+        cap.textContent = f.label ?? '';
+        const box = document.createElement('input');
+        box.className = 'm-dock__input';
+        box.type = 'text';
+        box.autocomplete = 'off';
+        box.inputMode = f.inputmode ?? 'text';
+        box.placeholder = f.placeholder ?? '';
+        box.value = f.value ?? '';
+        box.dataset.key = f.key;
+        lab.append(cap, box);
+        fields.push(box);
+        return lab;
+    }
+
     /**
      * 독의 내용을 바꾼다.
-     * @param {{mode?:'input'|'action'|'pair', note?:string,
+     * @param {{mode?:'input'|'action'|'pair'|'form', note?:string,
      *          input?:{placeholder?:string, inputmode?:string},
+     *          inputs?:Array<{key:string,label:string,placeholder?:string,
+     *                         inputmode?:string,value?:string}>,
      *          primary?:object, secondary?:object,
      *          onSubmit?:Function, onPrimary?:Function, onSecondary?:Function}} next
      */
     function set(next = {}) {
+        const prev = cur;
         cur = next;
+        // 핸들러만 갈아 끼우는 재호출이면 그대로 둔다 (입력 중인 값·커서를 지키기 위해서다)
+        if (sameLook(prev, next)) return;
+
         const mode = next.mode ?? 'input';
-        const focused = document.activeElement === input;
         el.className = `m-dock m-dock--${mode}`;
-        el.innerHTML = '';
+        note.hidden = !next.note;
+        note.textContent = next.note ?? '';
 
-        if (next.note) {
-            const note = document.createElement('p');
-            note.className = 'm-dock__note';
-            note.textContent = next.note;
-            el.appendChild(note);
-        }
-
-        const row = document.createElement('div');
-        row.className = 'm-dock__row';
-        el.appendChild(row);
+        // 입력창(input)은 남기고 나머지만 지운다
+        [...row.children].forEach((c) => {
+            if (c !== input) c.remove();
+        });
+        fields = [];
 
         if (mode === 'input') {
             input.placeholder = next.input?.placeholder ?? '';
             input.inputMode = next.input?.inputmode ?? 'text';
-            row.appendChild(input);
+            if (input.parentNode !== row) row.appendChild(input);
             if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.()));
+            return;
+        }
+
+        input.remove();
+        if (mode === 'form') {
+            (next.inputs ?? []).forEach((f) => row.appendChild(field(f)));
+            if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
         } else if (mode === 'action') {
-            row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
+            if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
         } else {
             if (next.secondary) row.appendChild(button(next.secondary, () => next.onSecondary?.()));
             if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
         }
-
-        // 다시 그리기 전에 커서가 입력창에 있었으면 되돌린다 (연속 스캔이 끊기지 않게)
-        if (focused && row.contains(input)) input.focus();
     }
 
     set(spec);
@@ -306,6 +359,8 @@ export function dock(host, spec = {}) {
         input,
         set,
         value: () => input.value.trim(),
+        /** mode:'form' 의 입력값 - `{키: 값}` (3단계 검수 입력에서 쓴다) */
+        values: () => Object.fromEntries(fields.map((f) => [f.dataset.key, f.value.trim()])),
         clear() {
             input.value = '';
         },
@@ -322,6 +377,19 @@ export function dock(host, spec = {}) {
 
 /* --------------------------------- 바텀시트 --------------------------------- */
 
+/** 열려 있는 시트 - Escape 는 맨 위 하나만 닫고, 화면을 떠날 때는 전부 닫는다 */
+const openSheets = [];
+
+/** 열린 시트를 모두 닫는다 (화면 정리 함수에서 쓴다) */
+export function closeAllSheets() {
+    [...openSheets].reverse().forEach((s) => s.close());
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !openSheets.length) return;
+    openSheets[openSheets.length - 1].close();
+});
+
 /**
  * 바텀시트 (모바일용 모달). util.openModal 과 같은 형태를 돌려준다.
  * @returns {{root:Element, body:Element, foot:Element|null, close:Function}}
@@ -330,7 +398,7 @@ export function sheet(title, html, { footer = '', dismissible = true } = {}) {
     const back = document.createElement('div');
     back.className = 'm-sheet-back';
     back.innerHTML = `
-<div class="m-sheet" role="dialog" aria-modal="true">
+<div class="m-sheet" role="dialog" aria-modal="true" tabindex="-1">
   <div class="m-sheet__top">
     <span class="m-sheet__grip"></span>
     <div class="m-sheet__head">
@@ -345,7 +413,27 @@ export function sheet(title, html, { footer = '', dismissible = true } = {}) {
     document.body.appendChild(back);
 
     const panel = back.querySelector('.m-sheet');
-    const close = () => back.remove();
+    // 시트가 떠 있는 동안 뒤 화면이 함께 스크롤되면 손가락이 어디를 미는지 알 수 없다
+    document.body.classList.add('m-noscroll');
+    const prevFocus = document.activeElement;
+
+    function close() {
+        const i = openSheets.indexOf(api);
+        if (i < 0) return;
+        openSheets.splice(i, 1);
+        back.remove();
+        if (!openSheets.length) document.body.classList.remove('m-noscroll');
+        if (typeof prevFocus?.focus === 'function') prevFocus.focus();
+    }
+
+    const api = {
+        root: back,
+        body: back.querySelector('.m-sheet__body'),
+        foot: back.querySelector('.m-sheet__foot'),
+        close,
+    };
+    openSheets.push(api);
+    panel.focus();
     back.querySelector('.m-sheet__close').addEventListener('click', close);
 
     if (dismissible) {
@@ -372,12 +460,7 @@ export function sheet(title, html, { footer = '', dismissible = true } = {}) {
         });
     }
 
-    return {
-        root: back,
-        body: back.querySelector('.m-sheet__body'),
-        foot: back.querySelector('.m-sheet__foot'),
-        close,
-    };
+    return api;
 }
 
 /**
@@ -404,11 +487,14 @@ export function menuSheet(items, title = '작업') {
 const KEYPAD_KEYS = ['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '←'];
 
 /**
- * 계산기 배열 숫자 자판. 장갑을 낀 손으로 로케이션·수량을 넣을 때 쓴다 (2단계).
- * @param {Element} host 그릴 자리
- * @param {{target:HTMLInputElement}} opt 값을 넣을 입력창
+ * 계산기 배열 숫자 자판. 장갑을 낀 손으로 로케이션·수량을 넣을 때 쓴다.
+ * @param {Element} host 그릴 자리 (독 바로 아래에 붙인다)
+ * @param {{target:HTMLInputElement, onToggle?:(open:boolean)=>void}} opt
+ *   target   - 값을 넣을 입력창 (setTarget 으로 바꿀 수 있다)
+ *   onToggle - 펼치고 접을 때 알린다 (하단 고정 영역의 높이 보정에 쓴다)
  */
-export function keypad(host, { target }) {
+export function keypad(host, { target, onToggle } = {}) {
+    let box = target;
     const el = document.createElement('div');
     el.className = 'm-keypad';
     el.hidden = true;
@@ -418,17 +504,23 @@ export function keypad(host, { target }) {
 
     el.addEventListener('click', (e) => {
         const btn = e.target.closest('[data-k]');
-        if (!btn) return;
+        if (!btn || !box) return;
         const k = btn.dataset.k;
-        if (k === 'C') target.value = '';
-        else if (k === '←') target.value = target.value.slice(0, -1);
-        else target.value += k;
-        target.dispatchEvent(new Event('input', { bubbles: true }));
+        if (k === 'C') box.value = '';
+        else if (k === '←') box.value = box.value.slice(0, -1);
+        else box.value += k;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
     return {
+        /** 값을 넣을 입력창을 바꾼다 (독의 모드가 바뀌면 입력창도 바뀐다) */
+        setTarget(el2) {
+            box = el2;
+        },
+        isOpen: () => !el.hidden,
         toggle(on = el.hidden) {
             el.hidden = !on;
+            onToggle?.(!el.hidden);
             return !el.hidden;
         },
         destroy() {
@@ -440,20 +532,22 @@ export function keypad(host, { target }) {
 /* ---------------------------------- 스캔 바 ---------------------------------- */
 
 /**
- * 바코드 스캔 바 - 카메라 프리뷰(host) + 직접 입력 독(dockHost).
+ * 바코드 스캔 바 - 카메라 프리뷰 + 결과 줄 + (화면이 넘겨준) 하단 독.
  *
  * 카메라를 못 쓰는 기기(iOS 등 · http 접속)에서는 카메라 버튼을 감추고 안내를 띄운다.
  * **직접 입력만으로도 전량 처리할 수 있어야 한다** - 이 경로는 절대 없애지 않는다.
  *
- * @param {Element} host 프리뷰를 그릴 자리 (독 바로 위)
- * @param {{dockHost?:Element, placeholder?:string, autoFocus?:boolean, camera?:boolean,
+ * 독은 화면이 만들어 넘긴다(`dock` 옵션). 스캔 바는 독을 만들지도 없애지도 않는다.
+ *
+ * @param {Element} host 프리뷰·결과 줄을 그릴 자리 (독 바로 위)
+ * @param {{dock:object, placeholder?:string, autoFocus?:boolean, camera?:boolean,
  *          keepFocus?:boolean, onSubmit?:(code:string)=>Promise,
  *          onCamera?:(on:boolean)=>void}} opt
- * @returns {{dock:object, start:Function, stop:Function, isOn:Function,
- *            supported:boolean, focus:Function, destroy:Function}}
+ * @returns {{dock:object, result:object, start:Function, stop:Function, isOn:Function,
+ *            supported:boolean, focus:Function, resetDock:Function, destroy:Function}}
  */
 export function scanBar(host, {
-    dockHost = host,
+    dock: d,
     placeholder = '바코드 직접 입력',
     autoFocus = false,
     camera = true,
@@ -469,6 +563,9 @@ export function scanBar(host, {
 <span class="m-scanbox__aim"></span>`;
     host.appendChild(box);
 
+    // 결과 줄은 프리뷰 아래·독 위에 둔다 (토스트는 놓치기 쉬워 마지막 결과를 남긴다)
+    const line = resultLine(host);
+
     const useCam = camera && scanSupported();
     const scanner = useCam
         ? createScanner(box.querySelector('video'), (code) => handle(code))
@@ -483,6 +580,8 @@ export function scanBar(host, {
         busy = true;
         try {
             await onSubmit?.(v);
+        } catch (err) {
+            toast(err.message, 'error');
         } finally {
             busy = false;
         }
@@ -533,11 +632,13 @@ export function scanBar(host, {
         if (was) onCamera?.(false);
     }
 
-    const d = dock(dockHost, spec());
+    d.set(spec());
     if (autoFocus) d.focus();
 
     return {
         dock: d,
+        /** 스캔 결과 상주 줄 - show(msg, ok) / clear() */
+        result: line,
         start,
         stop,
         isOn: () => Boolean(scanner?.isOn()),
@@ -545,9 +646,10 @@ export function scanBar(host, {
         focus: () => d.focus(),
         /** 독을 다시 스캔 모드로 되돌린다 (상차완료 버튼 등으로 바꿔 놓았을 때) */
         resetDock: () => d.set(spec()),
+        /** 독은 화면 것이므로 없애지 않는다 - 카메라와 자기 조각만 정리한다 */
         destroy() {
             stop();
-            d.destroy();
+            line.destroy();
             box.remove();
         },
     };

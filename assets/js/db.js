@@ -6,7 +6,7 @@
 import {
     COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE, LOAD_STATUS, PERMISSION,
     RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, adjustCategory,
-    formatLocation, isValidLocation,
+    formatLocation, isValidLocation, stowStatus,
 } from './config.js';
 import { readyToLoad, loadDone } from './steps.js';
 import {
@@ -1790,3 +1790,69 @@ export function subscribe(callback, intervalMs = 5000) {
     return subscribeStore(callback, intervalMs);
 }
 
+/* ------------------------------ 모바일 조회 조합 ------------------------------ */
+
+/**
+ * 출고적치 대상 목록 (모바일 앱 `#/stow`).
+ * 검수작업이 끝났고 아직 상차하지 않은 주문을 **상차 묶음 단위로 대표 1건만** 돌려준다.
+ * 새 업무 규칙이 아니라 기존 조회(groupOf · stowStatus)를 조합한 것이다.
+ *
+ * @param {{createdBy?:string, keyword?:string}} f
+ *   createdBy - viewAll 권한이 없는 사용자가 본인 등록건만 볼 때 쓴다
+ */
+export async function listStowTargets(f = {}) {
+    const db = (await load());
+    const rows = db.orders.filter((o) => !o.canceled_at && o.inspect_done_at && !o.loaded_at)
+        .filter((o) => !f.createdBy || o.created_by === f.createdBy);
+
+    const byKey = new Map();
+    rows.forEach((o) => {
+        const key = groupKeyOf(o);
+        const cur = byKey.get(key);
+        if (!cur || compareHead(o, cur) < 0) byKey.set(key, o);
+    });
+
+    const list = [...byKey.values()].map((head) => {
+        const g = groupOf(db, head.id);
+        const total = g.pallets.length;
+        const done = g.pallets.filter((p) => p.location).length;
+        return {
+            ...head,
+            group_no: head.rep_no || head.order_no,
+            group_nos: g.rows.map((r) => r.order_no),
+            group_count: g.rows.length,
+            group_pallets: total,
+            group_stowed: done,
+            stow_status: stowStatus(done, total),
+        };
+    });
+
+    const k = String(f.keyword ?? '').trim().toLowerCase();
+    const hit = (o) => [o.group_no, o.customer].concat(o.group_nos)
+        .join(' ').toLowerCase().includes(k);
+    return (k ? list.filter(hit) : list)
+        .sort((a, b) => (a.group_no > b.group_no ? 1 : -1));
+}
+
+/**
+ * 출고적치 진행 상황 (모바일 앱).
+ * 적치·상차는 **묶음 단위**로 보므로 getLoadGroup 과 같은 범위로 센다.
+ *
+ * @returns {{done:number, total:number, left:number, status:string, stowed:boolean}|null}
+ */
+export async function stowProgress(orderId) {
+    const g = groupOf((await load()), orderId);
+    if (!g) return null;
+    const total = g.pallets.length;
+    const done = g.pallets.filter((p) => p.location).length;
+    // 혼적(0 파렛트) 멤버는 검수완료 때 이미 적치완료로 찍힌다 - 파렛트를 가진 주문만 본다
+    const holders = g.rows.filter((r) => g.pallets.some((p) => p.order_id === r.id));
+    const rows = holders.length ? holders : g.rows;
+    return {
+        done,
+        total,
+        left: total - done,
+        status: stowStatus(done, total),
+        stowed: rows.every((r) => Boolean(r.stow_done_at)),
+    };
+}

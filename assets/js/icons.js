@@ -97,6 +97,11 @@ const PATHS = {
     // 닫기 (바텀시트)
     close: '<path d="M6 6l12 12M18 6L6 18" />',
 
+    // 지우기 (적치 로케이션 지우기) - 휴지통
+    trash: `
+        <path d="M4 7h16M10 7V5h4v2" />
+        <path d="M6 7l1 13h10l1-13" />`,
+
     // 출고적치 - 쌓아 둔 파렛트
     stow: `
         <rect x="3.5" y="4.5" width="7.5" height="7" rx="1" />

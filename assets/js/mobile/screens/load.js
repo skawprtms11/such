@@ -12,17 +12,20 @@
  * 🔑 묶음은 db.getLoadGroup - 대표주문번호 + 추가주문 차수를 함께 본다.
  * 화면에서 다시 묶지 않는다.
  */
-import { LOAD_STATUS, FLOOR_LOCATION, formatLocation, compareLocation } from '../../config.js';
+import {
+    LOAD_STATUS, PALLET_SCAN_STATUS, STOW_STATUS, FLOOR_LOCATION,
+    formatLocation, compareLocation, stowStatus,
+} from '../../config.js';
 import { can } from '../../auth.js';
 import { loadDone } from '../../steps.js';
 import * as db from '../../db.js';
 import { icon } from '../../icons.js';
 import {
-    esc, num, today, toDateStr, fmtDateTime, toast, confirmDialog,
+    esc, num, rate, today, toDateStr, fmtDateTime, toast, confirmDialog,
 } from '../../util.js';
 import {
     emptyState, tag, seqTag, plusBadge, card, bigCounter, orderHead, bindOrderHead,
-    segment, resultLine, scanBar, menuSheet,
+    segment, dock, scanBar, menuSheet,
 } from '../ui.js';
 
 /** 상차 상태 → 배지 색 */
@@ -30,6 +33,9 @@ const STATUS_TONE = {
     [LOAD_STATUS.DONE]: 'green',
     [LOAD_STATUS.INSPECTED]: 'blue',
     [LOAD_STATUS.WAIT]: 'gray',
+    [STOW_STATUS.DONE]: 'green',
+    [STOW_STATUS.ING]: 'blue',
+    [STOW_STATUS.WAIT]: 'gray',
 };
 
 /** 목록 조회 조건 - 상세를 다녀와도 유지한다 */
@@ -100,7 +106,7 @@ async function renderList(root, user) {
 <span>대기 <b>${num(count(LOAD_STATUS.WAIT))}</b></span>
 <span>검수 <b>${num(count(LOAD_STATUS.INSPECTED))}</b></span>
 <span>완료 <b>${num(doneCount)}</b></span>
-<span class="m-sum__rate">진행 <b>${rateOf(doneCount, rows.length)}%</b></span>` : '';
+<span class="m-sum__rate">진행 <b>${rate(doneCount, rows.length)}%</b></span>` : '';
 
         listEl.innerHTML = rows.length
             ? rows.map((o) => loadCard(o, editable)).join('')
@@ -221,10 +227,12 @@ async function renderDetail(root, user, orderId, mode) {
         draw();
     });
 
-    const line = resultLine(scanHost);
+    // 독은 화면이 만들어 소유하고 스캔 바에 넘긴다 (한 화면에 독은 하나뿐이다).
+    // 조회 전용 사용자에게는 아예 만들지 않는다 - 빈 막대가 화면 아래에 남지 않게
+    const d = editable ? dock(dockHost, {}) : null;
     const scan = editable
         ? scanBar(scanHost, {
-            dockHost,
+            dock: d,
             placeholder: '바코드 직접 입력',
             onSubmit: onScan,
             onCamera: (on) => {
@@ -277,7 +285,8 @@ ${g.pallets.map((p, i) => `
   <span class="m-pallet__mark">${icon(p.scanned_at ? 'check' : 'square', 'm-icon')}</span>
   ${seqTag(p.seq)}
   <span class="m-pallet__name">파렛트 ${i + 1} <small>/ ${total}</small></span>
-  ${tag(p.scanned_at ? '검수완료' : '대기', p.scanned_at ? 'green' : 'gray')}
+  ${tag(p.scanned_at ? PALLET_SCAN_STATUS.DONE : PALLET_SCAN_STATUS.WAIT,
+        p.scanned_at ? 'green' : 'gray')}
 </div>`).join('')}` : emptyState('등록된 파렛트가 없습니다.'
             + ' 출고주문처리 검수작업에서 파렛트수를 입력하세요.');
     }
@@ -287,10 +296,14 @@ ${g.pallets.map((p, i) => `
     function drawLocation(o, total, scanned) {
         const done = loadDone(o);
         const picked = g.pallets.filter((p) => p.picked_at).length;
+        const stowed = g.pallets.filter((p) => p.location).length;
+        const stow = stowStatus(stowed, total);
         topEl.innerHTML = `
 <div class="m-statline">
   ${tag(o.load_status, STATUS_TONE[o.load_status] ?? 'gray')}
   ${done ? `<b>${esc(fmtDateTime(o.loaded_at))}</b>` : ''}
+  ${tag(stow, STATUS_TONE[stow] ?? 'gray')}
+  <span>적치 ${num(stowed)}/${num(total)}</span>
   <span>검수 ${num(scanned)}/${num(total)}</span>
   <span>박스 ${o.box_count ? num(o.box_count) : '-'}</span>
   <span class="m-statline__pick">내림 ${num(picked)}/${num(total)}</span>
@@ -352,13 +365,13 @@ ${!editable ? '<p class="m-note">처리 권한이 없어 조회만 가능합니�
 
     async function onScan(code) {
         const res = await db.scanPallet(orderId, code, user);
-        line.show(res.msg, res.ok);
+        scan.result.show(res.msg, res.ok);
         toast(res.msg, res.ok ? 'success' : 'error');
         // 현장에서 화면을 못 볼 때의 피드백 (성공은 짧게, 실패는 세 번)
         if (navigator.vibrate) navigator.vibrate(res.ok ? 60 : [70, 70, 70]);
         await refresh();
         if (res.ok && g.pallets.length && g.pallets.every((p) => p.scanned_at)) {
-            line.show('모든 파렛트 검수가 끝났습니다.', true);
+            scan.result.show('모든 파렛트 검수가 끝났습니다.', true);
         }
     }
 
@@ -367,7 +380,7 @@ ${!editable ? '<p class="m-note">처리 권한이 없어 조회만 가능합니�
         try {
             await db.completeLoading(orderId, user);
             toast('상차완료 처리되었습니다.', 'success');
-            line.clear();
+            scan?.result.clear();
             seg = 'loc';
             segCtl.set('loc');
         } catch (err) {
@@ -384,7 +397,7 @@ ${!editable ? '<p class="m-note">처리 권한이 없어 조회만 가능합니�
         try {
             await db.resetInspection(orderId, user);
             toast('검수가 초기화되었습니다.');
-            line.clear();
+            scan?.result.clear();
         } catch (err) {
             toast(err.message, 'error');
         }
@@ -417,11 +430,17 @@ ${!editable ? '<p class="m-note">처리 권한이 없어 조회만 가능합니�
     }
 
     draw();
-    const unwatch = db.subscribe(refresh, 8000);
+    // 입력·체크를 만지는 중에 다시 그리면 손이 튄다 (목록과 같은 가드)
+    const poll = () => {
+        if (root.contains(document.activeElement)
+            && document.activeElement.matches('input')) return;
+        refresh();
+    };
+    const unwatch = db.subscribe(poll, 8000);
     return () => {
-        scan?.destroy();      // 카메라 정지 + 독 제거
+        scan?.destroy();      // 카메라 정지 + 스캔 조각 제거
+        d?.destroy();
         segCtl.destroy();
-        line.destroy();
         openSheet?.close();
         unwatch();
     };
@@ -434,9 +453,4 @@ function locationHtml(location) {
     return v === FLOOR_LOCATION
         ? `${icon('floor', 'm-icon')}<b>${esc(v)}</b>`
         : `<b>${esc(v)}</b>`;
-}
-
-/** 진행률(%) */
-function rateOf(done, total) {
-    return total ? Math.round((done / total) * 100) : 0;
 }

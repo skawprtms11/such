@@ -18,10 +18,12 @@ const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
 
 /**
- * 권한 게이트 - 탭·서랍·라우팅이 같은 기준을 쓴다.
- * 역할명을 직접 비교하지 않고 config.js 의 `perm` 과 can() 으로만 판정한다.
+ * 진입(조회) 게이트 - 탭·서랍·라우팅이 같은 기준을 쓴다.
+ * 🔑 셸은 **조회 권한만** 본다. 처리 권한(updateStatus)은 각 화면이 판단한다 -
+ * 화주 역할도 적치·상차 진행을 앱에서 조회해야 하기 때문이다.
+ * 역할명을 직접 비교하지 않고 config.js 의 `viewPerm` 과 can() 으로만 판정한다.
  */
-const allowed = (m) => !m.perm || can(user, m.perm);
+const allowed = (m) => !m.viewPerm || can(user, m.viewPerm);
 
 /** 이 사용자가 쓸 수 있는 탭·메뉴 */
 const TABS = APP_TABS.filter(allowed);
@@ -39,6 +41,9 @@ const HOME = ROUTES[0]?.key ?? null;
  * screens/<키>.js 를 만들 때마다 `<키>: () => import('./screens/<키>.js'),` 를 더한다.
  */
 const SCREENS = {
+    ship: () => import('./screens/ship.js'),
+    inspect: () => import('./screens/inspect.js'),
+    stow: () => import('./screens/stow.js'),
     load: () => import('./screens/load.js'),
 };
 

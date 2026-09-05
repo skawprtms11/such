@@ -314,6 +314,9 @@ export function adjustCategory(key) {
 /** 검수/상차 상태 */
 export const LOAD_STATUS = { WAIT: '대기', INSPECTED: '검수', DONE: '완료' };
 
+/** 상차검수 파렛트 **1장**의 상태 - 주문 단위 LOAD_STATUS 와 뜻이 달라 따로 둔다 */
+export const PALLET_SCAN_STATUS = { DONE: '검수완료', WAIT: '대기' };
+
 /**
  * 이슈 업무구분 (표의 업무구분 컬럼 = 저장 필드 type).
  * ⚠️ '작업요청' 은 출고주문처리의 추가작업 요청 연동(EXTRA_TASK_TYPE)에 쓰이므로 빼지 않는다.
@@ -382,35 +385,20 @@ export const MENUS = [
  * label : 하단 탭바에 쓰는 짧은 이름 (두 글자)
  * title : 상단바 제목에 쓰는 전체 이름
  * icon  : icons.js 의 아이콘 키
- * perm  : 이 화면을 쓰는 데 필요한 권한 (PERMISSION 의 키). 없으면 누구나 본다.
- *         셸이 탭·서랍 렌더와 라우팅에서 can(user, perm) 으로 거른다 -
- *         **역할명을 화면 코드에서 직접 비교하지 않기 위한 장치다**
+ * viewPerm : 이 화면에 **들어갈**(조회할) 수 있는 권한 (PERMISSION 의 키).
+ *         없으면 모두 들어갈 수 있고, 셸은 이 값만 보고 탭·서랍·라우팅을 거른다.
+ *         🔑 처리 권한이 아니다 - 출고·검수·적치·상차 처리 버튼은 각 화면이
+ *         can(user, 'updateStatus') 로 따로 판단한다.
+ *         화주 역할도 앱에서 진행 상황을 조회해야 하므로 작업 탭을 막지 않는다
+ *         (docs/loading.md - 화주 역할은 조회만).
  */
 
-/** 작업 탭 5개는 모두 출고·검수·적치·상차 처리 권한이 있어야 쓴다 */
-const WORK_PERM = 'updateStatus';
-
 export const APP_TABS = [
-    {
-        key: 'ship', route: '#/ship', label: '출고', title: '출고작업',
-        icon: 'shipping', perm: WORK_PERM,
-    },
-    {
-        key: 'inspect', route: '#/inspect', label: '검수', title: '검수작업',
-        icon: 'check', perm: WORK_PERM,
-    },
-    {
-        key: 'stow', route: '#/stow', label: '적치', title: '출고적치',
-        icon: 'stow', perm: WORK_PERM,
-    },
-    {
-        key: 'adjust', route: '#/adjust', label: '조정', title: '조정요청',
-        icon: 'adjust', perm: WORK_PERM,
-    },
-    {
-        key: 'load', route: '#/load', label: '상차', title: '상차작업',
-        icon: 'loading', perm: WORK_PERM,
-    },
+    { key: 'ship', route: '#/ship', label: '출고', title: '출고작업', icon: 'shipping' },
+    { key: 'inspect', route: '#/inspect', label: '검수', title: '검수작업', icon: 'check' },
+    { key: 'stow', route: '#/stow', label: '적치', title: '출고적치', icon: 'stow' },
+    { key: 'adjust', route: '#/adjust', label: '조정', title: '조정요청', icon: 'adjust' },
+    { key: 'load', route: '#/load', label: '상차', title: '상차작업', icon: 'loading' },
 ];
 
 /**
@@ -420,7 +408,7 @@ export const APP_TABS = [
 export const APP_MENU = [
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
-    { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock', perm: WORK_PERM },
-    { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', perm: WORK_PERM },
+    { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
+    { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },
 ];
