@@ -23,7 +23,7 @@ import {
 } from '../../util.js';
 import {
     emptyState, tag, plusBadge, card, orderHead, bindOrderHead, closeAllSheets,
-    segment, dock, keypad, scanBar, menuSheet,
+    segment, dock, scanBar, menuSheet,
 } from '../ui.js';
 
 /** 스캐너가 같은 값을 연달아 보내는 것을 무시하는 시간(ms) - 웹 출고적치와 같다 */
@@ -42,7 +42,7 @@ const ZONE_MODES = [
 ];
 
 /** 적치 입력 설정 - 화면을 다시 열어도 유지한다 (웹 출고적치 탭의 stowPrefs 와 같은 역할) */
-const stowPrefs = { mode: 'seq', zoneMode: 'auto', zone: '', keypad: false };
+const stowPrefs = { mode: 'seq', zoneMode: 'auto', zone: '' };
 
 /** 적치 상태 → 배지 색 */
 const STATUS_TONE = {
@@ -219,13 +219,13 @@ async function renderDetail(root, user, orderId) {
   <p class="m-stowpreview" id="preview" hidden></p>
   <p class="m-stownote" id="note" hidden></p>
   <div id="dockhost"></div>
-  <div id="padhost"></div>
   <div class="m-stowset" id="set">
     <div id="seg-mode"></div>
     <label class="m-stowset__zone" id="zone-box">
       <span>구역</span>
       <input type="text" id="zone-code" maxlength="2" placeholder="IF"
-             autocomplete="off" aria-label="구역코드">
+             inputmode="text" autocapitalize="characters" autocorrect="off"
+             spellcheck="false" autocomplete="off" aria-label="구역코드">
     </label>
     <div id="seg-zone"></div>
   </div>
@@ -247,14 +247,6 @@ async function renderDetail(root, user, orderId) {
     /* ------------------------------ 부품 만들기 ------------------------------ */
 
     const d = editable ? dock(root.querySelector('#dockhost'), dockSpec()) : null;
-    // 앱 자판이 열려 있는 동안에는 폰 기본 자판을 막는다 (자판이 둘로 보이는 것을 막는다)
-    const pad = editable
-        ? keypad(root.querySelector('#padhost'), {
-            target: d.input,
-            soft: (allow) => d.softKeyboard(allow),
-            onToggle: syncFixed,
-        })
-        : null;
     const modeSeg = editable
         ? segment(root.querySelector('#seg-mode'), STOW_MODES, stowPrefs.mode, setMode)
         : null;
@@ -401,7 +393,7 @@ ${t.location
         }
     }
 
-    /** 도구 줄 4칸 - 평치 · 카메라 · 자판 · 지우기(대상에 값이 있을 때만) */
+    /** 도구 줄 3칸 - 평치 · 카메라 · 지우기(대상에 값이 있을 때만) */
     function drawTools() {
         if (!editable) return;
         const t = target();
@@ -416,7 +408,6 @@ ${t.location
                 ? cell(camOn ? 'stop' : 'camera', 'cam', camOn ? '중지' : '카메라',
                     camOn ? 'is-on' : '')
                 : '<span class="m-tool is-empty"></span>',
-            cell('keypad', 'pad', '자판', pad?.isOpen() ? 'is-on' : ''),
             t?.location
                 ? cell('trash', 'clear', '지우기', 'is-danger')
                 : '<span class="m-tool is-empty"></span>',
@@ -450,7 +441,7 @@ ${t.location
 
     /* -------------------------------- 하단 독 -------------------------------- */
 
-    /** 자동+구역코드가 정해졌으면 숫자만 받으면 되므로 숫자 자판을 띄운다 */
+    /** 자동+구역코드가 정해졌으면 숫자만 받으면 되므로 폰 숫자 자판을 부른다 */
     function dockSpec() {
         const auto = stowPrefs.zoneMode === 'auto' && Boolean(stowPrefs.zone);
         return {
@@ -483,7 +474,6 @@ ${t.location
             dockMode = next;
             if (allFilled) {
                 stopCam();
-                pad.toggle(false);
                 d.set({
                     mode: 'action',
                     primary: { label: '적치완료', tone: 'go', icon: 'stow' },
@@ -491,15 +481,13 @@ ${t.location
                 });
             } else {
                 d.set(dockSpec());
-                pad.setTarget(d.input);
-                if (stowPrefs.keypad) pad.toggle(true);
             }
         }
         // 값을 고치는 중이라는 것과 되돌아가는 길을 독에 적어 둔다
         if (fixing) {
             d.set({ ...dockSpec(), note: '값을 고친 뒤 같은 파렛트를 다시 누르면 적치완료로 돌아갑니다.' });
         }
-        // 🔑 도구 줄(평치·카메라·자판·지우기)은 전량 입력된 뒤에도 남긴다 - 정정 경로가 막힌다
+        // 🔑 도구 줄(평치·카메라·지우기)은 전량 입력된 뒤에도 남긴다 - 정정 경로가 막힌다
         previewEl.hidden = allFilled || !previewEl.textContent;
         syncFixed();
     }
@@ -726,11 +714,6 @@ ${t.location
     if (editable) {
         d.input.addEventListener('input', drawPreview);
 
-        // 도구 줄을 눌러도 입력칸의 포커스를 뺏지 않는다 (스캐너 입력이 끊기지 않게)
-        toolsEl.addEventListener('pointerdown', (e) => {
-            if (e.target.closest('[data-tool="pad"]')) e.preventDefault();
-        });
-
         toolsEl.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-tool]');
             if (!btn) return;
@@ -741,9 +724,6 @@ ${t.location
             } else if (btn.dataset.tool === 'cam') {
                 if (scanner?.isOn()) stopCam();
                 else startCam();
-            } else if (btn.dataset.tool === 'pad') {
-                stowPrefs.keypad = pad.toggle();
-                drawTools();
             } else if (btn.dataset.tool === 'clear') {
                 doClear(t);
             }
@@ -763,7 +743,6 @@ ${t.location
     }
 
     draw();
-    if (pad && stowPrefs.keypad) pad.toggle(true);
     syncViewport();
 
     // 입력 중에 다시 그리면 손이 튄다 (목록과 같은 가드)
@@ -780,7 +759,6 @@ ${t.location
         scanner?.stop();
         window.visualViewport?.removeEventListener('resize', syncViewport);
         window.visualViewport?.removeEventListener('scroll', syncViewport);
-        pad?.destroy();
         modeSeg?.destroy();
         zoneSeg?.destroy();
         d?.destroy();

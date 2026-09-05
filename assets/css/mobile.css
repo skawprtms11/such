@@ -802,27 +802,6 @@ html, body {
 
 /* -------------------------------- 숫자 자판 -------------------------------- */
 
-.m-keypad {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin-top: 8px;
-}
-
-.m-keypad[hidden] { display: none; }
-
-.m-keypad__key {
-    min-height: var(--tap-primary);
-    border: 1px solid var(--m-gray-300);
-    border-radius: var(--m-radius);
-    background: var(--m-card);
-    font-size: 20px;
-    font-weight: 700;
-    cursor: pointer;
-}
-
-.m-keypad__key:active { background: var(--m-gray-100); }
-
 /* =============================== 상차작업 화면 =============================== */
 
 .m-datebar {
@@ -1212,9 +1191,6 @@ html, body {
 
 .m-stowfix .m-dock__space { display: none; }
 
-/* 자판은 독 바로 아래에 붙는다 (펼쳐도 고정이 풀리지 않는다) */
-.m-stowfix .m-keypad { margin-top: 8px; }
-
 /* -------------------------------- 대상 배너 -------------------------------- */
 
 .m-stowbanner {
@@ -1257,7 +1233,7 @@ html, body {
 
 .m-stowtools {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 8px;
     margin-bottom: 8px;
 }

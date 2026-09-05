@@ -488,63 +488,6 @@ export function menuSheet(items, title = '작업') {
     return s;
 }
 
-/* ---------------------------------- 숫자 자판 ---------------------------------- */
-
-const KEYPAD_KEYS = ['7', '8', '9', '4', '5', '6', '1', '2', '3', 'C', '0', '←'];
-
-/**
- * 계산기 배열 숫자 자판. 장갑을 낀 손으로 로케이션·수량을 넣을 때 쓴다.
- * @param {Element} host 그릴 자리 (독 바로 아래에 붙인다)
- * @param {{target:HTMLInputElement, onToggle?:(open:boolean)=>void,
- *          soft?:(allow:boolean)=>void}} opt
- *   target   - 값을 넣을 입력창 (setTarget 으로 바꿀 수 있다)
- *   onToggle - 펼치고 접을 때 알린다 (하단 고정 영역의 높이 보정에 쓴다)
- *   soft     - 폰 소프트키보드를 허용할지 알린다 (`dock.softKeyboard` 를 그대로 넘긴다).
- *              🔑 앱 자판이 열려 있는 동안 폰 자판까지 올라오면 자판이 둘로 보인다
- */
-export function keypad(host, { target, onToggle, soft } = {}) {
-    let box = target;
-    const el = document.createElement('div');
-    el.className = 'm-keypad';
-    el.hidden = true;
-    el.innerHTML = KEYPAD_KEYS.map((k) => `
-<button class="m-keypad__key" type="button" data-k="${k}">${k}</button>`).join('');
-    host.appendChild(el);
-
-    el.addEventListener('click', (e) => {
-        const btn = e.target.closest('[data-k]');
-        if (!btn || !box) return;
-        const k = btn.dataset.k;
-        if (k === 'C') box.value = '';
-        else if (k === '←') box.value = box.value.slice(0, -1);
-        else box.value += k;
-        box.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-
-    /** 자판이 열려 있는 동안에는 대상 입력칸의 폰 키보드를 막는다 */
-    function syncSoft() {
-        if (box) soft?.(el.hidden);
-    }
-
-    return {
-        /** 값을 넣을 입력창을 바꾼다 (독의 모드가 바뀌면 입력창도 바뀐다) */
-        setTarget(el2) {
-            box = el2;
-            syncSoft();
-        },
-        isOpen: () => !el.hidden,
-        toggle(on = el.hidden) {
-            el.hidden = !on;
-            syncSoft();
-            onToggle?.(!el.hidden);
-            return !el.hidden;
-        },
-        destroy() {
-            el.remove();
-        },
-    };
-}
-
 /* ---------------------------------- 스캔 바 ---------------------------------- */
 
 /**
