@@ -11,15 +11,19 @@
 문서에는 화면 구성, 데이터 흐름, 권한 조건, 상태 전이 규칙이 정리되어 있어
 코드만 보고는 알 수 없는 업무 규칙이 담겨 있다.
 
-| 메뉴 | 문서 (작업 전 필독) | 코드 | 라우트 |
-|---|---|---|---|
-| 주문정보등록 | [docs/orders.md](docs/orders.md) | `assets/js/pages/orders.js` | `#/orders` |
-| 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` |
-| 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` |  ← 웹/모바일 화면이 다름
-| 당일상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` |
-| 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` |
-| 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` |
-| 사용자관리 | [docs/users.md](docs/users.md) | `assets/js/pages/users.js` | `#/users` |
+| 메뉴 | 문서 (작업 전 필독) | 코드 (웹) | 웹 라우트 | 앱 라우트 (`m.html`) |
+|---|---|---|---|---|
+| 주문정보등록 | [docs/orders.md](docs/orders.md) | `assets/js/pages/orders.js` | `#/orders` | — (앱에 없음) |
+| 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` | `#/status` (상단바 메뉴) |
+| 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` | `#/ship` `#/inspect` `#/stow` `#/adjust` (탭 4개로 분리) |
+| 당일상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
+| 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
+| 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
+| 사용자관리 | [docs/users.md](docs/users.md) | `assets/js/pages/users.js` | `#/users` | — (앱에 없음) |
+
+**모바일 앱 셸(`m.html`)은 화면 코드를 웹과 공유하지 않는 별도 층이다.**
+탭·메뉴 구성, 화면별 상세, 권한, 실기기 테스트는 [docs/mobile.md](docs/mobile.md) 를
+작업 전 필독한다. 코드는 `assets/js/mobile/screens/*.js`.
 
 **바코드 스캔 테스트 방법**은 [docs/testing.md](docs/testing.md) 에 정리되어 있다.
 (테스트용 바코드는 `barcodes.html` 에서 자동 생성된다)
@@ -43,8 +47,9 @@
 |---|---|
 | 빌드 | Vite 8 (번들러 겸 개발 서버) |
 | 언어 | 순수 ES 모듈 JavaScript (프레임워크 없음) |
-| 스타일 | 단일 CSS 파일 + CSS 변수 (`assets/css/app.css`) |
-| PWA | vite-plugin-pwa — 폰 홈화면 설치, 오프라인 캐시 |
+| 스타일 | 단일 CSS 파일 + CSS 변수 (`assets/css/app.css`). 모바일 앱 셸은 별도 파일(`assets/css/mobile.css`) |
+| 모바일 앱 셸 | 같은 사이트의 `m.html` — 화면 코드는 웹과 공유하지 않는다 ([docs/mobile.md](docs/mobile.md)) |
+| PWA | vite-plugin-pwa — 폰 홈화면 설치, 오프라인 캐시. 매니페스트 1개, `start_url: index.html` (로그인 후 기기·소속으로 `app.html`/`m.html` 분기) |
 | 서버 | Supabase (구축 완료 — Postgres · Auth · Realtime · RLS) |
 | 검사 | ESLint 10 (flat config) |
 
@@ -87,6 +92,10 @@ npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 - ⚠️ **키를 `netlify.toml` 에 넣지 않는다.** 사이트 환경변수로만 관리한다
 - GitHub Pages 배포는 걷어냈다. 배포처가 둘이면 접속 설정을 양쪽에 맞춰야 하고,
   한쪽만 반영되어 같은 코드인데 화면이 달라 보이는 일이 생긴다
+- **PWA 매니페스트는 하나만 유지한다** (설치 아이콘이 2개면 현장에서 헷갈린다).
+  `start_url` 은 `index.html` — 설치한 앱을 열면 로그인 화면이 `assets/js/shell.js` 의
+  `shellUrl(user)` 로 `app.html`/`m.html` 을 가른다. 홈화면 길게 누르기 바로가기
+  (`shortcuts`)는 상차작업(`m.html#/load`)·출고작업(`m.html#/ship`) 둘을 등록해 둔다
 
 ---
 
@@ -96,14 +105,18 @@ npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 thefurerap/
 ├─ CLAUDE.md              이 파일
 ├─ docs/                  메뉴별 상세 문서 (작업 전 필독)
-├─ index.html             로그인 화면
+├─ index.html             로그인 화면 (로그인 후 기기·소속으로 웹/앱 셸 분기)
 ├─ barcodes.html          테스트용 바코드 시트 (Code128, 인쇄 가능)
-├─ app.html               앱 셸 (사이드바 + 상단바 + 하단 탭바)
+├─ app.html               웹 셸 (사이드바 + 상단바 + 하단 탭바)
+├─ m.html                 모바일 앱 셸 (상단바 + 하단 탭바 5개) — docs/mobile.md
 ├─ assets/
-│  ├─ css/app.css         전체 스타일
+│  ├─ css/
+│  │  ├─ app.css          웹 셸 전체 스타일
+│  │  └─ mobile.css       모바일 앱 셸 전용 스타일 (`m-` 접두 클래스만 — 웹과 공유하지 않는다)
 │  └─ js/
-│     ├─ app.js           라우터 · 메뉴 렌더링 · 셸 제어
-│     ├─ config.js        권한 매트릭스, 처리 단계, 메뉴 정의 등 모든 상수
+│     ├─ app.js           웹 라우터 · 메뉴 렌더링 · 셸 제어
+│     ├─ shell.js         웹/앱 셸 분기 판정 (`shellUrl` `appRoute` `forceShell`) — 유일한 출처
+│     ├─ config.js        권한 매트릭스, 처리 단계, 메뉴 정의(`MENUS` `APP_TABS` `APP_MENU`) 등 모든 상수
 │     ├─ auth.js          로그인 세션 · 권한 판정 can()
 │     ├─ db.js            데이터 접근 계층 (화면은 이 모듈만 호출)
 │     ├─ store.js         저장소 계층 (localStorage / Supabase 를 가른다)
@@ -113,7 +126,11 @@ thefurerap/
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
-│     └─ pages/           화면 모듈 6개
+│     ├─ pages/           웹 화면 모듈
+│     └─ mobile/          모바일 앱 화면 층 (docs/mobile.md) — pages/ 와 서로 import 하지 않는다
+│        ├─ app.js        앱 셸 · 해시 라우터 · 하단 탭 · 상단바 메뉴(≡)
+│        ├─ ui.js         앱 공통 컴포넌트 (dock·scanBar·sheet·bigCounter 등)
+│        └─ screens/      화면별 모듈 (ship·inspect·stow·adjust·load·status·issues·wait·stock·account)
 ├─ public/icons/          PWA 아이콘 (해시 없이 그대로 복사됨)
 │                        icon.svg(파비콘) · icon-192/512.png(설치)
 │                        icon-maskable-512.png(안드로이드) · apple-touch-icon.png(iOS)
