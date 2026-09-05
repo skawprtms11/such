@@ -545,7 +545,9 @@ if (editable) await db.recordWorker(orderId, mode, user);
 
 ### 로케이션 형식 🔑
 
-**영문 2자리 구역코드 + 2자리 숫자 3묶음** 이다 (`config.js` 의 `LOCATION_FORMAT`).
+**영문 2자리 구역코드 + 2자리 묶음 3개**다 (`config.js` 의 `LOCATION_FORMAT`). 🔑 행 묶음은
+숫자(`IF-01-03-01`)일 수도, **영문**(`IB-EE-01-14`)일 수도 있다 — 실제 창고 라벨이 두 형식을 섞어 쓴다.
+PDA 스캐너가 보내는 `IB-EE-01-14` 를 그대로 인식한다.
 `formatLocation()` 이 입력을 이 형식으로 맞추므로 **아래는 모두 같은 값**으로 인식한다.
 
 | 입력 | 결과 |
