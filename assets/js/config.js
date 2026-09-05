@@ -180,7 +180,7 @@ export const STOW_STATUS = {
  * 적치 로케이션 형식 - 영문 2자리 구역코드 + 2자리 숫자 3개.
  * 예: IF-01-03-01
  */
-export const LOCATION_FORMAT = 'IF-01-03-01';
+export const LOCATION_FORMAT = 'IB-EE-01-14';
 
 /**
  * 평치(平置) 로케이션 - 랙이 아니라 바닥에 둔 파렛트. 구역·행·열·단 좌표가 없다.
@@ -195,40 +195,46 @@ export const FLOOR_LOCATION = '평치';
 export function formatLocation(raw) {
     const s = String(raw ?? '').trim().toUpperCase();
     if (s === FLOOR_LOCATION) return FLOOR_LOCATION;   // 평치는 좌표가 없다
-    const zone = (s.match(/[A-Z]+/)?.[0] ?? '').slice(0, 2);
-    // 구분자(- 공백 / .)로 끊어 적은 값은 묶음마다 두 자리로 맞춘다: if-1-1-1 → IF-01-01-01
-    const parts = s.replace(/^[A-Z]+/, '').split(/[-\s/.]+/).filter((v) => /^\d+$/.test(v));
-    const digits = parts.length >= 2
-        ? parts.map((v) => v.slice(-2).padStart(2, '0')).join('').slice(0, 6)
-        : s.replace(/[^0-9]/g, '').slice(0, 6);
-    return [zone, ...(digits.match(/\d{1,2}/g) ?? [])].filter(Boolean).join('-');
+    // 🔑 로케이션은 2자리 묶음 4개다. 행 묶음은 숫자(IF-01-03-01)일 수도,
+    // 영문(IB-EE-01-14)일 수도 있다 - 실제 창고 라벨이 두 형식을 섞어 쓴다.
+    // 구분자(- 공백 / .)로 끊어 적었으면 묶음마다 두 자리로 맞추고,
+    // 구분자 없이 붙여 적었으면(IBEE0114 · IF010301) 두 글자씩 자른다.
+    const parts = s.split(/[-\s/.]+/).filter(Boolean);
+    let segs;
+    if (parts.length >= 2) {
+        segs = parts.map((v) => (/^\d+$/.test(v) ? v.slice(-2).padStart(2, '0') : v.slice(0, 2)));
+    } else {
+        const flat = s.replace(/[^A-Z0-9]/g, '');
+        segs = flat.match(/[A-Z0-9]{1,2}/g) ?? [];
+    }
+    return segs.slice(0, 4).join('-');
 }
 
-/** 형식이 다 채워졌는지 (구역 영문 2자 + 숫자 2자리 3묶음) */
+/** 형식이 다 채워졌는지 (영문 2자 구역 + 영문/숫자 2자 묶음 3개) */
 export function isValidLocation(raw) {
     const v = formatLocation(raw);
-    return v === FLOOR_LOCATION || /^[A-Z]{2}-\d{2}-\d{2}-\d{2}$/.test(v);
+    return v === FLOOR_LOCATION || /^[A-Z]{2}(-[A-Z0-9]{2}){3}$/.test(v);
 }
 
 /**
  * 로케이션 정렬 비교 - 구역 → 행 → 열 → 단 오름차순.
- * 로케이션이 없는 항목은 뒤로 보낸다.
+ * 묶음이 둘 다 숫자면 수로, 아니면 문자로 비교한다. 로케이션이 없는 항목은 뒤로 보낸다.
  */
 export function compareLocation(a, b) {
     const parse = (v) => {
         const f = formatLocation(v);
         if (!f) return null;
         // 평치는 랙 뒤, 미지정 앞에 둔다
-        if (f === FLOOR_LOCATION) return { zone: '\uffff', nums: [0, 0, 0] };
-        const [zone, ...nums] = f.split('-');
-        return { zone, nums: nums.map(Number) };
+        if (f === FLOOR_LOCATION) return ['\uffff', '', '', ''];
+        return f.split('-');
     };
     const pa = parse(a);
     const pb = parse(b);
     if (!pa || !pb) return (pa ? -1 : 0) + (pb ? 1 : 0);
-    if (pa.zone !== pb.zone) return pa.zone.localeCompare(pb.zone);
-    for (let i = 0; i < 3; i += 1) {
-        const diff = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0);
+    for (let i = 0; i < 4; i += 1) {
+        const x = pa[i] ?? '';
+        const y = pb[i] ?? '';
+        const diff = /^\d+$/.test(x) && /^\d+$/.test(y) ? Number(x) - Number(y) : x.localeCompare(y);
         if (diff) return diff;
     }
     return 0;
