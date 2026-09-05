@@ -54,6 +54,11 @@ export function confirmDialog(msg) {
     return Promise.resolve(window.confirm(msg));
 }
 
+/** 값 입력 대화상자 - 취소하면 null, 확인하면 입력 문자열 (confirmDialog 와 같은 방식) */
+export function promptDialog(msg, value = '') {
+    return Promise.resolve(window.prompt(msg, String(value ?? '')));
+}
+
 /**
  * 배열을 CSV 파일로 내려받는다.
  * @param {string} filename 저장할 파일명

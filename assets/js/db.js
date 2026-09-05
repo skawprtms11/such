@@ -802,6 +802,83 @@ export async function setInspectDone(id, done, checks, user) {
 }
 
 /**
+ * 총 박스수 수정 - 검수완료 뒤에도 고칠 수 있다.
+ * 박스수는 표시·라벨·CSV 에만 쓰이고 다른 단계에 영향이 없다. 상차완료 전까지 허용한다.
+ * 대표주문번호 묶음이면 총량을 싣는 대표(head)의 값을 고친다.
+ */
+export async function setBoxCount(id, count, user) {
+    const db = (await load());
+    const { head } = groupFor(db, id);
+    if (!head.inspect_done_at) throw new Error('검수완료된 주문만 박스수를 고칠 수 있습니다.');
+    if (loadDone(head)) throw new Error('상차완료된 주문은 박스수를 고칠 수 없습니다.');
+    const box = Number(count);
+    if (!Number.isInteger(box) || box < 1) throw new Error('총 박스수는 1 이상의 숫자로 입력하세요.');
+    if (head.box_count === box) return head;
+    addHistory(db, head.id, '박스수', head.box_count, box, user);
+    head.box_count = box;
+    await save(db);
+    return head;
+}
+
+/**
+ * 총 파렛트수 수정 - 검수완료·적치 뒤에도 고칠 수 있다.
+ * 파렛트수는 상차 검수 바코드 수·적치 로케이션 수·라벨 매수를 정하므로 단계에 따라 제한한다.
+ *   상차완료            → 거부 (상차완료 취소 먼저)
+ *   상차검수 스캔 있음  → 거부 (상차검수 초기화 먼저 - 스캔 수와 파렛트수가 어긋나면 안 된다)
+ *   그 외               → **기존 로케이션은 지키고 끝에서만** 늘리거나 줄인다
+ * 줄일 때 사라질 파렛트에 로케이션이 있으면 `needConfirm` 오류를 던지고,
+ * 화면이 확인을 받은 뒤 `{ confirmRemove: true }` 로 다시 부른다.
+ * @param {{confirmRemove?:boolean}} opt
+ */
+export async function setPalletCount(id, count, user, opt = {}) {
+    const db = (await load());
+    const { head } = groupFor(db, id);
+    if (!head.inspect_done_at) throw new Error('검수완료된 주문만 파렛트수를 고칠 수 있습니다.');
+    if (loadDone(head)) throw new Error('상차완료된 주문은 파렛트수를 고칠 수 없습니다.');
+    const mine = db.pallets.filter((x) => x.order_id === head.id)
+        .sort((a, b) => a.barcode.localeCompare(b.barcode));
+    if (mine.some((x) => x.scanned_at)) {
+        throw new Error('상차검수가 진행된 주문입니다. 상차검수를 초기화한 뒤 파렛트수를 고치세요.');
+    }
+    const pallet = Number(count);
+    const minPallet = head.seq > 1 ? 0 : 1;   // 추가건은 혼적(0파렛트)을 허용한다
+    if (!Number.isInteger(pallet) || pallet < minPallet) {
+        throw new Error(`총 파렛트수는 ${minPallet} 이상의 숫자로 입력하세요.`);
+    }
+    const before = head.pallet_count;
+    if (before === pallet && mine.length === pallet) return head;
+
+    if (pallet < mine.length) {
+        // 끝에서부터 뺀다. 로케이션이 들어간 파렛트가 빠지면 사용자 확인을 거친다
+        const removing = mine.slice(pallet);
+        const located = removing.filter((x) => x.location);
+        if (located.length && !opt.confirmRemove) {
+            const err = new Error(`줄어드는 파렛트 ${removing.length}개 중 ${located.length}개에 `
+                + '로케이션이 들어 있습니다.');
+            err.needConfirm = true;
+            err.removing = located.map((x) => `${x.barcode} (${formatLocation(x.location)})`);
+            throw err;
+        }
+        const drop = new Set(removing.map((x) => x.id));
+        db.pallets = db.pallets.filter((x) => !drop.has(x.id));
+    } else if (pallet > mine.length) {
+        // 끝에 이어 붙인다 (기존 바코드·로케이션은 그대로)
+        const extra = makePallets({ ...head, pallet_count: pallet }).slice(mine.length);
+        db.pallets.push(...extra);
+    }
+
+    addHistory(db, head.id, '파렛트수', before, pallet, user);
+    head.pallet_count = pallet;
+    head.inspected = 0;
+    head.load_status = LOAD_STATUS.WAIT;
+    // 0파렛트가 되면 적치할 것이 없으니 적치를 끝낸 것으로, 아니면 전량 입력 여부로 다시 판단한다
+    if (pallet === 0) head.stow_done_at = head.stow_done_at ?? new Date().toISOString();
+    else syncStowDone(db, head);
+    await save(db);
+    return head;
+}
+
+/**
  * 패킹리스트 내용 작성/수정 - **대표주문번호 묶음 전체에 같은 내용을 저장한다.**
  * 패킹리스트가 '있음' 인 주문만 대상이다.
  * 주문정보등록 목록의 패킹리스트 컬럼과 모바일 검수작업 탭이 **같은 값**을 다룬다.
