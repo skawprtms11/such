@@ -22,7 +22,7 @@ import {
     esc, num, fmtDateTime, toast, confirmDialog,
 } from '../../util.js';
 import {
-    emptyState, tag, plusBadge, card, orderHead, bindOrderHead,
+    emptyState, tag, plusBadge, card, orderHead, bindOrderHead, closeAllSheets,
     segment, dock, keypad, scanBar, menuSheet,
 } from '../ui.js';
 
@@ -149,6 +149,7 @@ async function renderList(root, user) {
     };
     const unwatch = db.subscribe(poll, 8000);
     return () => {
+        closeAllSheets();
         scan.destroy();
         d.destroy();
         unwatch();
@@ -188,6 +189,7 @@ async function renderDetail(root, user, orderId) {
         + ` · 출고 ${esc(o.ship_req_date ?? '미정')}`;
 
     // 검수작업이 끝나야 파렛트가 생긴다. 헛걸음하지 않도록 검수작업으로 보내 준다
+    // (이 경로에는 `···` 메뉴를 두지 않으므로 bindOrderHead 도 걸지 않는다)
     if (!g.head.inspect_done_at) {
         root.innerHTML = orderHead(g.head, { group: g, meta: headMeta(g.head) })
             + emptyState('검수작업이 완료되지 않은 주문입니다. 검수작업을 먼저 끝내세요.',
@@ -201,6 +203,7 @@ async function renderDetail(root, user, orderId) {
     let moved = [];             // 이번 화면에서 이동 처리한 파렛트 id (먼저 넣은 것이 앞)
     let lastValue = '';         // 스캐너 중복 발사를 막기 위한 직전 입력값
     let lastAt = 0;
+    let submitting = false;     // 저장이 도는 동안 다음 입력을 받지 않는다 (스캐너 연속 발사)
     let dockMode = '';
     let openSheet = null;
 
@@ -466,7 +469,10 @@ ${t.location
             syncFixed();
             return;
         }
-        const allFilled = pallets.length > 0 && pallets.every((p) => p.location);
+        // 전량 입력되어도 **건별이동으로 고른 대상이 있으면** 값을 고칠 수 있게 입력 독을 남긴다
+        const filled = pallets.length > 0 && pallets.every((p) => p.location);
+        const fixing = filled && stowPrefs.mode === 'one' && Boolean(selectedId);
+        const allFilled = filled && !fixing;
         const next = allFilled ? 'action' : 'input';
         if (next !== dockMode) {
             dockMode = next;
@@ -484,7 +490,11 @@ ${t.location
                 if (stowPrefs.keypad) pad.toggle(true);
             }
         }
-        toolsEl.hidden = allFilled;
+        // 값을 고치는 중이라는 것과 되돌아가는 길을 독에 적어 둔다
+        if (fixing) {
+            d.set({ ...dockSpec(), note: '값을 고친 뒤 같은 파렛트를 다시 누르면 적치완료로 돌아갑니다.' });
+        }
+        // 🔑 도구 줄(평치·카메라·자판·지우기)은 전량 입력된 뒤에도 남긴다 - 정정 경로가 막힌다
         previewEl.hidden = allFilled || !previewEl.textContent;
         syncFixed();
     }
@@ -523,12 +533,15 @@ ${t.location
             stowPrefs.mode = 'one';
             toast('건별이동으로 바꿨습니다.', 'info');
         }
-        selectedId = palletId;
+        // 전량 입력된 상태에서 같은 파렛트를 다시 누르면 선택을 풀고 적치완료로 돌아간다
+        const filled = pallets.length > 0 && pallets.every((p) => p.location);
+        selectedId = filled && selectedId === palletId ? null : palletId;
         drawModes();
         drawList();
         drawBanner();
         drawTools();
         resetInput();
+        syncDock();
     }
 
     function setMode(key) {
@@ -576,7 +589,7 @@ ${t.location
      * 이미 다른 파렛트에 들어간 로케이션이면 알리고 다시 받는다.
      */
     async function submit(raw) {
-        if (!editable) return;
+        if (!editable || submitting) return;
         const t = target();
         if (!t) {
             toast('로케이션을 넣을 파렛트가 없습니다.', 'error');
@@ -607,7 +620,12 @@ ${t.location
             return;
         }
 
-        await save(t, v);
+        submitting = true;
+        try {
+            await save(t, v);
+        } finally {
+            submitting = false;
+        }
     }
 
     /** 지우기 - 잘못 넣은 로케이션을 비운다 */
@@ -747,6 +765,7 @@ ${t.location
     const unwatch = db.subscribe(poll, 8000);
 
     return () => {
+        closeAllSheets();
         stopCam();
         scanner?.stop();
         window.visualViewport?.removeEventListener('resize', syncViewport);

@@ -11,7 +11,7 @@
  * 출고작업은 별도 탭(#/ship)이다. 출고가 끝나지 않은 주문을 열면 안내와 함께
  * 그 탭으로 가는 버튼을 낸다.
  *
- * 작업지시 박스·스캔 진입·단계 옵션은 출고작업 탭과 같은 조각을 쓴다 (screens/ship.js).
+ * 작업지시 박스·스캔 진입·단계 옵션은 출고작업 탭과 같은 조각을 쓴다 (mobile/ui.js).
  */
 import { YN } from '../../config.js';
 import { can } from '../../auth.js';
@@ -23,11 +23,9 @@ import {
 } from '../../util.js';
 import {
     emptyState, tag, seqTag, plusBadge, card, orderHead, bindOrderHead,
-    stepBar, sheet,
+    stepBar, sheet, workNoteHtml, stepOpt, mountScan, actionDock, pollGuard,
+    menuSheet, closeAllSheets,
 } from '../ui.js';
-import {
-    workNoteHtml, stepOpt, mountScan, actionDock, pollGuard,
-} from './ship.js';
 
 /** 목록 검색어 - 상세를 다녀와도 유지한다 */
 const filter = { keyword: '' };
@@ -101,6 +99,7 @@ async function renderList(root, user) {
     await reload();
     const unwatch = db.subscribe(pollGuard(root, reload), 5000);
     return () => {
+        closeAllSheets();
         scan.destroy();
         unwatch();
     };
@@ -117,16 +116,11 @@ function inspectCard(g) {
 
     return card(o.rep_no ? `<b>${no}</b>` : no, body, {
         badges: `${o.rep_no ? tag('대표', 'amber') : ''}${plusBadge(g.rows.length)}`,
-        status: `${g.rows.some(hasExtraWork) ? tag('요청작업', 'blue') : ''}`
+        status: `${g.rows.some(db.hasExtraWork) ? tag('요청작업', 'blue') : ''}`
             + `${g.rows.some((r) => r.packing_yn === YN.YES) ? tag('패킹', 'amber') : ''}`,
         attrs: { id: o.id },
         tap: true,
     });
-}
-
-/** 요청작업(추가작업) 있음 - 옛 데이터는 extra_works 배열로 판단한다 (웹과 같은 조건) */
-function hasExtraWork(o) {
-    return o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
 }
 
 /* ================================ 상세 (§5-2) ================================ */
@@ -183,18 +177,20 @@ async function renderDetail(root, user, orderId) {
         const o = g.head;
         const rows = g.rows;
         const done = Boolean(o.inspect_done_at);
-        const hasExtra = rows.some(hasExtraWork);
+        const hasExtra = rows.some(db.hasExtraWork);
         const hasPacking = rows.some((r) => r.packing_yn === YN.YES);
         // 0파렛트(혼적)는 추가건일 때만 허용한다. 총량은 대표에 실리므로 대표 기준으로 본다
-        const allowZero = o.seq > 1;
+        const allowZero = db.minPalletOf(o) === 0;
         const written = Boolean((o.packing_note ?? '').trim());
         // 패킹리스트·실측값은 상차완료 전까지 현장에서도 고칠 수 있다 (웹과 같은 조건)
         const canWritePacking = editable && !loadDone(o);
         const canFix = editable && done && !loadDone(o);
         const notShipped = rows.filter((r) => !r.ship_done_at);
 
+        // 위험 조작(완료 취소)은 독에 두지 않고 `···` 메뉴에만 둔다
         headEl.innerHTML = orderHead(o, {
             group: g,
+            more: editable && done,
             meta: `${seqTag(o.seq, '차수')} ${esc(o.customer)} · ${esc(o.vehicle_type)}`
                 + ` · 출고 ${esc(o.ship_req_date ?? '미정')}`,
             note: rows.length > 1
@@ -202,7 +198,11 @@ async function renderDetail(root, user, orderId) {
                     + ` (${esc(rows.map((r) => r.order_no).join(', '))}).`
                 : '',
         }) + stepBar(visibleSteps(o, opt));
-        bindOrderHead(headEl);
+        bindOrderHead(headEl, {
+            onMore: () => menuSheet([{
+                label: '검수작업 완료 취소', icon: 'trash', tone: 'danger', onPick: doCancel,
+            }]),
+        });
 
         // 출고가 끝나지 않았으면 검수할 것이 없다. 헛걸음하지 않게 그 탭으로 보낸다
         if (notShipped.length && !done) {
@@ -245,7 +245,7 @@ ${done ? '' : `
 <div class="m-numgrid">
   <label class="m-numfield">
     <span class="m-numfield__label">총 파렛트수 *</span>
-    <input type="number" id="in-pallet" min="${allowZero ? 0 : 1}" step="1"
+    <input type="number" id="in-pallet" min="${db.minPalletOf(o)}" step="1"
            inputmode="numeric" placeholder="0" value="${esc(form.pallet)}">
   </label>
   <label class="m-numfield">
@@ -299,12 +299,12 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
     /** 필수 항목이 다 찼는지 - 최종 검증은 db.setInspectDone 이 다시 한다 */
     function ready() {
         const rows = g.rows;
-        const minPallet = g.head.seq > 1 ? 0 : 1;
+        const minPallet = db.minPalletOf(g.head);
         const pallet = Number(form.pallet);
         const box = Number(form.box);
         if (form.pallet === '' || !Number.isInteger(pallet) || pallet < minPallet) return false;
         if (form.box === '' || !Number.isInteger(box) || box < 1) return false;
-        if (rows.some(hasExtraWork) && !form.reqWork) return false;
+        if (rows.some(db.hasExtraWork) && !form.reqWork) return false;
         return !rows.some((r) => r.packing_yn === YN.YES
             && !(r.packing_note ?? '').trim());
     }
@@ -313,16 +313,13 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
     function syncDock() {
         const o = g.head;
         const done = Boolean(o.inspect_done_at);
-        if (!editable) {
+        // 완료된 뒤에는 독을 비운다 - 완료 취소는 `···` 메뉴로만 한다
+        if (!editable || done) {
             dockCtl.hide();
             return;
         }
         const ok = ready();
-        const spec = done ? {
-            mode: 'action',
-            primary: { label: '완료 취소', tone: 'danger' },
-            onPrimary: doCancel,
-        } : {
+        const spec = {
             mode: 'action',
             note: ok ? '' : '요청작업 확인 · 패킹리스트 · 총 파렛트수 · 총 박스수를 채우세요.',
             primary: { label: '검수완료', tone: 'go', icon: 'check', disabled: !ok },
@@ -334,12 +331,12 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
     async function doDone() {
         const rows = g.rows;
         const checks = {
-            reqWork: rows.some(hasExtraWork) ? form.reqWork : true,
+            reqWork: rows.some(db.hasExtraWork) ? form.reqWork : true,
             palletCount: Number(form.pallet),
             boxCount: Number(form.box),
         };
         // 추가건을 0파렛트로 넘기면 혼적 여부를 한 번 더 묻는다
-        if (g.head.seq > 1 && checks.palletCount === 0) {
+        if (db.minPalletOf(g.head) === 0 && checks.palletCount === 0) {
             const ok = await confirmDialog('0파렛트로 처리됩니다.\n\n'
                 + '기존 차수 파렛트에 함께 적재(혼적)하여 파렛트수가 늘지 않는 것이 맞습니까?');
             if (!ok) return;
@@ -403,7 +400,7 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
             title: '총 파렛트수 수정',
             note: '기존 로케이션은 그대로 두고 끝에서만 늘리거나 줄입니다.',
             value: o.pallet_count ?? '',
-            min: o.seq > 1 ? 0 : 1,
+            min: db.minPalletOf(o),
             onSave: (v) => savePallet(o, v),
         });
     }
@@ -438,6 +435,7 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
     draw();
     const unwatch = db.subscribe(pollGuard(root, refresh), 5000);
     return () => {
+        closeAllSheets();
         dockCtl.destroy();
         openSheet?.close();
         unwatch();

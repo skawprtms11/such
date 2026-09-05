@@ -44,7 +44,13 @@ const SCREENS = {
     ship: () => import('./screens/ship.js'),
     inspect: () => import('./screens/inspect.js'),
     stow: () => import('./screens/stow.js'),
+    adjust: () => import('./screens/adjust.js'),
     load: () => import('./screens/load.js'),
+    status: () => import('./screens/status.js'),
+    issues: () => import('./screens/issues.js'),
+    wait: () => import('./screens/wait.js'),
+    stock: () => import('./screens/stock.js'),
+    account: () => import('./screens/account.js'),
 };
 
 const view = document.getElementById('view');

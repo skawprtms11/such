@@ -712,8 +712,13 @@ export async function setShipWorkDone(id, done, user) {
 }
 
 /** 요청작업(추가작업) 대상인지 - 옛 데이터는 extra_works 배열로 판단한다 */
-function hasExtraWork(o) {
+export function hasExtraWork(o) {
     return o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
+}
+
+/** 검수에서 받을 수 있는 최소 파렛트수 - 추가건은 혼적(0파렛트)을 허용한다 */
+export function minPalletOf(o) {
+    return o.seq > 1 ? 0 : 1;
 }
 
 /**
@@ -767,7 +772,7 @@ export async function setInspectDone(id, done, checks, user) {
         // 추가건(2차수 이상)은 기존 차수 파렛트에 혼적할 수 있어 0파렛트를 허용한다.
         // 입력값은 대표(head)에 실리므로 대표 기준으로 본다
         // (묶음 멤버는 아래에서 자동으로 0파렛트가 된다)
-        const minPallet = head.seq > 1 ? 0 : 1;
+        const minPallet = minPalletOf(head);
         if (!Number.isInteger(pallet) || pallet < minPallet) {
             throw new Error(minPallet === 0
                 ? '총 파렛트수를 0 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.'
@@ -841,7 +846,7 @@ export async function setPalletCount(id, count, user, opt = {}) {
         throw new Error('상차검수가 진행된 주문입니다. 상차검수를 초기화한 뒤 파렛트수를 고치세요.');
     }
     const pallet = Number(count);
-    const minPallet = head.seq > 1 ? 0 : 1;   // 추가건은 혼적(0파렛트)을 허용한다
+    const minPallet = minPalletOf(head);      // 추가건은 혼적(0파렛트)을 허용한다
     if (!Number.isInteger(pallet) || pallet < minPallet) {
         throw new Error(`총 파렛트수는 ${minPallet} 이상의 숫자로 입력하세요.`);
     }
@@ -1802,7 +1807,7 @@ export function subscribe(callback, intervalMs = 5000) {
  */
 export async function listStowTargets(f = {}) {
     const db = (await load());
-    const rows = db.orders.filter((o) => !o.canceled_at && o.inspect_done_at && !o.loaded_at)
+    const rows = db.orders.filter((o) => !o.canceled_at && o.inspect_done_at && !loadDone(o))
         .filter((o) => !f.createdBy || o.created_by === f.createdBy);
 
     const byKey = new Map();
@@ -1855,4 +1860,23 @@ export async function stowProgress(orderId) {
         status: stowStatus(done, total),
         stowed: rows.every((r) => Boolean(r.stow_done_at)),
     };
+}
+
+/**
+ * 상차대기 묶음 목록 (모바일 앱 `#/wait` · `#/stock`).
+ * 적치가 끝났고 아직 상차되지 않은 주문을 **상차 묶음 단위**로 돌려준다.
+ *
+ * 🔑 조회 범위 제한(viewAll 없음)을 행이 아니라 **묶음에** 건다.
+ * 행을 먼저 걸러내면 묶음 대표가 남의 주문일 때 대표가 바뀌어 파렛트 수가 어긋난다.
+ *
+ * @param {{createdBy?:string}} f createdBy - 본인이 낀 묶음만 본다
+ * @returns {Promise<Array<object>>} getLoadGroup 결과 배열
+ */
+export async function listStowWaiting(f = {}) {
+    const db = (await load());
+    // 상차완료된 건만 뺀다. 상차 정보가 어긋난 건은 남겨 눈에 띄게 한다 (웹 상차대기 탭과 같다)
+    const live = db.orders.filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at);
+    const groups = loadGroups(live)
+        .filter((g) => !f.createdBy || g.rows.some((r) => r.created_by === f.createdBy));
+    return groups.map((g) => groupOf(db, g.head.id)).filter(Boolean);
 }

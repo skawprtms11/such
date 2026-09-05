@@ -14,6 +14,7 @@
 import { icon } from '../icons.js';
 import { esc, num, rate, toast } from '../util.js';
 import { createScanner, scanSupported } from '../scanner.js';
+import * as db from '../db.js';
 
 /** 버튼 색조 → 클래스 (주 동작은 초록, 위험은 빨강) */
 const TONE = {
@@ -261,7 +262,6 @@ export function dock(host, spec = {}) {
     });
 
     let cur = {};
-    let fields = [];        // mode:'form' 에서 만든 입력창들
 
     function button(b, onClick, block = false) {
         const btn = document.createElement('button');
@@ -278,41 +278,17 @@ export function dock(host, spec = {}) {
     function sameLook(a, b) {
         const btn = (x) => (x ? `${x.label}|${x.tone}|${x.icon}|${x.disabled ? 1 : 0}` : '');
         const one = (x) => (x ? `${x.placeholder ?? ''}|${x.inputmode ?? ''}` : '');
-        const many = (x) => (x ?? []).map((f) => `${f.key}|${f.label}|${f.value ?? ''}`).join(',');
         return (a.mode ?? 'input') === (b.mode ?? 'input')
             && (a.note ?? '') === (b.note ?? '')
             && one(a.input) === one(b.input)
-            && many(a.inputs) === many(b.inputs)
             && btn(a.primary) === btn(b.primary)
             && btn(a.secondary) === btn(b.secondary);
     }
 
-    /** mode:'form' 의 입력칸 한 줄 */
-    function field(f) {
-        const lab = document.createElement('label');
-        lab.className = 'm-dock__field';
-        const cap = document.createElement('span');
-        cap.className = 'm-dock__cap';
-        cap.textContent = f.label ?? '';
-        const box = document.createElement('input');
-        box.className = 'm-dock__input';
-        box.type = 'text';
-        box.autocomplete = 'off';
-        box.inputMode = f.inputmode ?? 'text';
-        box.placeholder = f.placeholder ?? '';
-        box.value = f.value ?? '';
-        box.dataset.key = f.key;
-        lab.append(cap, box);
-        fields.push(box);
-        return lab;
-    }
-
     /**
      * 독의 내용을 바꾼다.
-     * @param {{mode?:'input'|'action'|'pair'|'form', note?:string,
+     * @param {{mode?:'input'|'action'|'pair', note?:string,
      *          input?:{placeholder?:string, inputmode?:string},
-     *          inputs?:Array<{key:string,label:string,placeholder?:string,
-     *                         inputmode?:string,value?:string}>,
      *          primary?:object, secondary?:object,
      *          onSubmit?:Function, onPrimary?:Function, onSecondary?:Function}} next
      */
@@ -331,7 +307,6 @@ export function dock(host, spec = {}) {
         [...row.children].forEach((c) => {
             if (c !== input) c.remove();
         });
-        fields = [];
 
         if (mode === 'input') {
             input.placeholder = next.input?.placeholder ?? '';
@@ -342,10 +317,7 @@ export function dock(host, spec = {}) {
         }
 
         input.remove();
-        if (mode === 'form') {
-            (next.inputs ?? []).forEach((f) => row.appendChild(field(f)));
-            if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
-        } else if (mode === 'action') {
+        if (mode === 'action') {
             if (next.primary) row.appendChild(button(next.primary, () => next.onPrimary?.(), true));
         } else {
             if (next.secondary) row.appendChild(button(next.secondary, () => next.onSecondary?.()));
@@ -359,8 +331,6 @@ export function dock(host, spec = {}) {
         input,
         set,
         value: () => input.value.trim(),
-        /** mode:'form' 의 입력값 - `{키: 값}` (3단계 검수 입력에서 쓴다) */
-        values: () => Object.fromEntries(fields.map((f) => [f.dataset.key, f.value.trim()])),
         clear() {
             input.value = '';
         },
@@ -652,5 +622,133 @@ export function scanBar(host, {
             line.destroy();
             box.remove();
         },
+    };
+}
+
+/* ------------------------------- 화면 공통 조각 ------------------------------- */
+
+/**
+ * 접수 시 작성된 작업지시 - 출고작업·검수작업·조정요청 화면이 같은 모양으로 보여준다.
+ * @param {object} o 주문 (묶음이면 대표)
+ */
+export function workNoteHtml(o) {
+    if (!o.work_note) return '';
+    return `
+<div class="m-worknote">
+  <b>${icon('issues', 'm-icon')}작업지시</b>
+  <p>${esc(o.work_note)}</p>
+</div>`;
+}
+
+/**
+ * 단계 표시에 필요한 옵션 - 판정은 화면에서 하지 않고 db 가 주는 값을 그대로 넘긴다.
+ * (요청작업 · 조정작업은 주문 필드만으로는 알 수 없는 조건부 단계다)
+ * @param {object} o 주문
+ */
+export async function stepOpt(o) {
+    const [tasks, adjusts] = await Promise.all([db.extraTaskMap(), db.adjustMap()]);
+    return { task: Boolean(tasks[o.order_no]), adjust: adjusts[o.id] };
+}
+
+/**
+ * 주문번호(또는 대표주문번호)를 스캔·입력해 1건을 연다.
+ * 🔑 한 대표주문번호 묶음이면 **대표**를 연다 (처리가 묶음 전체에 적용되기 때문이다).
+ * 대표주문번호가 없는데 여러 건이 걸리면(추가주문 차수) 선택 시트를 띄운다.
+ * @param {string} orderNo 스캔·입력된 번호
+ * @param {(orderId:string) => void} onPick 고른 뒤 할 일
+ */
+export async function openByNo(orderNo, onPick) {
+    const rows = await db.findOrdersByNo(orderNo);
+    if (!rows.length) {
+        toast(`주문번호 ${orderNo} 를 찾을 수 없습니다.`, 'error');
+        return;
+    }
+    if (rows.length === 1) {
+        onPick(rows[0].id);
+        return;
+    }
+    const reps = new Set(rows.map((o) => o.rep_no ?? ''));
+    if (reps.size === 1 && rows[0].rep_no) {
+        const g = await db.getBatchGroup(rows[0].id);
+        onPick((g?.head ?? rows[0]).id);
+        return;
+    }
+
+    const html = `<div class="m-menu">${rows.map((o) => `
+<button class="m-menu__item" type="button" data-pick="${esc(o.id)}">
+  <span>${esc(o.order_no)} · ${esc(o.seq)}차수 · ${esc(o.customer)}</span>
+</button>`).join('')}</div>`;
+    const s = sheet('처리할 건을 고르세요', html);
+    s.body.querySelectorAll('[data-pick]').forEach((el) => {
+        el.addEventListener('click', () => {
+            s.close();
+            onPick(el.dataset.pick);
+        });
+    });
+}
+
+/**
+ * 스캔 바 장착 - 출고작업·검수작업 목록이 같은 형태로 쓴다.
+ * 🔑 scanBar 시그니처가 바뀌면 **이 함수 한 곳만** 고치면 된다.
+ * @param {Element} root `#scanhost` `#dockhost` 를 가진 목록 화면
+ * @param {(orderId:string) => void} onPick 주문을 고른 뒤 할 일
+ */
+export function mountScan(root, onPick) {
+    // 독은 화면이 만들어 스캔 바에 넘긴다 (스캔 바는 독을 만들지도 없애지도 않는다)
+    const d = dock(root.querySelector('#dockhost'));
+    const scan = scanBar(root.querySelector('#scanhost'), {
+        dock: d,
+        placeholder: '주문번호 · 대표주문번호',
+        autoFocus: true,
+        onSubmit: (code) => openByNo(code, onPick),
+    });
+    return {
+        ...scan,
+        destroy() {
+            scan.destroy();
+            d.destroy();
+        },
+    };
+}
+
+/**
+ * 하단 독 자리 - 낼 동작이 있을 때만 만들고, 없으면 치운다.
+ * 상세 화면은 독을 직접 만들지 않고 이것만 쓴다.
+ * 🔑 dock 시그니처가 바뀌면 **이 함수 한 곳만** 고치면 된다.
+ * @param {Element} host 독을 놓을 자리
+ */
+export function actionDock(host) {
+    let ctl = null;
+    return {
+        set(spec) {
+            if (ctl) ctl.set(spec);
+            else ctl = dock(host, spec);
+        },
+        /** 낼 동작이 없다 - 독을 통째로 치운다 (빈 독이 자리를 먹지 않게) */
+        hide() {
+            ctl?.destroy();
+            ctl = null;
+        },
+        destroy() {
+            ctl?.destroy();
+            ctl = null;
+        },
+    };
+}
+
+/**
+ * 실시간 갱신 콜백 감싸기 - **입력 중에는 다시 그리지 않는다.**
+ * 스캔 바에 커서가 늘 있으므로 포커스만으로 막으면 갱신이 멈춘다.
+ * 값을 치고 있을 때만 건너뛴다.
+ * @param {Element} root 화면 뿌리
+ * @param {Function} fn 다시 그릴 함수
+ */
+export function pollGuard(root, fn) {
+    return () => {
+        const el = document.activeElement;
+        const typing = el && root.contains(el)
+            && el.matches('input, textarea') && el.value !== '';
+        if (typing) return;
+        fn();
     };
 }

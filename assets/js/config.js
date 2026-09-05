@@ -409,6 +409,6 @@ export const APP_MENU = [
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
-    { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet' },
+    { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },
 ];

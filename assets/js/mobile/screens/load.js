@@ -25,7 +25,7 @@ import {
 } from '../../util.js';
 import {
     emptyState, tag, seqTag, plusBadge, card, bigCounter, orderHead, bindOrderHead,
-    segment, dock, scanBar, menuSheet,
+    segment, dock, scanBar, menuSheet, closeAllSheets,
 } from '../ui.js';
 
 /** 상차 상태 → 배지 색 */
@@ -438,6 +438,7 @@ ${!editable ? '<p class="m-note">처리 권한이 없어 조회만 가능합니�
     };
     const unwatch = db.subscribe(poll, 8000);
     return () => {
+        closeAllSheets();
         scan?.destroy();      // 카메라 정지 + 스캔 조각 제거
         d?.destroy();
         segCtl.destroy();
