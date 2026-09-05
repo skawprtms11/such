@@ -247,8 +247,13 @@ async function renderDetail(root, user, orderId) {
     /* ------------------------------ 부품 만들기 ------------------------------ */
 
     const d = editable ? dock(root.querySelector('#dockhost'), dockSpec()) : null;
+    // 앱 자판이 열려 있는 동안에는 폰 기본 자판을 막는다 (자판이 둘로 보이는 것을 막는다)
     const pad = editable
-        ? keypad(root.querySelector('#padhost'), { target: d.input, onToggle: syncFixed })
+        ? keypad(root.querySelector('#padhost'), {
+            target: d.input,
+            soft: (allow) => d.softKeyboard(allow),
+            onToggle: syncFixed,
+        })
         : null;
     const modeSeg = editable
         ? segment(root.querySelector('#seg-mode'), STOW_MODES, stowPrefs.mode, setMode)
@@ -720,6 +725,11 @@ ${t.location
 
     if (editable) {
         d.input.addEventListener('input', drawPreview);
+
+        // 도구 줄을 눌러도 입력칸의 포커스를 뺏지 않는다 (스캐너 입력이 끊기지 않게)
+        toolsEl.addEventListener('pointerdown', (e) => {
+            if (e.target.closest('[data-tool="pad"]')) e.preventDefault();
+        });
 
         toolsEl.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-tool]');

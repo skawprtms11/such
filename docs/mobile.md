@@ -242,6 +242,17 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 | `actionDock` | 2버튼형 독의 축약 헬퍼 |
 | `pollGuard` | 입력 포커스 중에는 폴링 재렌더를 억제 |
 
+### 소프트키보드 규칙 🔑
+
+- **스캔 바 입력칸은 기본 `inputmode="none"` 이다.** 탭에 들어오면 포커스는 잡되(블루투스
+  스캐너 입력 유지) 폰 키보드는 뜨지 않는다. 손으로 칠 때만 독의 `자판` 버튼으로
+  `inputmode="text"` + 포커스로 열고, 제출하거나 화면을 떠나면 다시 `none` 으로 돌아간다
+  (입력칸을 눌러도 키보드가 안 뜨는 것은 의도된 동작이라 placeholder 에 `· 자판 버튼` 을 붙인다).
+- **앱 자판(`keypad`)이 열려 있는 동안 대상 입력칸도 `inputmode="none"` 이다.** 앱 자판과 폰
+  자판이 겹쳐 두 개로 보이지 않게 하기 위해서다. 자판을 닫으면 원래 값(구역코드 자동이면
+  `numeric`, 아니면 `text`)으로 복원한다. `keypad({ soft })` → `dock.softKeyboard()` 한 곳이
+  `inputmode` 를 소유하며, `자판` 버튼은 `pointerdown` 을 막아 입력칸 포커스를 뺏지 않는다.
+
 ### 규약 (변경 없음)
 
 - `render(root, { user, params })` → **정리 함수 반환** (카메라 정지·`db.subscribe` 해제·
