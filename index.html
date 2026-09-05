@@ -32,8 +32,14 @@ import { listUsers } from './assets/js/db.js';
 import { signIn, currentUser, roleLabel } from './assets/js/auth.js';
 import { isSupabase } from './assets/js/store.js';
 import { esc, toast } from './assets/js/util.js';
+import { shellUrl, applyShellQuery } from './assets/js/shell.js';
 
-if (currentUser()) location.replace('app.html');
+// ?shell=web|app 탈출구를 먼저 반영한다 (아래 분기가 이 값을 본다)
+applyShellQuery();
+
+// 이미 로그인되어 있으면 이 기기·소속이 쓸 셸로 바로 보낸다
+const logged = currentUser();
+if (logged) location.replace(shellUrl(logged));
 
 const fields = document.getElementById('login-fields');
 const note = document.getElementById('login-note');
@@ -70,14 +76,14 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const keepLogin = document.getElementById('keep-login').checked;
     try {
-        await signIn(isSupabase
+        const user = await signIn(isSupabase
             ? {
                 email: document.getElementById('login-email').value,
                 password: document.getElementById('login-pw').value,
                 keepLogin,
             }
             : { userId: document.getElementById('user-select').value, keepLogin });
-        location.href = 'app.html';
+        location.href = shellUrl(user);
     } catch (err) {
         toast(err.message, 'error');
     }

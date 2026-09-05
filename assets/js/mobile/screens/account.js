@@ -10,9 +10,7 @@
 import { signOut, roleLabel } from '../../auth.js';
 import { icon } from '../../icons.js';
 import { esc, confirmDialog } from '../../util.js';
-
-/** 셸 고정 키 - 로그인 화면(index.html)의 기기 분기가 같은 키를 본다 */
-const FORCE_SHELL = 'tpl_force_shell';
+import { forceShell, WEB_SHELL } from '../../shell.js';
 
 export async function render(root, { user }) {
     root.innerHTML = `
@@ -39,8 +37,8 @@ export async function render(root, { user }) {
 
     root.querySelector('#btn-web').addEventListener('click', async () => {
         if (!await confirmDialog('웹 화면으로 이동하시겠습니까?')) return;
-        localStorage.setItem(FORCE_SHELL, 'web');
-        location.href = 'app.html';
+        forceShell('web');
+        location.href = WEB_SHELL;
     });
 
     root.querySelector('#btn-out').addEventListener('click', async () => {

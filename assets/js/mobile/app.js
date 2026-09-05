@@ -9,13 +9,27 @@ import { APP_TABS, APP_MENU } from '../config.js';
 import { requireLogin, signOut, roleLabel, can } from '../auth.js';
 import { icon } from '../icons.js';
 import { esc } from '../util.js';
+import { shellUrl, applyShellQuery, WEB_SHELL } from '../shell.js';
 import { emptyState } from './ui.js';
 
 /** 새 버전을 받으려고 새로고침했는지 (무한 새로고침 방지) - 웹 셸과 같은 키를 쓴다 */
 const RELOAD_FLAG = 'tpl_chunk_reload';
 
+// ?shell=app 탈출구는 로그인 확인보다 먼저 반영한다
+applyShellQuery();
+
+// 미로그인이면 requireLogin() 이 로그인 화면으로 되돌린다.
+// 로그인 화면은 이미 로그인된 사용자를 다시 shellUrl() 로 보내므로,
+// 앱 첫 화면에서 하드웨어 뒤로가기를 눌러도 웹 셸로 새지 않는다.
 const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
+
+// 백스톱 - 이 사용자가 웹 셸로 고정되어 있으면(태블릿 탈출구) app.html 로 넘긴다.
+// 웹 셸의 조건과 상호 배타여서(shellUrl() 이 둘 중 하나만 반환) 되튕김이 없다.
+if (shellUrl(user) === WEB_SHELL) {
+    location.replace(WEB_SHELL);
+    throw new Error('웹 화면으로 이동합니다.');
+}
 
 /**
  * 진입(조회) 게이트 - 탭·서랍·라우팅이 같은 기준을 쓴다.

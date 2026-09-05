@@ -29,6 +29,19 @@ PC 로 접속해도 좌측 메뉴에 앱 메뉴 4개만 나오고, 웹 전용 �
 
 ---
 
+## 0-1. 웹/앱 셸 분기 (초안 · 7단계에서 정리)
+
+셸이 둘이다 — `app.html`(웹) · `m.html`(모바일 앱). 판정은 `assets/js/shell.js` 한 곳뿐이다.
+
+- 로그인 화면(`index.html`)이 로그인 직후·재방문 모두 `shellUrl(user)` 로 보낸다.
+  기준은 `localStorage.tpl_force_shell` → 화면 폭 860px → 협력사 소속(`appOnlyCompany`) 순서다
+- 두 셸은 **자기가 갈 곳이 상대 셸일 때만** 넘긴다(백스톱). 판정 함수가 하나라 되튕김이 없다
+- 옛 주소·설치된 PWA 는 `appRoute()` 로 옮긴다: `#/shipping→#/ship` · `#/loading→#/load` ·
+  **`#/inspect/:id→#/load/:id`**(웹 inspect 는 상차검수) · `#/status` `#/issues` 유지 · 나머지는 홈
+- 탈출구는 `?shell=web` / `?shell=app` (앱 `계정` 화면의 `웹 화면으로` 버튼이 같은 값을 심는다)
+
+---
+
 ## 1. 화면 모듈 인터페이스
 
 `assets/js/pages/*.js` 는 모두 아래 형태를 지킨다.

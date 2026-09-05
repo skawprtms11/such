@@ -3,12 +3,24 @@ import { MENUS, ROLE, appOnlyCompany } from './config.js';
 import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
 import { esc, isMobile, MOBILE_QUERY } from './util.js';
+import { shellUrl, appRoute, applyShellQuery, APP_SHELL } from './shell.js';
 
 /** 새 버전을 받으려고 새로고침했는지 (무한 새로고침 방지) */
 const RELOAD_FLAG = 'tpl_chunk_reload';
 
+// ?shell=web 탈출구는 로그인 확인보다 먼저 반영한다
+applyShellQuery();
+
 const user = await requireLogin();
 if (!user) throw new Error('로그인이 필요합니다.');
+
+// 백스톱 - 이 기기·소속이 쓸 셸이 앱이면 m.html 로 넘긴다.
+// 설치된 PWA 의 옛 start_url(app.html) · 옛 북마크·직접 입력을 받아내는 그물이다.
+// 앱 셸도 같은 shellUrl() 을 보므로 두 셸이 서로 튕기지 않는다.
+if (shellUrl(user) === APP_SHELL) {
+    location.replace(APP_SHELL + appRoute(location.hash));
+    throw new Error('앱 화면으로 이동합니다.');
+}
 
 /** 라우트 정의 - 화면 모듈은 필요할 때 동적 import 한다 */
 const ROUTES = {
