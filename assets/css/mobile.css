@@ -1,0 +1,317 @@
+/**
+ * 모바일 앱 셸(m.html) 전용 스타일.
+ *
+ * app.css 를 불러오지 않는다. 웹 스타일을 정리할 때 서로를 깨뜨리지 않도록
+ * 클래스는 전부 `m-` 접두를 쓰고, 색 토큰도 같은 값으로 여기에 다시 선언한다.
+ */
+
+:root {
+    /* 색 - app.css 와 같은 값을 쓰되 공유하지 않고 따로 둔다 */
+    --m-navy: #0f2d4a;
+    --m-blue: #2563eb;
+    --m-blue-soft: #e8f0fe;
+    --m-green: #12805c;
+    --m-green-soft: #e3f5ee;
+    --m-amber: #b45309;
+    --m-amber-soft: #fef3c7;
+    --m-red: #c02626;
+    --m-red-soft: #fde8e8;
+    --m-gray-900: #16202c;
+    --m-gray-700: #3f4b5b;
+    --m-gray-500: #6b7684;
+    --m-gray-300: #d6dbe2;
+    --m-gray-200: #e6eaef;
+    --m-gray-100: #f2f4f7;
+    --m-bg: #f5f7fa;
+    --m-card: #ffffff;
+    --m-radius: 10px;
+    --m-shadow: 0 1px 2px rgba(16, 32, 48, .06), 0 6px 20px rgba(16, 32, 48, .06);
+
+    /* 터치 규격 - 장갑 낀 손 기준 */
+    --tap-min: 48px;        /* 모든 터치 대상 최소 높이 */
+    --tap-primary: 56px;    /* 하단 독의 주 버튼 */
+    --dock-h: 64px;         /* 독 기본 높이 */
+    --gap-danger: 16px;     /* 위험 버튼과 이웃 버튼 사이 최소 간격 */
+    --font-target: 18px;    /* 대상 파렛트·카운터 등 멀리서 보는 글자 */
+
+    /* 셸 치수 - 본문은 PC 폭에서도 깨지지 않게 가운데로 모은다 */
+    --m-shell-w: 480px;
+    --m-top-h: 56px;
+    --m-tab-h: 60px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+}
+
+.m-body {
+    background: var(--m-bg);
+    color: var(--m-gray-900);
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Malgun Gothic',
+        'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    overscroll-behavior-y: none;
+}
+
+.m-body h1, .m-body h2, .m-body h3 { margin: 0; font-weight: 700; }
+.m-body a { color: inherit; text-decoration: none; }
+.m-body button { font: inherit; }
+
+.m-icon {
+    width: 20px;
+    height: 20px;
+    flex: none;
+}
+
+/* --------------------------------- 셸 --------------------------------- */
+
+.m-app {
+    max-width: var(--m-shell-w);
+    min-height: 100%;
+    margin: 0 auto;
+    background: var(--m-card);
+    display: flex;
+    flex-direction: column;
+}
+
+.m-top {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: calc(var(--m-top-h) + env(safe-area-inset-top));
+    padding: env(safe-area-inset-top) 6px 0;
+    background: var(--m-navy);
+    color: #fff;
+}
+
+.m-top__title {
+    flex: 1;
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.m-top__btn {
+    display: grid;
+    place-items: center;
+    width: var(--tap-min);
+    height: var(--tap-min);
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+}
+
+.m-top__btn:active { background: rgba(255, 255, 255, .16); }
+.m-top__btn[hidden] { display: none; }
+
+.m-view {
+    flex: 1;
+    padding: 12px 12px calc(var(--m-tab-h) + env(safe-area-inset-bottom) + 16px);
+}
+
+/* ------------------------------- 하단 탭바 ------------------------------- */
+
+.m-tabbar {
+    position: fixed;
+    left: 50%;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: var(--m-shell-w);
+    display: flex;
+    height: calc(var(--m-tab-h) + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    background: var(--m-card);
+    border-top: 1px solid var(--m-gray-200);
+    z-index: 50;
+}
+
+.m-tab {
+    flex: 1;
+    min-height: var(--tap-min);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    color: var(--m-gray-500);
+    font-size: 11px;
+}
+
+.m-tab__icon {
+    width: 22px;
+    height: 22px;
+}
+
+.m-tab.is-active {
+    color: var(--m-blue);
+    font-weight: 700;
+}
+
+/* ---------------------------- 상단바 메뉴 (서랍) ---------------------------- */
+
+.m-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+}
+
+.m-drawer[hidden] { display: none; }
+
+.m-drawer__dim {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: rgba(16, 32, 48, .45);
+    cursor: pointer;
+}
+
+/* 본문이 가운데 정렬이므로 서랍도 셸의 오른쪽 끝에 붙인다 */
+.m-drawer__panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: max(0px, calc(50% - var(--m-shell-w) / 2));
+    width: min(280px, 82vw);
+    display: flex;
+    flex-direction: column;
+    padding: calc(env(safe-area-inset-top) + 12px) 0
+        calc(env(safe-area-inset-bottom) + 12px);
+    background: var(--m-card);
+    box-shadow: var(--m-shadow);
+}
+
+.m-drawer__nav {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+}
+
+.m-drawer__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: var(--tap-min);
+    padding: 0 18px;
+    border: 0;
+    background: none;
+    color: var(--m-gray-700);
+    text-align: left;
+    cursor: pointer;
+}
+
+.m-drawer__item:active { background: var(--m-gray-100); }
+.m-drawer__item.is-active { color: var(--m-blue); font-weight: 700; }
+
+.m-drawer__item--foot {
+    margin-top: var(--gap-danger);
+    padding-top: 12px;
+    border-top: 1px solid var(--m-gray-200);
+    color: var(--m-gray-500);
+}
+
+.m-me {
+    display: grid;
+    gap: 2px;
+    padding: 4px 18px 14px;
+    border-bottom: 1px solid var(--m-gray-200);
+}
+
+.m-me__company { font-size: 12px; color: var(--m-gray-500); }
+.m-me__name { font-size: 16px; }
+.m-me__role { font-size: 12px; color: var(--m-blue); }
+
+/* -------------------------------- 빈 화면 -------------------------------- */
+
+.m-empty {
+    display: grid;
+    justify-items: center;
+    gap: 14px;
+    padding: 56px 16px;
+    color: var(--m-gray-500);
+    text-align: center;
+}
+
+.m-empty__msg { margin: 0; }
+
+/* -------------------------------- 버튼 -------------------------------- */
+
+.m-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: var(--tap-min);
+    padding: 0 18px;
+    border: 1px solid var(--m-gray-300);
+    border-radius: var(--m-radius);
+    background: var(--m-card);
+    color: var(--m-gray-900);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.m-btn--primary {
+    border-color: var(--m-blue);
+    background: var(--m-blue);
+    color: #fff;
+}
+
+.m-btn--go {
+    border-color: var(--m-green);
+    background: var(--m-green);
+    color: #fff;
+}
+
+.m-btn:disabled {
+    opacity: .5;
+    cursor: default;
+}
+
+/* --------------------------------- 토스트 --------------------------------- */
+/* util.js 의 toast() 가 만드는 요소라 클래스명을 바꿀 수 없다. app.css 와 같은 모양으로 둔다 */
+
+#toast-box {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--m-tab-h) + env(safe-area-inset-bottom) + 16px);
+    transform: translateX(-50%);
+    display: grid;
+    gap: 8px;
+    z-index: 80;
+    width: max-content;
+    max-width: 90vw;
+}
+
+#toast-box .toast {
+    background: var(--m-gray-900);
+    color: #fff;
+    padding: 11px 16px;
+    border-radius: var(--m-radius);
+    font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+    transition: opacity .3s, transform .3s;
+}
+
+#toast-box .toast--error { background: var(--m-red); }
+#toast-box .toast--success { background: var(--m-green); }
+#toast-box .toast.is-out { opacity: 0; transform: translateY(8px); }

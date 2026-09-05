@@ -77,6 +77,39 @@ const PATHS = {
     floor: '<path d="M3 20h18"/><rect x="6" y="9" width="12" height="8" rx="1"/>'
         + '<path d="M9 9V6h6v3"/>',
     next: '<path d="M9 6.5l7 5.5-7 5.5z" />',
+
+    // ── 모바일 앱 셸(m.html) ──
+
+    // 뒤로 (상세 → 목록)
+    back: '<path d="M15 5l-7 7 7 7" />',
+
+    // 출고적치 - 쌓아 둔 파렛트
+    stow: `
+        <rect x="3.5" y="4.5" width="7.5" height="7" rx="1" />
+        <rect x="13" y="4.5" width="7.5" height="7" rx="1" />
+        <rect x="8.25" y="13.5" width="7.5" height="7" rx="1" />`,
+
+    // 조정요청 - 슬라이더
+    adjust: `
+        <path d="M3.5 8.5h9M17.5 8.5h3M3.5 15.5h3M11.5 15.5h9" />
+        <circle cx="15" cy="8.5" r="2.5" />
+        <circle cx="9" cy="15.5" r="2.5" />`,
+
+    // 상차대기 - 시계
+    clock: `
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7.2V12l3.2 2" />`,
+
+    // 재고실사표 - 문서
+    sheet: `
+        <path d="M6 3.5h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-16a1 1 0 0 1 1-1z" />
+        <path d="M14 3.5V9h5" />
+        <path d="M8.5 13h7M8.5 16.5h4.5" />`,
+
+    // 계정 - 사람 1명
+    account: `
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M4.5 20.5v-1a5 5 0 0 1 5-5h5a5 5 0 0 1 5 5v1" />`,
 };
 
 /**

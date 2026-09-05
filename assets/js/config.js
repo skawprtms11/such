@@ -367,3 +367,38 @@ export const MENUS = [
         mobile: false,
     },
 ];
+
+/**
+ * 모바일 앱 셸(m.html)의 하단 탭 - 현장 작업 5가지.
+ *
+ * MENUS 를 재사용하지 않는 이유:
+ *   MENUS 는 웹 셸의 메뉴 목록이고 화면 1개 = 메뉴 1개로 맞춰져 있다.
+ *   앱은 화면이 아니라 **현장 작업 단위**로 나뉘어, 웹의 `출고주문처리` 한 메뉴가
+ *   출고·검수·적치·조정 4개 탭으로 갈라진다. 라벨도 좁은 탭바에 맞춰 두 글자로 줄인다.
+ *   한 상수로 합치면 웹 메뉴를 손볼 때 앱 탭이 딸려 바뀐다.
+ *
+ * key   : 라우트 키이자 화면 파일명 (assets/js/mobile/screens/<key>.js)
+ * route : 해시 경로. 상세 화면은 `#/<key>/:id` 로 한 단계 더 쌓는다
+ * label : 하단 탭바에 쓰는 짧은 이름 (두 글자)
+ * title : 상단바 제목에 쓰는 전체 이름
+ * icon  : icons.js 의 아이콘 키
+ */
+export const APP_TABS = [
+    { key: 'ship', route: '#/ship', label: '출고', title: '출고작업', icon: 'shipping' },
+    { key: 'inspect', route: '#/inspect', label: '검수', title: '검수작업', icon: 'check' },
+    { key: 'stow', route: '#/stow', label: '적치', title: '출고적치', icon: 'stow' },
+    { key: 'adjust', route: '#/adjust', label: '조정', title: '조정요청', icon: 'adjust' },
+    { key: 'load', route: '#/load', label: '상차', title: '상차작업', icon: 'loading' },
+];
+
+/**
+ * 모바일 앱 셸의 상단바 메뉴(≡) - 하단 탭에 두지 않는 조회·보조 화면.
+ * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
+ */
+export const APP_MENU = [
+    { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
+    { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
+    { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
+    { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet' },
+    { key: 'account', route: '#/account', title: '계정', icon: 'account' },
+];

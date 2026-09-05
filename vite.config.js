@@ -1,4 +1,7 @@
-/** Vite 빌드 설정 - 로그인(index.html)과 앱 셸(app.html) 2개 페이지를 진입점으로 사용한다 */
+/**
+ * Vite 빌드 설정 - 진입점 3개.
+ *   index.html 로그인 · app.html 웹 셸 · m.html 모바일 앱 셸
+ */
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import basicSsl from '@vitejs/plugin-basic-ssl';
@@ -75,6 +78,7 @@ export default defineConfig({
             input: {
                 login: resolve(process.cwd(), 'index.html'),
                 app: resolve(process.cwd(), 'app.html'),
+                mobile: resolve(process.cwd(), 'm.html'),
             },
         },
     },
