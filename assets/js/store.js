@@ -4,7 +4,7 @@
  * `db.js` 는 업무 규칙만 담당하고, 실제로 어디에 저장하는지는 이 모듈이 정한다.
  *
  *   mock     : localStorage 에 전체를 JSON 으로 넣는다 (Supabase 구축 전 방식)
- *   supabase : 테이블 6개를 읽어 같은 모양의 객체로 만들고,
+ *   supabase : 테이블을 통째로 읽어 같은 모양의 객체로 만들고,
  *              저장할 때는 **바뀐 행만** 골라 upsert / delete 한다
  *
  * 화면 코드는 이 모듈을 직접 부르지 않는다. 반드시 `db.js` 를 거친다.
@@ -85,6 +85,22 @@ const TABLES = [
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
         ],
     },
+    {
+        key: 'notices',
+        name: 'notices',
+        cols: [
+            'id', 'title', 'content', 'important',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    {
+        key: 'noticeComments',
+        name: 'notice_comments',
+        cols: [
+            'id', 'notice_id', 'parent_id', 'content',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
 ];
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
@@ -130,6 +146,7 @@ function mockLoad() {
     }
     const empty = {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
+        notices: [], noticeComments: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;

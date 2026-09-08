@@ -1537,3 +1537,13 @@ button.m-pallet:disabled { cursor: default; }
 }
 
 .m-newcomment .m-textarea { flex: 1 1 100%; }
+
+/* 공지사항 등록 폼의 중요공지 체크 */
+.m-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.m-check input { width: 18px; height: 18px; }

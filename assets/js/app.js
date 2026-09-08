@@ -32,6 +32,7 @@ const ROUTES = {
     loading: () => import('./pages/loading.js'),
     inspect: () => import('./pages/inspect.js'),
     issues: () => import('./pages/issues.js'),
+    notices: () => import('./pages/notices.js'),
     users: () => import('./pages/users.js'),
 };
 

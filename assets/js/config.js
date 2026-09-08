@@ -52,28 +52,34 @@ export const COMPANIES = Object.values(COMPANY);
  * updateStatus : 출고·검수·적치·상차 처리
  * createIssue  : 이슈 등록 (상태 변경은 updateStatus 와 함께 있어야 한다)
  * closeOrder   : 주문처리현황의 출고 완료처리
+ * manageNotice : 공지사항 등록·수정·삭제 (조회와 댓글 등록은 모든 로그인 사용자)
  */
 export const PERMISSION = {
     [ROLE.ADMIN]: {
         viewAll: true, download: true, manageUsers: true,
         createOrder: true, updateStatus: true, createIssue: true, closeOrder: true,
+        manageNotice: true,
     },
     [ROLE.YONGMA]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: true, closeOrder: true,
+        manageNotice: true,
     },
     [ROLE.SHIPPER_ADMIN]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
+        manageNotice: false,
     },
     [ROLE.SHIPPER_SALES]: {
         viewAll: false, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
+        manageNotice: false,
     },
     // 현장작업자 - 출고주문처리·당일상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
+        manageNotice: false,
     },
 };
 
@@ -367,6 +373,7 @@ export const MENUS = [
     { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
     { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
+    { key: 'notices', path: '#/notices', label: '공지사항', icon: 'notice', mobile: true },
     {
         key: 'users',
         path: '#/users',
@@ -414,6 +421,7 @@ export const APP_TABS = [
 export const APP_MENU = [
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
+    { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
     { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },

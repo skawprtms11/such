@@ -2,7 +2,8 @@
 
 > 새 화면을 추가하거나 데이터 계층·권한을 건드릴 때 먼저 읽는다.
 > 메뉴별 문서: [orders](orders.md) · [status](status.md) · [shipping](shipping.md) ·
-> [loading](loading.md) · [inspect](inspect.md) · [issues](issues.md) · [users](users.md) ·
+> [loading](loading.md) · [inspect](inspect.md) · [issues](issues.md) · [notices](notices.md) ·
+> [users](users.md) ·
 > 모바일 앱 셸 전체는 [mobile](mobile.md)
 
 ---
@@ -121,7 +122,6 @@ export async function render(root, { user, params }) {
 | `mobile` | **true 인 메뉴만 모바일 하단 탭바에 나온다** |
 
 **PC 사이드바에는 모든 메뉴가 나오고, 모바일 탭바에는 `mobile: true` 인 메뉴만 나온다.**
-현재 탭바에 노출되는 것은 현장에서 자주 쓰는 3개다.
 
 | 메뉴 | PC 사이드바 | 모바일 탭바 |
 |---|:---:|:---:|
@@ -130,10 +130,14 @@ export async function render(root, { user, params }) {
 | 출고주문처리 | ✅ | ✅ |
 | 당일상차리스트 | ✅ | ✅ |
 | 이슈등록 | ✅ | ✅ |
+| 공지사항 | ✅ | ✅ |
 | 사용자관리 (관리자) | ✅ | ❌ |
 
 탭바에 없는 메뉴도 **모바일에서 햄버거 버튼(☰)의 서랍으로 접근할 수 있다.**
-탭바를 4개 이상으로 늘리면 좁은 화면에서 라벨이 겹치므로 3개를 유지한다.
+
+⚠️ `mobile: true` 가 5개로 늘어 좁은 화면에서는 탭바 라벨이 줄어든다.
+실사용자는 로그인 시점의 `shellUrl()` 분기로 대부분 앱 셸(`m.html`)을 보므로
+이 탭바는 과도기 코드다(§0). 6단계 정리에서 함께 걷어낸다.
 
 ⚠️ 위 `MENUS`/`mobile` 플래그는 **웹 셸(`app.html`)의 반응형 탭바 전용**이다.
 앱 셸(`m.html`)은 별도 상수 `config.js` 의 `APP_TABS`(하단 탭 5개) · `APP_MENU`(상단바 메뉴)를
@@ -223,10 +227,15 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 | `minPalletOf(o)` | `#/inspect` 검수완료 검증 | 검수에서 받을 수 있는 최소 파렛트수 — 2차수 이상은 혼적(0) 허용, 1차수는 1 이상 |
 | `canAcceptIssue(user, issue)` | `#/issues` 이슈접수 버튼 노출·처리 | 접수대기 상태에서 접수 가능한 역할인지 (웹과 **같은 함수**를 써서 판정이 갈라지지 않는다) |
 
-### 이슈 · 사용자
+### 이슈 · 공지 · 사용자
 
 `listIssues(filter)` `createIssue` `updateIssue` /
 `listUsers` `getUser` `createUser` `updateUserRole` `toggleUserActive`
+
+공지사항(자세한 내용은 [notices.md](notices.md)):
+`listNotices` `getNotice` `createNotice` `updateNotice` `deleteNotice` `canManageNotice` /
+`listNoticeComments` `addNoticeComment` `updateNoticeComment` `deleteNoticeComment`
+`canEditNoticeComment`
 
 ### 실시간 갱신
 
@@ -243,7 +252,7 @@ mock 은 다른 탭의 `storage` 이벤트 + 폴링, Supabase 는 Realtime 채�
 | 모드 | 저장 위치 | 로그인 |
 |---|---|---|
 | `mock` | localStorage 키 `tpl_order_db_v1`. **빈 상태로 시작한다** (샘플 데이터 제거됨) | 계정 선택 (임시) |
-| `supabase` | Postgres 테이블 6개 (`supabase/schema.sql`) | 이메일 + 비밀번호 |
+| `supabase` | Postgres 테이블 (`supabase/schema.sql`) | 이메일 + 비밀번호 |
 
 - `db.resetDb()` 는 **mock 모드에서만** 동작한다. Supabase 는 SQL 로 직접 정리한다
 - `db.createUser()` 도 mock 전용이다. Supabase 는 로그인 계정이 함께 필요하다

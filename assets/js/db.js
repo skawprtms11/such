@@ -22,6 +22,8 @@ import { uid, today, toDateStr } from './util.js';
 function normalize(db) {
     db.restores = db.restores ?? [];
     db.comments = db.comments ?? [];
+    db.notices = db.notices ?? [];
+    db.noticeComments = db.noticeComments ?? [];
     // 소속 명칭 변경 (더퓨어랩 → 고객사, 용마물류 → 용마로지스)
     const RENAMED = { 더퓨어랩: COMPANY.CUSTOMER, 용마물류: COMPANY.LOGISTICS };
     db.users.forEach((u) => {
@@ -1798,6 +1800,175 @@ export async function deleteIssueComment(id, user) {
         c.deleted_at = new Date().toISOString();
     } else {
         db.comments = db.comments.filter((x) => x.id !== id);
+    }
+    await save(db);
+}
+
+/* ---------------------------------- 공지사항 ---------------------------------- */
+
+/** 공지 등록·수정·삭제 권한 (조회와 댓글 등록은 로그인 사용자 모두 가능하다) */
+export function canManageNotice(user) {
+    return !!PERMISSION[user?.role]?.manageNotice;
+}
+
+/** 공지 댓글을 수정·삭제할 수 있는지 - 작성자 본인 또는 관리자 */
+export function canEditNoticeComment(user, comment) {
+    if (!user || !comment) return false;
+    return comment.created_by === user.id || !!PERMISSION[user.role]?.manageUsers;
+}
+
+/**
+ * 공지 목록.
+ * 중요공지를 위로 고정하고, 그 안에서는 최신순으로 정렬한다.
+ * 삭제된 공지(deleted_at)는 목록에서 빠진다.
+ */
+export async function listNotices(f = {}) {
+    const db = (await load());
+    let rows = db.notices.filter((n) => !n.deleted_at);
+    if (f.keyword) {
+        const k = f.keyword.trim().toLowerCase();
+        rows = rows.filter((n) => `${n.title} ${n.content}`.toLowerCase().includes(k));
+    }
+    rows.sort((a, b) => {
+        if (!!a.important !== !!b.important) return a.important ? -1 : 1;
+        return b.created_at > a.created_at ? 1 : -1;
+    });
+    // 댓글 수는 화면 표시용이라 저장 컬럼이 아니다 (서버로 나가지 않는다)
+    return rows.map((n) => ({
+        ...n,
+        comment_count: db.noticeComments
+            .filter((c) => c.notice_id === n.id && !c.deleted_at).length,
+    }));
+}
+
+/** 공지 1건 조회 (삭제된 건은 없는 것으로 본다) */
+export async function getNotice(id) {
+    const n = (await load()).notices.find((x) => x.id === id);
+    return n && !n.deleted_at ? n : null;
+}
+
+/** 공지 등록 - 관리자·용마담당자만 */
+export async function createNotice(payload, user) {
+    if (!canManageNotice(user)) throw new Error('공지사항을 등록할 권한이 없습니다.');
+    const title = String(payload.title ?? '').trim();
+    const content = String(payload.content ?? '').trim();
+    if (!title) throw new Error('제목을 입력하세요.');
+    if (!content) throw new Error('내용을 입력하세요.');
+
+    const db = (await load());
+    const row = {
+        id: uid('n'),
+        title,
+        content,
+        important: !!payload.important,
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+        deleted_at: null,
+    };
+    db.notices.push(row);
+    await save(db);
+    return row;
+}
+
+/** 공지 수정 - 관리자·용마담당자만. 수정 시각을 남긴다 */
+export async function updateNotice(id, patch, user) {
+    if (!canManageNotice(user)) throw new Error('공지사항을 수정할 권한이 없습니다.');
+    const title = String(patch.title ?? '').trim();
+    const content = String(patch.content ?? '').trim();
+    if (!title) throw new Error('제목을 입력하세요.');
+    if (!content) throw new Error('내용을 입력하세요.');
+
+    const db = (await load());
+    const n = db.notices.find((x) => x.id === id && !x.deleted_at);
+    if (!n) throw new Error('공지사항을 찾을 수 없습니다.');
+    n.title = title;
+    n.content = content;
+    n.important = !!patch.important;
+    n.updated_at = new Date().toISOString();
+    await save(db);
+    return n;
+}
+
+/**
+ * 공지 삭제 - 관리자·용마담당자만.
+ * 댓글 스레드를 남겨 두려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
+ */
+export async function deleteNotice(id, user) {
+    if (!canManageNotice(user)) throw new Error('공지사항을 삭제할 권한이 없습니다.');
+    const db = (await load());
+    const n = db.notices.find((x) => x.id === id && !x.deleted_at);
+    if (!n) throw new Error('공지사항을 찾을 수 없습니다.');
+    n.deleted_at = new Date().toISOString();
+    await save(db);
+}
+
+/** 공지 댓글 목록 - 등록순. 대댓글 트리는 화면이 parent_id 로 구성한다 */
+export async function listNoticeComments(noticeId) {
+    return (await load()).noticeComments
+        .filter((c) => c.notice_id === noticeId)
+        .sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
+}
+
+/** 공지 댓글 등록 - 로그인 사용자 모두. parentId 가 있으면 대댓글이 된다 */
+export async function addNoticeComment(noticeId, parentId, content, user) {
+    const text = String(content ?? '').trim();
+    if (!text) throw new Error('댓글 내용을 입력하세요.');
+    const db = (await load());
+    if (!db.notices.some((n) => n.id === noticeId && !n.deleted_at)) {
+        throw new Error('공지사항을 찾을 수 없습니다.');
+    }
+    const row = {
+        id: uid('nc'),
+        notice_id: noticeId,
+        parent_id: parentId || null,
+        content: text,
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+        deleted_at: null,
+    };
+    db.noticeComments.push(row);
+    await save(db);
+    return row;
+}
+
+/** 공지 댓글 수정 - 작성자 본인 또는 관리자. 수정 시각을 남겨 '수정됨' 을 표시한다 */
+export async function updateNoticeComment(id, content, user) {
+    const text = String(content ?? '').trim();
+    if (!text) throw new Error('댓글 내용을 입력하세요.');
+    const db = (await load());
+    const c = db.noticeComments.find((x) => x.id === id);
+    if (!c) throw new Error('댓글을 찾을 수 없습니다.');
+    if (!canEditNoticeComment(user, c)) {
+        throw new Error('작성자 본인 또는 관리자만 수정할 수 있습니다.');
+    }
+    if (c.deleted_at) throw new Error('삭제된 댓글은 수정할 수 없습니다.');
+    c.content = text;
+    c.updated_at = new Date().toISOString();
+    await save(db);
+    return c;
+}
+
+/**
+ * 공지 댓글 삭제 - 작성자 본인 또는 관리자.
+ * 대댓글이 달린 댓글은 스레드를 지키기 위해 내용만 비운다(soft delete).
+ */
+export async function deleteNoticeComment(id, user) {
+    const db = (await load());
+    const c = db.noticeComments.find((x) => x.id === id);
+    if (!c) throw new Error('댓글을 찾을 수 없습니다.');
+    if (!canEditNoticeComment(user, c)) {
+        throw new Error('작성자 본인 또는 관리자만 삭제할 수 있습니다.');
+    }
+    const hasReplies = db.noticeComments.some((x) => x.parent_id === id);
+    if (hasReplies) {
+        c.content = '';
+        c.deleted_at = new Date().toISOString();
+    } else {
+        db.noticeComments = db.noticeComments.filter((x) => x.id !== id);
     }
     await save(db);
 }
