@@ -62,7 +62,7 @@ export function appRoute(hash) {
     if (key === 'loading') return '#/load';
     if (key === 'inspect') return rest[0] ? `#/load/${rest[0]}` : '#/load';
     // 이름이 같은 화면은 뒷조각(상세 id 등)을 그대로 물려준다
-    if (key === 'status' || key === 'issues') {
+    if (key === 'status' || key === 'issues' || key === 'notices') {
         return rest.length ? `#/${key}/${rest.join('/')}` : `#/${key}`;
     }
     return '';

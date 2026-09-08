@@ -62,6 +62,7 @@ const SCREENS = {
     load: () => import('./screens/load.js'),
     status: () => import('./screens/status.js'),
     issues: () => import('./screens/issues.js'),
+    notices: () => import('./screens/notices.js'),
     wait: () => import('./screens/wait.js'),
     stock: () => import('./screens/stock.js'),
     account: () => import('./screens/account.js'),

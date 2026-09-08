@@ -56,6 +56,12 @@ create or replace function public.can_write_order()
     select public.my_role() in ('admin', 'shipper_admin', 'shipper_sales')
 $$;
 
+/* 공지사항 등록·수정·삭제 (config.js 의 manageNotice) */
+create or replace function public.can_manage_notice()
+    returns boolean language sql stable as $$
+    select public.my_role() in ('admin', 'yongma')
+$$;
+
 /* 출고·검수·적치·상차 처리 */
 create or replace function public.can_update_status()
     returns boolean language sql stable as $$
@@ -288,6 +294,44 @@ create table if not exists public.issue_comments (
 
 create index if not exists issue_comments_issue_idx on public.issue_comments (issue_id);
 
+-- ────────────────────────────── 공지사항 (notices) ──────────────────────────────
+-- 화주·물류사 전체에 알리는 게시판. 조회는 로그인 사용자 모두, 작성은 관리자·용마담당자.
+-- 중요공지(important)는 목록 맨 위에 고정된다.
+-- 삭제는 댓글 스레드를 남기려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
+
+create table if not exists public.notices (
+    id              text        primary key,
+    title           text        not null,
+    content         text        not null default '',
+    important       boolean     not null default false,   -- 중요공지 (목록 상단 고정)
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,                          -- 수정 시각 (있으면 '수정됨' 표시)
+    deleted_at      timestamptz                           -- 삭제 시각 (있으면 목록에서 제외)
+);
+
+comment on table public.notices is '공지사항. 등록·수정·삭제는 관리자·용마담당자만';
+
+create index if not exists notices_created_idx on public.notices (created_at desc);
+
+-- ─────────────────────────── 공지 댓글 (notice_comments) ───────────────────────────
+-- 구조와 규칙은 issue_comments 와 같다. 수정·삭제만 본인 또는 관리자로 넓혔다.
+
+create table if not exists public.notice_comments (
+    id              text        primary key,
+    notice_id       text        not null references public.notices (id) on delete cascade,
+    parent_id       text        references public.notice_comments (id),
+    content         text        not null default '',
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,                          -- 수정 시각 (있으면 '수정됨' 표시)
+    deleted_at      timestamptz                           -- 삭제 시각 (있으면 내용 감춤)
+);
+
+create index if not exists notice_comments_notice_idx on public.notice_comments (notice_id);
+
 -- ═══════════════════════════════ RLS 정책 ═══════════════════════════════
 -- 화면에서도 권한을 판정하지만, 서버에서 한 번 더 막는다.
 -- anon 키는 정적 파일에 그대로 담겨 공개되므로 이 정책이 유일한 방어선이다.
@@ -299,6 +343,8 @@ alter table public.pallets          enable row level security;
 alter table public.restore_requests enable row level security;
 alter table public.issues           enable row level security;
 alter table public.issue_comments   enable row level security;
+alter table public.notices          enable row level security;
+alter table public.notice_comments  enable row level security;
 
 -- ── 사용자 ──
 drop policy if exists profiles_select on public.profiles;
@@ -424,6 +470,43 @@ drop policy if exists issue_comments_delete on public.issue_comments;
 create policy issue_comments_delete on public.issue_comments for delete to authenticated
     using (created_by = auth.uid());
 
+-- ── 공지사항 ── 조회는 로그인 사용자 모두, 작성은 관리자·용마담당자만
+drop policy if exists notices_select on public.notices;
+create policy notices_select on public.notices for select to authenticated
+    using (true);
+
+drop policy if exists notices_insert on public.notices;
+create policy notices_insert on public.notices for insert to authenticated
+    with check (public.can_manage_notice() and created_by = auth.uid());
+
+drop policy if exists notices_update on public.notices;
+create policy notices_update on public.notices for update to authenticated
+    using (public.can_manage_notice())
+    with check (public.can_manage_notice());
+
+-- 삭제는 화면이 deleted_at 을 찍는 soft delete 로 하지만, 정리용 실삭제도 같은 권한으로 연다
+drop policy if exists notices_delete on public.notices;
+create policy notices_delete on public.notices for delete to authenticated
+    using (public.can_manage_notice());
+
+-- ── 공지 댓글 ── 로그인 사용자 누구나 읽고 쓴다. 수정·삭제는 본인 또는 관리자
+drop policy if exists notice_comments_select on public.notice_comments;
+create policy notice_comments_select on public.notice_comments for select to authenticated
+    using (true);
+
+drop policy if exists notice_comments_insert on public.notice_comments;
+create policy notice_comments_insert on public.notice_comments for insert to authenticated
+    with check (created_by = auth.uid());
+
+drop policy if exists notice_comments_update on public.notice_comments;
+create policy notice_comments_update on public.notice_comments for update to authenticated
+    using (created_by = auth.uid() or public.my_role() = 'admin')
+    with check (created_by = auth.uid() or public.my_role() = 'admin');
+
+drop policy if exists notice_comments_delete on public.notice_comments;
+create policy notice_comments_delete on public.notice_comments for delete to authenticated
+    using (created_by = auth.uid() or public.my_role() = 'admin');
+
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
 
@@ -501,6 +584,8 @@ alter publication supabase_realtime add table public.order_history;
 alter publication supabase_realtime add table public.restore_requests;
 alter publication supabase_realtime add table public.issues;
 alter publication supabase_realtime add table public.issue_comments;
+alter publication supabase_realtime add table public.notices;
+alter publication supabase_realtime add table public.notice_comments;
 alter publication supabase_realtime add table public.profiles;
 
 -- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
