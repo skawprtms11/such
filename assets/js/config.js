@@ -409,11 +409,6 @@ export function cycleLabel(item) {
  * mobile    : 모바일 하단 탭바에 노출 (false 인 메뉴는 햄버거 서랍에서만 접근)
  */
 export const MENUS = [
-    { key: 'orders', path: '#/orders', label: '주문정보등록', icon: 'orders', mobile: false },
-    { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
-    { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
-    { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
-    { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     { key: 'notices', path: '#/notices', label: '공지사항', icon: 'notice', mobile: true },
     {
         key: 'checklist',
@@ -422,6 +417,11 @@ export const MENUS = [
         icon: 'checklist',
         mobile: true,
     },
+    { key: 'orders', path: '#/orders', label: '주문정보등록', icon: 'orders', mobile: false },
+    { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
+    { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
+    { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
+    { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     {
         key: 'users',
         path: '#/users',
@@ -467,10 +467,10 @@ export const APP_TABS = [
  * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
  */
 export const APP_MENU = [
-    { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
-    { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'checklist', route: '#/checklist', title: '업무체크리스트', icon: 'checklist' },
+    { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
+    { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
     { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },
