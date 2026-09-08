@@ -101,6 +101,24 @@ const TABLES = [
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
         ],
     },
+    {
+        key: 'checklistItems',
+        name: 'checklist_items',
+        cols: [
+            'id', 'category', 'parent_id', 'title', 'description',
+            'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name',
+            'sort_order', 'active',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    {
+        key: 'checklistChecks',
+        name: 'checklist_checks',
+        cols: [
+            'id', 'item_id', 'check_date', 'memo',
+            'checked_by', 'checked_by_name', 'checked_at',
+        ],
+    },
 ];
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
@@ -146,7 +164,7 @@ function mockLoad() {
     }
     const empty = {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
-        notices: [], noticeComments: [],
+        notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;

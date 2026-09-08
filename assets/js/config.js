@@ -53,33 +53,34 @@ export const COMPANIES = Object.values(COMPANY);
  * createIssue  : 이슈 등록 (상태 변경은 updateStatus 와 함께 있어야 한다)
  * closeOrder   : 주문처리현황의 출고 완료처리
  * manageNotice : 공지사항 등록·수정·삭제 (조회와 댓글 등록은 모든 로그인 사용자)
+ * manageChecklist : 업무체크리스트 항목 등록·수정·삭제 (체크는 담당자 본인도 한다)
  */
 export const PERMISSION = {
     [ROLE.ADMIN]: {
         viewAll: true, download: true, manageUsers: true,
         createOrder: true, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true,
+        manageNotice: true, manageChecklist: true,
     },
     [ROLE.YONGMA]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true,
+        manageNotice: true, manageChecklist: true,
     },
     [ROLE.SHIPPER_ADMIN]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: true,
     },
     [ROLE.SHIPPER_SALES]: {
         viewAll: false, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: false,
     },
     // 현장작업자 - 출고주문처리·당일상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: false,
     },
 };
 
@@ -361,6 +362,46 @@ export const ISSUE_STATUS = [
     ISSUE_STATE.CLOSE_REQ, ISSUE_STATE.CLOSED,
 ];
 
+/* ------------------------------ 업무체크리스트 ------------------------------ */
+
+/**
+ * 체크리스트 업무 구분.
+ * 화면에서 추가하지 않고 이 목록으로 고정한다 (탭이 늘면 좁은 화면이 깨진다).
+ */
+export const CHECK_CATEGORIES = ['입고', '출고', '반품', '기타'];
+
+/** 체크 주기 코드 - 저장값 (checklist_items.cycle) */
+export const CHECK_CYCLE = {
+    DAILY: 'daily',      // 매일
+    WEEKLY: 'weekly',    // 매주 지정 요일 (weekday)
+    MONTHLY: 'monthly',  // 매월 지정 일자 (monthday, 말일 보정)
+    ADHOC: 'adhoc',      // 수시 - 날짜와 무관하게 항상 표시된다
+};
+
+/** 주기 표시 문구 */
+export const CHECK_CYCLES = {
+    [CHECK_CYCLE.DAILY]: '일',
+    [CHECK_CYCLE.WEEKLY]: '주',
+    [CHECK_CYCLE.MONTHLY]: '월',
+    [CHECK_CYCLE.ADHOC]: '수시',
+};
+
+/** 요일 - 배열 순서가 Date.getDay() 값(0=일)과 같다 */
+export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+
+/**
+ * 주기 한 줄 표시 - 요일·일자까지 붙인다 (예: `주(화)` `월(25일)`).
+ * 목록·카드가 같은 문구를 쓰도록 여기 한 곳에서 만든다.
+ */
+export function cycleLabel(item) {
+    const base = CHECK_CYCLES[item?.cycle] ?? '';
+    if (item?.cycle === CHECK_CYCLE.WEEKLY) {
+        return `${base}(${WEEKDAYS[Number(item.weekday) || 0]})`;
+    }
+    if (item?.cycle === CHECK_CYCLE.MONTHLY) return `${base}(${Number(item.monthday) || 1}일)`;
+    return base;
+}
+
 /**
  * 메뉴 정의
  * icon      : icons.js 의 아이콘 키
@@ -374,6 +415,13 @@ export const MENUS = [
     { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     { key: 'notices', path: '#/notices', label: '공지사항', icon: 'notice', mobile: true },
+    {
+        key: 'checklist',
+        path: '#/checklist',
+        label: '업무체크리스트',
+        icon: 'checklist',
+        mobile: true,
+    },
     {
         key: 'users',
         path: '#/users',
@@ -422,6 +470,7 @@ export const APP_MENU = [
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
+    { key: 'checklist', route: '#/checklist', title: '업무체크리스트', icon: 'checklist' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
     { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },

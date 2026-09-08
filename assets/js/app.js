@@ -33,6 +33,7 @@ const ROUTES = {
     inspect: () => import('./pages/inspect.js'),
     issues: () => import('./pages/issues.js'),
     notices: () => import('./pages/notices.js'),
+    checklist: () => import('./pages/checklist.js'),
     users: () => import('./pages/users.js'),
 };
 

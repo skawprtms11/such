@@ -20,6 +20,7 @@
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |
+| 업무체크리스트 | [docs/checklist.md](docs/checklist.md) | `assets/js/pages/checklist.js` | `#/checklist` | `#/checklist` (상단바 메뉴 · 오늘 할 일만) |
 | 사용자관리 | [docs/users.md](docs/users.md) | `assets/js/pages/users.js` | `#/users` | — (앱에 없음) |
 
 **모바일 앱 셸(`m.html`)은 화면 코드를 웹과 공유하지 않는 별도 층이다.**
@@ -288,10 +289,12 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | `createIssue` 이슈 등록 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `closeOrder` 출고 완료처리 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `manageNotice` 공지 등록·수정·삭제 | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `manageChecklist` 체크리스트 항목 관리 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `manageUsers` 사용자 권한 변경 | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 **현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·당일상차리스트는 전부 처리하고,
 주문처리현황·이슈등록·공지사항은 조회만 한다 (공지 **댓글은 쓸 수 있다**).
+업무체크리스트는 **본인이 담당인 항목만** 체크한다 (항목 관리는 못 한다).
 이슈 처리는 단계별로 주체가 다르다 —
 이슈접수는 `updateStatus` 와 `createIssue` 를 함께 가진 역할(관리자·용마담당자),
 담당자확인은 선정된 확인담당자 본인·관리자, 종결요청은 담당자·관리자,
@@ -358,6 +361,8 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 | `notices` | 공지사항 | `title` `content` `important`(중요공지 - 목록 상단 고정) `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제 - soft delete) |
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
+| `checklist_items` | 업무체크리스트 항목(트리) | `category`(입고·출고·반품·기타) `parent_id`(상위 항목) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name` `sort_order` `active` `deleted_at`(soft delete) |
+| `checklist_checks` | 체크 기록 | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
 검수작업 탭에서 검수완료 시 수기로 입력**한다 ([docs/shipping.md](docs/shipping.md) 참고).

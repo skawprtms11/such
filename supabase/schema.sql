@@ -62,6 +62,12 @@ create or replace function public.can_manage_notice()
     select public.my_role() in ('admin', 'yongma')
 $$;
 
+/* 업무체크리스트 항목 등록·수정·삭제 (config.js 의 manageChecklist) */
+create or replace function public.can_manage_checklist()
+    returns boolean language sql stable as $$
+    select public.my_role() in ('admin', 'yongma', 'shipper_admin')
+$$;
+
 /* 출고·검수·적치·상차 처리 */
 create or replace function public.can_update_status()
     returns boolean language sql stable as $$
@@ -332,6 +338,58 @@ create table if not exists public.notice_comments (
 
 create index if not exists notice_comments_notice_idx on public.notice_comments (notice_id);
 
+-- ─────────────────────── 업무체크리스트 항목 (checklist_items) ───────────────────────
+-- 업무 구분(입고·출고·반품·기타)별 트리. parent_id 로 하위 항목이 이어진다.
+-- 체크 대상은 **말단 항목(leaf)만** 이고, 하위를 가진 항목은 묶음 제목 역할이다.
+-- 주기 판정(일·주·월·수시, 말일 보정)은 db.js 의 dueItems() 한 곳에서만 한다.
+-- 삭제는 체크 기록을 남기려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
+
+create table if not exists public.checklist_items (
+    id              text        primary key,
+    category        text        not null,                     -- config.js 의 CHECK_CATEGORIES
+    parent_id       text        references public.checklist_items (id),
+    title           text        not null,
+    description     text        not null default '',
+    cycle           text        not null default 'daily'
+                                check (cycle in ('daily', 'weekly', 'monthly', 'adhoc')),
+    weekday         smallint    check (weekday between 0 and 6),   -- 주 - 0=일
+    monthday        smallint    check (monthday between 1 and 31), -- 월 - 말일은 보정된다
+    assignee_id     uuid        references public.profiles (id),
+    assignee_name   text        not null default '',
+    sort_order      integer     not null default 0,           -- 형제 사이의 표시 순서
+    active          boolean     not null default true,
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,
+    deleted_at      timestamptz                               -- 삭제 시각 (있으면 목록에서 제외)
+);
+
+comment on table public.checklist_items is '업무체크리스트 항목 트리. 등록·수정·삭제는 manageChecklist 권한';
+
+create index if not exists checklist_items_cat_idx
+    on public.checklist_items (category, sort_order);
+create index if not exists checklist_items_parent_idx on public.checklist_items (parent_id);
+create index if not exists checklist_items_assignee_idx on public.checklist_items (assignee_id);
+
+-- ─────────────────────── 업무체크리스트 체크 (checklist_checks) ───────────────────────
+-- 항목 1건을 그 날짜에 처리했다는 기록. 체크 해제는 행 삭제다.
+-- 🔑 항목·날짜당 1건이라 unique 로 못 박는다 (두 사람이 같이 눌러도 한 건만 남는다).
+
+create table if not exists public.checklist_checks (
+    id              text        primary key,
+    item_id         text        not null
+                                references public.checklist_items (id) on delete cascade,
+    check_date      date        not null,
+    memo            text        not null default '',
+    checked_by      uuid        references public.profiles (id),
+    checked_by_name text        not null default '',
+    checked_at      timestamptz not null default now(),
+    unique (item_id, check_date)
+);
+
+create index if not exists checklist_checks_date_idx on public.checklist_checks (check_date);
+
 -- ═══════════════════════════════ RLS 정책 ═══════════════════════════════
 -- 화면에서도 권한을 판정하지만, 서버에서 한 번 더 막는다.
 -- anon 키는 정적 파일에 그대로 담겨 공개되므로 이 정책이 유일한 방어선이다.
@@ -345,6 +403,8 @@ alter table public.issues           enable row level security;
 alter table public.issue_comments   enable row level security;
 alter table public.notices          enable row level security;
 alter table public.notice_comments  enable row level security;
+alter table public.checklist_items  enable row level security;
+alter table public.checklist_checks enable row level security;
 
 -- ── 사용자 ──
 drop policy if exists profiles_select on public.profiles;
@@ -507,6 +567,50 @@ drop policy if exists notice_comments_delete on public.notice_comments;
 create policy notice_comments_delete on public.notice_comments for delete to authenticated
     using (created_by = auth.uid() or public.my_role() = 'admin');
 
+-- ── 업무체크리스트 항목 ── 조회는 로그인 사용자 모두, 편집은 manageChecklist 권한자만
+drop policy if exists checklist_items_select on public.checklist_items;
+create policy checklist_items_select on public.checklist_items for select to authenticated
+    using (true);
+
+drop policy if exists checklist_items_insert on public.checklist_items;
+create policy checklist_items_insert on public.checklist_items for insert to authenticated
+    with check (public.can_manage_checklist() and created_by = auth.uid());
+
+drop policy if exists checklist_items_update on public.checklist_items;
+create policy checklist_items_update on public.checklist_items for update to authenticated
+    using (public.can_manage_checklist())
+    with check (public.can_manage_checklist());
+
+-- 삭제는 화면이 deleted_at 을 찍는 soft delete 로 하지만, 정리용 실삭제도 같은 권한으로 연다
+drop policy if exists checklist_items_delete on public.checklist_items;
+create policy checklist_items_delete on public.checklist_items for delete to authenticated
+    using (public.can_manage_checklist());
+
+-- ── 업무체크리스트 체크 ── 담당자 본인이 찍거나, 관리 권한자가 대신 찍는다
+drop policy if exists checklist_checks_select on public.checklist_checks;
+create policy checklist_checks_select on public.checklist_checks for select to authenticated
+    using (true);
+
+drop policy if exists checklist_checks_insert on public.checklist_checks;
+create policy checklist_checks_insert on public.checklist_checks for insert to authenticated
+    with check (checked_by = auth.uid() and (
+        public.can_manage_checklist()
+        or exists (
+            select 1 from public.checklist_items i
+             where i.id = item_id and (i.assignee_id is null or i.assignee_id = auth.uid())
+        )
+    ));
+
+-- 메모만 고친다 (체크한 사람·날짜는 바꾸지 않는다)
+drop policy if exists checklist_checks_update on public.checklist_checks;
+create policy checklist_checks_update on public.checklist_checks for update to authenticated
+    using (checked_by = auth.uid() or public.can_manage_checklist())
+    with check (checked_by = auth.uid() or public.can_manage_checklist());
+
+drop policy if exists checklist_checks_delete on public.checklist_checks;
+create policy checklist_checks_delete on public.checklist_checks for delete to authenticated
+    using (checked_by = auth.uid() or public.can_manage_checklist());
+
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
 
@@ -587,6 +691,8 @@ alter publication supabase_realtime add table public.issue_comments;
 alter publication supabase_realtime add table public.notices;
 alter publication supabase_realtime add table public.notice_comments;
 alter publication supabase_realtime add table public.profiles;
+alter publication supabase_realtime add table public.checklist_items;
+alter publication supabase_realtime add table public.checklist_checks;
 
 -- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
 -- 화주영업팀은 본인 등록건만 보이므로(RLS) 앱의 assertRepOwner() 만으로는 남의 묶음을

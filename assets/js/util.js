@@ -13,6 +13,13 @@ export function toDateStr(d) {
     return `${y}-${m}-${day}`;
 }
 
+/** YYYY-MM-DD 에 일수를 더한다 (음수면 이전 날짜) */
+export function addDays(date, days) {
+    const d = new Date(`${String(date).slice(0, 10)}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return toDateStr(d);
+}
+
 /** ISO 문자열을 YYYY-MM-DD HH:MM 으로 변환 */
 export function fmtDateTime(iso) {
     if (!iso) return '';
