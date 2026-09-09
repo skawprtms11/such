@@ -364,12 +364,6 @@ export const ISSUE_STATUS = [
 
 /* ------------------------------ 업무체크리스트 ------------------------------ */
 
-/**
- * 체크리스트 업무 구분.
- * 화면에서 추가하지 않고 이 목록으로 고정한다 (탭이 늘면 좁은 화면이 깨진다).
- */
-export const CHECK_CATEGORIES = ['입고', '출고', '반품', '기타'];
-
 /** 체크 주기 코드 - 저장값 (checklist_items.cycle) */
 export const CHECK_CYCLE = {
     DAILY: 'daily',      // 매일
@@ -401,6 +395,98 @@ export function cycleLabel(item) {
     if (item?.cycle === CHECK_CYCLE.MONTHLY) return `${base}(${Number(item.monthday) || 1}일)`;
     return base;
 }
+
+/**
+ * 체크리스트 노드 종류 - 저장값 (checklist_items.kind) 🔑
+ *   group     : 업무항목(입고·출고 …). 사용자가 만드는 최상위 묶음. 흐름 한 벌의 제목이다
+ *   process   : 업무 흐름의 한 단계. 같은 부모 아래에서 sort_order 순서가 곧 업무 순서다
+ *   situation : 그 단계에서 생길 수 있는 상황(예: 입고수량오류). 발생 처리하면
+ *               하위 프로세스·체크항목이 그 날짜에 끼어든다
+ *   check     : 담당자가 실제로 체크하는 항목 (주기·담당자를 가진다)
+ */
+export const CHECK_KIND = {
+    GROUP: 'group',
+    PROCESS: 'process',
+    SITUATION: 'situation',
+    CHECK: 'check',
+};
+
+/** 종류 표시 문구 */
+export const CHECK_KINDS = {
+    [CHECK_KIND.GROUP]: '업무항목',
+    [CHECK_KIND.PROCESS]: '프로세스',
+    [CHECK_KIND.SITUATION]: '상황',
+    [CHECK_KIND.CHECK]: '체크항목',
+};
+
+/**
+ * 종류별로 둘 수 있는 하위 종류. 키 `root` 는 최상위(부모 없음)다.
+ *   최상위    : 업무항목만 (사용자가 「업무항목 추가」로 만든다)
+ *   업무항목  : 프로세스(업무 흐름) · 체크항목(흐름 없는 단독 업무)
+ *   프로세스  : 체크항목 · 상황 · 하위 프로세스(세부 단계)
+ *   상황      : 대응 프로세스 · 체크항목(간단한 상황은 프로세스 없이 바로)
+ *   체크항목  : 없음 (말단)
+ */
+export const CHECK_KIND_CHILDREN = {
+    root: [CHECK_KIND.GROUP],
+    [CHECK_KIND.GROUP]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
+    [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION, CHECK_KIND.PROCESS],
+    [CHECK_KIND.SITUATION]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
+    [CHECK_KIND.CHECK]: [],
+};
+
+/**
+ * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 같은 이름의 업무항목을 만들고
+ * 아래 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 같은 이름이 이미 있으면 거부한다.
+ * `children` 이 없는 항목은 체크항목이고, 프로세스·상황은 kind 를 적는다.
+ */
+export const CHECK_TEMPLATES = {
+    입고: [
+        { kind: CHECK_KIND.PROCESS, title: '하차 파렛트수 확인', children: [
+            { title: '차량 도착 시각 기록' },
+            { title: '하차 파렛트수 = 송장 파렛트수 대조' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고거래명세서 확인', children: [
+            { title: '거래명세서 수령·품목 대조' },
+            { kind: CHECK_KIND.SITUATION, title: '입고수량오류',
+                description: '명세서 수량과 실물 수량이 다를 때', children: [
+                    { kind: CHECK_KIND.PROCESS, title: '수량 차이 기록', children: [
+                        { title: '품목별 차이 수량 사진 촬영' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '화주 담당자 보고', children: [
+                        { title: '이슈등록 (업무구분: 입고)' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '명세서 정정본 수령' },
+                ] },
+            { kind: CHECK_KIND.SITUATION, title: '제품 틀림',
+                description: '명세서에 없는 제품이 왔거나 품목이 다를 때', children: [
+                    { kind: CHECK_KIND.PROCESS, title: '오입고 제품 격리', children: [
+                        { title: '격리 구역 이동·표시' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '반송 여부 확인', children: [
+                        { title: '화주 회신 기록' },
+                    ] },
+                ] },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고검수', children: [
+            { title: 'LOT 확인' },
+            { title: '유효기간 작성' },
+            { title: '외관·파손 확인' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고라벨 부착', children: [
+            { title: '파렛트별 라벨 출력·부착' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고적치', children: [
+            { title: '로케이션 지정·적치' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: 'WMS 입고처리', children: [
+            { title: 'WMS 입고 확정' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '실물 입고적치 검증', children: [
+            { title: 'WMS 재고 = 실물 로케이션 대조' },
+        ] },
+    ],
+};
 
 /**
  * 메뉴 정의

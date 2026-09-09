@@ -1562,37 +1562,228 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .cl-progress { display: flex; align-items: center; gap: 8px; min-width: 150px; }
 .cl-progress__num { font-size: 13px; font-weight: 700; color: var(--gray-700); }
 .cl-progress .bar { flex: 1; }
+.cl-progress .bar__fill.is-done { background: var(--green); }
 
 .cl-missed { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 
-.cl-groups { display: flex; flex-direction: column; gap: 14px; }
 
-.cl-group { border: 1px solid var(--gray-200); border-radius: var(--radius); overflow: hidden; }
-.cl-group__head {
+/* ===== 일일체크리스트 표 (dl) - 업무항목 · 프로세스 · 체크리스트 3컬럼 ===== */
+table.dl { table-layout: auto; }
+table.dl td { vertical-align: top; }
+.dl__c-check { width: 36px; text-align: center; }
+.dl__c-check input[type="checkbox"] { width: 18px; height: 18px; margin-top: 4px; cursor: pointer; }
+.dl__c-group { width: 140px; }
+.dl__c-proc { width: 220px; }
+.dl__c-done { width: 120px; }
+.dl__c-memo { width: 44px; }
+
+.dl__group { background: var(--gray-100); border-right: 1px solid var(--gray-200); }
+.dl__group-name { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+
+.dl__proc { background: #fafbfd; border-right: 1px solid var(--gray-200); font-size: 12.5px; line-height: 1.5; }
+.dl__proc.is-sit { background: #fffaf0; }
+.dl__proc-parent { color: var(--gray-500); }
+.dl__proc-name { font-weight: 700; color: var(--gray-900); }
+.dl__proc-sit { display: inline-flex; align-items: center; gap: 2px; color: var(--amber); font-weight: 700; }
+.dl__proc-sep { margin: 0 4px; color: var(--gray-300); }
+.dl__proc-cnt { display: block; margin-top: 2px; color: var(--gray-500); font-size: 11.5px; }
+
+.dl__item { cursor: pointer; }
+.dl__item.is-locked { cursor: default; color: var(--gray-500); }
+.dl__item-step { display: inline-block; margin-right: 4px; color: var(--gray-500); font-size: 11.5px; }
+.dl__item-title { font-size: 13.5px; }
+.dl__item-desc { display: block; color: var(--gray-500); font-size: 12px; }
+.dl__item-meta { display: block; color: var(--gray-500); font-size: 11.5px; }
+.dl__row.is-done .dl__item-title { color: var(--gray-500); text-decoration: line-through; }
+.dl__row.is-sit td:not(.dl__group):not(.dl__proc) { background: #fffdf7; }
+.dl__done { color: var(--green); font-size: 12px; white-space: nowrap; }
+.dl__c-memo .btn--icon.is-on { color: var(--blue); }
+
+.dl__sitrow td { background: #fff; padding-top: 4px; padding-bottom: 6px; }
+.dl__sits { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dl__sits-label { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-500); font-size: 12px; }
+.cl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px dashed var(--amber);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--amber);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+}
+.cl-chip:hover { background: var(--amber-soft); }
+.cl-chip:disabled { border-color: var(--gray-300); color: var(--gray-500); cursor: default; }
+.cl-chip__act { padding: 1px 6px; border-radius: 999px; background: var(--amber); color: #fff; font-size: 11px; }
+.cl-chip.is-active { border-style: solid; background: var(--amber-soft); cursor: default; font-weight: 700; }
+.cl-chip__note { font-weight: 400; color: var(--gray-700); }
+.cl-chip .btn--icon.btn--sm { width: 24px; height: 24px; min-height: 24px; padding: 0; }
+
+/* ===== 구조도 보드 (fb-*) - 업무프로세스 탭 ===== */
+.fb { display: flex; flex-direction: column; padding: 12px; }
+
+/* 한 단(row) = 왼쪽 프로세스 카드 + 오른쪽 상황 분기 칸 */
+.fb-row { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(0, 1fr); gap: 0 28px; align-items: start; }
+.fb-row > .fb-main { min-width: 0; }
+.fb-row > .fb-branch { min-width: 0; position: relative; display: flex; flex-direction: column; gap: 8px; padding-left: 14px; }
+/* 분기 점선 - 프로세스 카드 오른쪽에서 상황 카드로 */
+.fb-row > .fb-branch::before {
+    content: '';
+    position: absolute;
+    left: -28px;
+    top: 20px;
+    width: 42px;
+    border-top: 2px dashed var(--amber);
+}
+.fb-row > .fb-branch::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 20px;
+    bottom: 12px;
+    border-left: 2px dashed var(--amber);
+}
+.fb-row--sub { grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr); gap: 0 20px; }
+.fb-row--sub > .fb-branch::before { left: -20px; width: 34px; }
+
+/* 세로 연결선 + 화살표 */
+.fb-link { position: relative; height: 26px; margin-left: 22px; border-left: 2px solid var(--gray-300); }
+.fb-link::after {
+    content: '';
+    position: absolute;
+    left: -5px;
+    bottom: -1px;
+    border: 4px solid transparent;
+    border-top: 6px solid var(--gray-300);
+}
+.fb-link--dashed { border-left-style: dashed; }
+.fb-link--sm { height: 18px; margin-left: 16px; }
+
+/* 카드 */
+.fb-card {
+    border: 1.5px solid var(--gray-300);
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+}
+.fb-card__head {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-    margin: 0;
-    padding: 9px 12px;
+    min-height: 42px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--gray-200);
     background: var(--gray-100);
-    font-size: 13px;
+    border-radius: 9px 9px 0 0;
 }
-.cl-group__body { display: flex; flex-direction: column; }
+.fb-card__title { font-weight: 700; font-size: 13.5px; }
+.fb-card__desc { color: var(--gray-500); font-size: 12px; }
+.fb-card__desc--block { margin: 6px 10px 0; }
+.fb-card__who { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-700); font-size: 12px; }
+.fb-card__body { padding: 4px 6px 6px; }
+.fb-card__body > .cl-item { border-top: none; }
+.fb-card__empty { margin: 4px 8px 6px; color: var(--gray-500); font-size: 12px; }
+.fb-card__add { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 0; border-top: 1px dashed var(--gray-200); margin-top: 4px; }
+.fb-card__add .btn--ghost { color: var(--blue); border-color: transparent; }
+.fb-card__add .btn--ghost:hover { background: var(--blue-soft); }
+.fb-card.is-off { opacity: .6; }
+/* 카드 안 도구는 작게 - 좁은 칸에서 줄이 무너지지 않게 */
+.fb .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
+.fb .fb-card__head .btn--sm, .fb .fb-card__add .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
+.fb-branch .fb-row--sub { grid-template-columns: 1fr; }
+/* 보드 안의 체크 줄 - 제목이 세로로 부서지지 않게 메타(주기·담당·시각)를 다음 줄로 흘린다 */
+.fb .cl-item { flex-wrap: wrap; row-gap: 2px; }
+.fb .cl-item__title { flex: 1 1 180px; min-width: 120px; word-break: keep-all; overflow-wrap: anywhere; }
+.fb .cl-item__cycle, .fb .cl-item__who { width: auto; min-width: 0; }
+
+/* 프로세스 카드 색 - 대기 · 진행(파랑) · 완료(초록) · 상황 발생(주황) */
+.fb-card--proc { border-color: var(--gray-300); }
+.fb-card--sub { box-shadow: none; }
+.fb-card--sub > .fb-card__head { min-height: 34px; padding: 4px 8px; }
+.fb-card--sub > .fb-card__head .fb-card__title { font-size: 13px; }
+.fb-card--loose { border-style: dashed; }
+
+/* 하위 프로세스 사슬 - 카드 안의 작은 흐름 */
+.fb-chain { margin: 6px 6px 4px 14px; padding-left: 12px; border-left: 2px solid var(--gray-200); }
+
+/* 순번 원 */
+.fb-no {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    flex: none;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 12px;
+    background: var(--blue);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+}
+.fb-card--sub > .fb-card__head .fb-no { background: #fff; color: var(--blue); border: 1.5px solid var(--blue); height: 22px; min-width: 22px; }
+.fb-no--sit { background: var(--amber-soft); color: var(--amber); }
+
+/* 상황 카드 - 주황. 발생 전엔 점선 유령 */
+.fb-card--sit { border-color: var(--amber); background: #fffaf0; }
+.fb-card--sit > .fb-card__head { background: var(--amber-soft); color: var(--amber); }
+
+/* 흐름 관리 - 업무항목 탭 줄 (우측에 「업무항목 추가」) */
+.cl-gbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.cl-gtabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1; }
+.cl-gtabs__empty { color: var(--gray-500); font-size: 12.5px; }
+.cl-gtab {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--gray-300);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--gray-700);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+.cl-gtab:hover { border-color: var(--blue); }
+.cl-gtab.is-active { border-color: var(--blue); background: var(--blue); color: #fff; }
+.cl-gtab.is-off { opacity: .55; }
+.cl-gbar__actions { display: flex; gap: 6px; flex: none; }
+.cl-ghead {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1.5px solid var(--gray-300);
+    border-radius: 10px;
+    background: #fff;
+}
+.cl-ghead__title { font-size: 15px; }
+.cl-ghead__desc { color: var(--gray-500); font-size: 12.5px; }
+.cl-kind--group { background: var(--gray-700); color: #fff; }
 
 /* 체크 한 줄 */
 .cl-item {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-height: 42px;
-    padding: 6px 12px;
+    min-height: 40px;
+    padding: 5px 12px;
     border-top: 1px solid var(--gray-200);
     font-size: 13px;
 }
 .cl-item:first-child { border-top: none; }
 .cl-item input[type="checkbox"] { width: 17px; height: 17px; flex: none; }
 .cl-item__title { flex: 1; cursor: pointer; }
-.cl-item__path { color: var(--gray-500); font-size: 11.5px; margin-right: 4px; }
+.cl-item__desc { display: block; color: var(--gray-500); font-size: 11.5px; }
 .cl-item__cycle {
     flex: none;
     min-width: 44px;
@@ -1601,28 +1792,62 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
     text-align: center;
 }
 .cl-item__who { flex: none; width: 72px; color: var(--gray-700); font-size: 12px; }
-.cl-item__done { flex: none; width: 118px; color: var(--green); font-size: 11.5px; }
-.cl-item.is-done .cl-item__title { color: var(--gray-500); text-decoration: line-through; }
-.cl-item.is-locked { background: var(--gray-100); color: var(--gray-500); }
-.cl-item.is-locked .cl-item__title { cursor: default; }
-.cl-item .btn--icon.is-on { color: var(--blue); }
+.cl-item--edit { min-height: 36px; padding: 3px 8px; gap: 6px; flex-wrap: wrap; }
+.cl-item--edit .cl-item__title { cursor: default; font-size: 13px; flex: 1 1 140px; }
+.cl-item--edit .cl-item__who { width: auto; }
+.cl-item--edit .cl-item__who:empty { display: none; }
+.cl-item--edit .cl-item__cycle { min-width: 0; }
+.cl-item--edit.is-off { color: var(--gray-500); }
+.cl-item--edit.is-skip .cl-item__title { color: var(--gray-500); }
+/* 일일체크리스트 포함 토글 */
+.cl-daily {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: none;
+    height: 24px;
+    padding: 0 8px 0 5px;
+    border: 1px solid var(--gray-300);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--gray-500);
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+}
+.cl-daily input { width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.cl-daily.is-on { border-color: var(--blue); background: var(--blue-soft); color: #1d4ed8; }
 
-/* 항목 관리 트리 */
-.cl-tree { margin-bottom: 10px; }
-.cl-node {
+/* 흐름 관리 안내 한 줄 */
+.cl-guide {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    min-height: 38px;
-    padding: 4px 6px;
-    border-bottom: 1px solid var(--gray-200);
-    font-size: 13px;
+    margin: 10px 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--gray-100);
+    color: var(--gray-700);
+    font-size: 12px;
 }
-.cl-node.is-off { color: var(--gray-500); }
-.cl-node__gap { display: inline-block; width: 28px; flex: none; }
-.cl-node__title { font-weight: 600; }
-.cl-node__cycle { color: var(--gray-500); font-size: 11.5px; }
-.cl-node__who { color: var(--gray-700); font-size: 12px; }
+
+/* 종류 배지 - 프로세스(순번) · 체크항목(네모) · 상황(경고) */
+.cl-kind {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 700;
+}
+.cl-kind--process { background: var(--blue); color: #fff; }
+.cl-kind--check { color: var(--gray-500); }
+.cl-kind--situation { background: var(--amber-soft); color: var(--amber); }
 
 .cl-form {
     display: flex;
@@ -1635,10 +1860,20 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
     border-radius: var(--radius);
     background: var(--blue-soft);
 }
+.cl-form__head { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.cl-form__parent { color: var(--gray-700); }
 .cl-form .field { margin: 0; flex: 1 1 150px; }
 .cl-form .check { margin: 0; }
 
+@media (max-width: 1100px) {
+    /* 좁으면 상황 분기를 카드 아래로 내린다 (점선은 왼쪽 세로로) */
+    .fb-row, .fb-row--sub { grid-template-columns: 1fr; gap: 6px 0; }
+    .fb-row > .fb-branch { margin-left: 22px; padding-left: 12px; }
+    .fb-row > .fb-branch::before { display: none; }
+    .fb-row > .fb-branch::after { top: 0; bottom: 0; }
+}
 @media (max-width: 860px) {
-    .cl-item__who, .cl-item__done { display: none; }
-    .cl-node__who { display: none; }
+    .cl-item__who { display: none; }
+    .fb-card__desc { display: none; }
+    .cl-gbar { flex-wrap: wrap; }
 }

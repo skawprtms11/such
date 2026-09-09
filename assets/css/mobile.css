@@ -1573,3 +1573,59 @@ button.m-pallet:disabled { cursor: default; }
 .m-chk.is-done .m-chk__title { color: var(--m-gray-500); text-decoration: line-through; }
 .m-chk.is-locked { opacity: .55; }
 .m-chk .m-btn.is-on { color: var(--m-blue); }
+
+/* 일일체크리스트 2단 표 - [프로세스 | 체크리스트]. 웹 3컬럼 표의 업무항목 컬럼은 카드 제목으로 올렸다 */
+.m-dl { display: flex; flex-direction: column; margin: 0 -2px; }
+.m-dl__sec {
+    display: grid;
+    grid-template-columns: 34% 1fr;
+    border-top: 1px solid var(--m-gray-200);
+}
+.m-dl__sec:first-child { border-top: none; }
+.m-dl__proc {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 8px 10px 4px;
+    border-right: 1px solid var(--m-gray-200);
+    background: #fafbfd;
+    font-size: 12.5px;
+    line-height: 1.35;
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+}
+.m-dl__sec.is-sit .m-dl__proc { background: #fffaf0; }
+.m-dl__proc-parent { color: var(--m-gray-500); font-size: 11.5px; }
+.m-dl__proc-parent::after { content: ' ›'; color: var(--m-gray-300); }
+.m-dl__proc-name { font-weight: 700; font-size: 13.5px; }
+.m-dl__proc-sit { display: inline-flex; align-items: center; gap: 2px; color: var(--m-amber); font-weight: 700; font-size: 13px; }
+.m-dl__proc-cnt { margin-top: 2px; color: var(--m-gray-500); font-size: 11.5px; }
+.m-dl__items { min-width: 0; padding-left: 8px; }
+.m-dl__items .m-chk { padding-right: 0; }
+.m-dl__items .m-chk__title { font-size: 14.5px; }
+
+/* 상황 칩 - 발생 전 점선 「발생」, 발생하면 주황 실선(누르면 시트) */
+.m-sits { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 8px; }
+.m-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px dashed var(--m-amber);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--m-amber);
+    font: inherit;
+    font-size: 13px;
+    max-width: 100%;
+}
+.m-chip:disabled { border-color: var(--m-gray-300); color: var(--m-gray-500); }
+.m-chip__act { padding: 1px 7px; border-radius: 999px; background: var(--m-amber); color: #fff; font-size: 11px; }
+.m-chip.is-active { border-style: solid; background: var(--m-amber-soft); font-weight: 700; }
+.m-chip__label { white-space: nowrap; }
+.m-chip__note { flex: 1; min-width: 0; font-weight: 400; color: var(--m-gray-700); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+
+
+/* 상황 시트 안내 문단 (발생 시트 · 발생 해제 시트) */
+.m-sit__desc { margin: 0 0 8px; font-size: 13px; color: var(--m-gray-700); }

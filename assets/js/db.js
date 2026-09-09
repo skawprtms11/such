@@ -4,7 +4,8 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    CHECK_CATEGORIES, CHECK_CYCLE, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
+    CHECK_CYCLE, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
+    CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
@@ -26,8 +27,13 @@ function normalize(db) {
     db.noticeComments = db.noticeComments ?? [];
     db.checklistItems = db.checklistItems ?? [];
     db.checklistChecks = db.checklistChecks ?? [];
+    // 종류(kind)가 없는 옛 항목 - 하위가 있으면 프로세스, 없으면 체크항목으로 본다
+    const hasKid = new Set(db.checklistItems.map((i) => i.parent_id).filter(Boolean));
     db.checklistItems.forEach((i) => {
         i.parent_id = i.parent_id ?? null;
+        i.kind = i.kind ?? (hasKid.has(i.id) ? CHECK_KIND.PROCESS : CHECK_KIND.CHECK);
+        i.category = i.category ?? '';
+        i.daily = i.daily ?? true;       // 포함 여부 컬럼이 없던 옛 항목은 포함으로 본다
         i.description = i.description ?? '';
         i.assignee_id = i.assignee_id ?? null;
         i.assignee_name = i.assignee_name ?? '';
@@ -1985,6 +1991,14 @@ export async function deleteNoticeComment(id, user) {
 }
 
 /* -------------------------------- 업무체크리스트 -------------------------------- */
+/*
+ * 항목 트리 한 그루가 업무 흐름이다 (docs/checklist.md).
+ *   process   : 업무 단계. 형제 순서(sort_order)가 곧 업무 순서
+ *   situation : 그 단계에서 생길 수 있는 상황. **발생 처리한 날짜에만** 하위가 끼어든다
+ *   check     : 담당자가 실제로 체크하는 항목
+ * 상황 발생은 별도 테이블 없이 **상황 노드에 그 날짜의 체크 기록**을 남기는 것으로 표현한다.
+ * 담당자는 체크항목 → 상위 프로세스 순으로 상속된다 (effectiveAssignee).
+ */
 
 /** 항목 등록·수정·삭제 권한 (체크는 담당자 본인도 한다) */
 export function canManageChecklist(user) {
@@ -1992,22 +2006,21 @@ export function canManageChecklist(user) {
 }
 
 /**
- * 이 항목을 체크할 수 있는지.
+ * 이 항목을 체크(상황이면 발생 처리)할 수 있는지.
  * 담당자 본인, 담당자 미지정(공통 업무), 그리고 항목 관리 권한자(대신 체크)만 가능하다.
- * 🔑 웹·앱·서버 RLS 가 모두 이 기준을 쓴다.
+ * 담당자는 상위에서 상속된 값(`assignee_eff_id`)을 본다 - dailyFlow/dueItems 가 붙여 준다.
+ * 🔑 웹·앱·서버 RLS(checklist_effective_assignee) 가 모두 이 기준을 쓴다.
  */
 export function canCheckItem(user, item) {
     if (!user || !item) return false;
     if (canManageChecklist(user)) return true;
-    return !item.assignee_id || item.assignee_id === user.id;
+    const a = item.assignee_eff_id !== undefined ? item.assignee_eff_id : item.assignee_id;
+    return !a || a === user.id;
 }
 
-/** 정렬 - 업무 구분 순서 → 형제 순서(sort_order) → 등록순 */
+/** 정렬 - 형제 순서(sort_order) → 등록순. 업무항목(최상위)도 같은 규칙이다 */
 function sortChecklist(rows) {
     return rows.slice().sort((a, b) => {
-        const ca = CHECK_CATEGORIES.indexOf(a.category);
-        const cb = CHECK_CATEGORIES.indexOf(b.category);
-        if (ca !== cb) return ca - cb;
         if ((a.sort_order ?? 0) !== (b.sort_order ?? 0)) {
             return (a.sort_order ?? 0) - (b.sort_order ?? 0);
         }
@@ -2015,18 +2028,30 @@ function sortChecklist(rows) {
     });
 }
 
+/** 살아 있는 항목만 (soft delete 제외) */
+function aliveItems(db) {
+    return db.checklistItems.filter((i) => !i.deleted_at);
+}
+
 /**
  * 항목 목록 (삭제된 항목 제외).
- * @param {{category?:string, includeInactive?:boolean, assignee?:string}} f
- *   includeInactive - 항목 관리 탭은 비활성 항목까지 봐야 한다
+ * @param {{root?:string, includeInactive?:boolean, assignee?:string, kind?:string}} f
+ *   root            - 업무항목(group) id 를 주면 그 아래 전체(자기 포함)만
+ *   includeInactive - 업무프로세스 탭은 비활성 항목까지 봐야 한다
  */
 export async function listChecklistItems(f = {}) {
-    const db = (await load());
-    let rows = db.checklistItems.filter((i) => !i.deleted_at);
-    if (f.category) rows = rows.filter((i) => i.category === f.category);
+    let rows = aliveItems(await load());
+    if (f.root) rows = withDescendants(rows, f.root);
+    if (f.kind) rows = rows.filter((i) => i.kind === f.kind);
     if (!f.includeInactive) rows = rows.filter((i) => i.active);
     if (f.assignee) rows = rows.filter((i) => i.assignee_id === f.assignee);
     return sortChecklist(rows);
+}
+
+/** 업무항목(최상위 group) 목록 - 비활성도 함께 준다 (업무프로세스 탭이 켜고 끈다) */
+export async function listChecklistGroups() {
+    return sortChecklist(aliveItems(await load())
+        .filter((i) => i.kind === CHECK_KIND.GROUP && !i.parent_id));
 }
 
 /**
@@ -2041,17 +2066,19 @@ export function checklistTree(rows) {
     sortChecklist(rows).forEach((r) => {
         const node = nodes.get(r.id);
         const parent = r.parent_id && byId.has(r.parent_id) ? nodes.get(r.parent_id) : null;
-        if (parent) {
-            node.depth = parent.depth + 1;
-            parent.children.push(node);
-        } else {
-            roots.push(node);
-        }
+        if (parent) parent.children.push(node);
+        else roots.push(node);
     });
+    // 깊이는 다 이어 붙인 뒤에 센다 - 자식이 부모보다 먼저 처리되면 깊이가 어긋난다
+    const setDepth = (node, depth) => {
+        node.depth = depth;
+        node.children.forEach((c) => setDepth(c, depth + 1));
+    };
+    roots.forEach((n) => setDepth(n, 0));
     return roots;
 }
 
-/** 상위 항목 이름을 이어 붙인다 (예: `입고 준비 > 오전`) */
+/** 상위 항목 이름을 이어 붙인다 (예: `입고검수 > 입고수량오류`) */
 function pathOf(item, byId) {
     const names = [];
     let cur = byId.get(item.parent_id);
@@ -2062,15 +2089,59 @@ function pathOf(item, byId) {
     return names.join(' > ');
 }
 
-/** 등록·수정 입력값 검증 - 주기에 따라 요일·일자가 필수다 */
-function checkItemInput(patch, base, db) {
+/**
+ * 담당자 상속 🔑 - 자기 담당자가 없으면 가장 가까운 상위의 담당자를 쓴다.
+ * 끝까지 없으면 공통 업무(누구나 체크)다. 서버의 checklist_effective_assignee() 와 같다.
+ */
+function effectiveAssignee(item, byId) {
+    let cur = item;
+    while (cur) {
+        if (cur.assignee_id) return { id: cur.assignee_id, name: cur.assignee_name ?? '' };
+        cur = byId.get(cur.parent_id);
+    }
+    return { id: null, name: '' };
+}
+
+/** 상위 중 상황(situation) 노드 id 들 - 모두 발생 처리돼야 이 항목이 오늘 대상에 든다 */
+function situationAncestors(item, byId) {
+    const out = [];
+    let cur = byId.get(item.parent_id);
+    while (cur) {
+        if (cur.kind === CHECK_KIND.SITUATION) out.push(cur.id);
+        cur = byId.get(cur.parent_id);
+    }
+    return out;
+}
+
+/** 이 종류의 부모 아래에 둘 수 있는 하위 종류 */
+export function allowedChildKinds(parentKind) {
+    return CHECK_KIND_CHILDREN[parentKind ?? 'root'] ?? [];
+}
+
+/** 등록·수정 입력값 검증 - 종류·주기에 따라 필수값이 다르다 */
+function checkItemInput(patch, base, db, parent) {
     const title = String(patch.title ?? base.title ?? '').trim();
-    if (!title) throw new Error('항목명을 입력하세요.');
+    if (!title) throw new Error('이름을 입력하세요.');
 
-    const category = patch.category ?? base.category ?? CHECK_CATEGORIES[0];
-    if (!CHECK_CATEGORIES.includes(category)) throw new Error('업무 구분이 올바르지 않습니다.');
+    const kind = patch.kind ?? base.kind ?? CHECK_KIND.CHECK;
+    if (!Object.values(CHECK_KIND).includes(kind)) throw new Error('종류가 올바르지 않습니다.');
+    if (!allowedChildKinds(parent?.kind).includes(kind)) {
+        const where = parent ? `${CHECK_KINDS[parent.kind]} 아래` : '최상위';
+        throw new Error(`${where}에는 ${CHECK_KINDS[kind]}을(를) 둘 수 없습니다.`);
+    }
 
-    const cycle = patch.cycle ?? base.cycle ?? CHECK_CYCLE.DAILY;
+    // category 는 업무항목 이름이다 - 업무항목은 자기 이름, 그 아래는 상위를 따른다 (옛 컬럼 호환)
+    const category = parent ? parent.category : title;
+    if (kind === CHECK_KIND.GROUP) {
+        const dup = aliveItems(db).find((i) => i.kind === CHECK_KIND.GROUP
+            && i.id !== base.id && i.title === title);
+        if (dup) throw new Error(`같은 이름의 업무항목이 이미 있습니다: ${title}`);
+    }
+
+    // 주기는 체크항목만 뜻이 있다. 프로세스·상황은 daily 로 두고 화면에서 보이지 않는다
+    const cycle = kind === CHECK_KIND.CHECK
+        ? (patch.cycle ?? base.cycle ?? CHECK_CYCLE.DAILY)
+        : CHECK_CYCLE.DAILY;
     if (!Object.values(CHECK_CYCLE).includes(cycle)) throw new Error('주기가 올바르지 않습니다.');
 
     let weekday = null;
@@ -2096,36 +2167,43 @@ function checkItemInput(patch, base, db) {
         title,
         description: String(patch.description ?? base.description ?? '').trim(),
         category,
+        kind,
         cycle,
         weekday,
         monthday,
         assignee_id: assignee?.id ?? null,
         assignee_name: assignee?.name ?? '',
         active: patch.active === undefined ? base.active !== false : !!patch.active,
+        // 일일체크리스트 포함 여부 - 업무프로세스 탭에서 체크한 항목만 일일체크리스트에 나온다
+        daily: patch.daily === undefined ? !!base.daily : !!patch.daily,
     };
 }
 
-/** 같은 부모를 둔 형제 (순서 계산용) */
-function siblingsOf(db, parentId, category) {
-    return sortChecklist(db.checklistItems.filter((i) => !i.deleted_at
-        && (i.parent_id ?? null) === (parentId ?? null)
-        && i.category === category));
+/** 같은 부모를 둔 형제 (순서 계산용). 최상위면 업무항목들끼리다 */
+function siblingsOf(db, parentId) {
+    return sortChecklist(aliveItems(db)
+        .filter((i) => (i.parent_id ?? null) === (parentId ?? null)));
 }
 
-/** 항목 등록 - 상위 항목을 지정하면 업무 구분은 상위를 따른다 */
+/** 항목 등록 - 최상위는 업무항목만, 그 아래는 상위가 허용하는 종류만 (allowedChildKinds) */
 export async function createChecklistItem(payload, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 등록할 권한이 없습니다.');
     const db = (await load());
+    const row = insertChecklistItem(db, payload, user);
+    await save(db);
+    return row;
+}
 
+/** 등록 한 건을 메모리에 넣는다 (createChecklistItem · seedChecklistTemplate 공용) */
+function insertChecklistItem(db, payload, user) {
     const parentId = payload.parent_id || null;
     const parent = parentId
-        ? db.checklistItems.find((x) => x.id === parentId && !x.deleted_at)
+        ? aliveItems(db).find((x) => x.id === parentId)
         : null;
     if (parentId && !parent) throw new Error('상위 항목을 찾을 수 없습니다.');
 
-    const category = parent?.category ?? payload.category;
-    const v = checkItemInput({ ...payload, category }, {}, db);
-    const last = siblingsOf(db, parentId, v.category).at(-1);
+    const v = checkItemInput(payload, {}, db, parent);
+    const last = siblingsOf(db, parentId).at(-1);
     const row = {
         id: uid('ci'),
         parent_id: parentId,
@@ -2138,8 +2216,37 @@ export async function createChecklistItem(payload, user) {
         deleted_at: null,
     };
     db.checklistItems.push(row);
-    await save(db);
     return row;
+}
+
+/**
+ * 견본(config.js 의 CHECK_TEMPLATES)으로 업무항목 한 벌을 만든다.
+ * 같은 이름의 업무항목이 이미 있으면 거부한다 (흐름이 두 벌 생기지 않게).
+ * @returns {{group:object, count:number}} 만든 업무항목과 등록한 항목 수(업무항목 포함)
+ */
+export async function seedChecklistTemplate(name, user) {
+    if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 등록할 권한이 없습니다.');
+    const tpl = CHECK_TEMPLATES[name];
+    if (!tpl?.length) throw new Error('견본이 없는 업무항목입니다.');
+    const db = (await load());
+    const group = insertChecklistItem(db, { kind: CHECK_KIND.GROUP, title: name }, user);
+    let count = 1;
+    const walk = (nodes, parentId) => {
+        nodes.forEach((n) => {
+            const row = insertChecklistItem(db, {
+                parent_id: parentId,
+                kind: n.kind ?? CHECK_KIND.CHECK,
+                title: n.title,
+                description: n.description ?? '',
+                daily: true,             // 견본 항목은 모두 일일체크리스트에 포함
+            }, user);
+            count += 1;
+            if (n.children?.length) walk(n.children, row.id);
+        });
+    };
+    walk(tpl, group.id);
+    await save(db);
+    return { group, count };
 }
 
 /** 하위 항목을 모두 모은다 (자기 자신 포함) */
@@ -2157,23 +2264,24 @@ function withDescendants(rows, id) {
     return out;
 }
 
-/** 항목 수정 - 최상위 항목의 업무 구분을 바꾸면 하위도 함께 옮긴다 */
+/**
+ * 항목 수정. 업무항목 이름을 바꾸면 하위의 category(옛 컬럼)도 함께 맞춘다.
+ * 종류(kind)는 바꾸지 않는다 - 하위 구조가 달라져야 해서 지우고 다시 만든다.
+ */
 export async function updateChecklistItem(id, patch, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 수정할 권한이 없습니다.');
     const db = (await load());
-    const item = db.checklistItems.find((x) => x.id === id && !x.deleted_at);
+    const item = aliveItems(db).find((x) => x.id === id);
     if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
 
     const parent = item.parent_id
         ? db.checklistItems.find((x) => x.id === item.parent_id)
         : null;
-    // 하위 항목의 업무 구분은 상위를 따른다 (트리 한 그루가 두 구분에 걸치지 않게 한다)
-    const v = checkItemInput({ ...patch, category: parent?.category ?? patch.category }, item, db);
+    const v = checkItemInput({ ...patch, kind: item.kind }, item, db, parent);
     const moved = v.category !== item.category;
     Object.assign(item, v, { updated_at: new Date().toISOString() });
     if (moved) {
-        const alive = db.checklistItems.filter((x) => !x.deleted_at);
-        withDescendants(alive, id).forEach((x) => { x.category = v.category; });
+        withDescendants(aliveItems(db), id).forEach((x) => { x.category = v.category; });
     }
     await save(db);
     return item;
@@ -2183,10 +2291,10 @@ export async function updateChecklistItem(id, patch, user) {
 export async function moveChecklistItem(id, dir, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 수정할 권한이 없습니다.');
     const db = (await load());
-    const item = db.checklistItems.find((x) => x.id === id && !x.deleted_at);
+    const item = aliveItems(db).find((x) => x.id === id);
     if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
 
-    const rows = siblingsOf(db, item.parent_id, item.category);
+    const rows = siblingsOf(db, item.parent_id);
     const at = rows.findIndex((x) => x.id === id);
     const swap = rows[dir === 'up' ? at - 1 : at + 1];
     if (!swap) return item;      // 맨 위/맨 아래면 그대로 둔다
@@ -2207,8 +2315,7 @@ export async function moveChecklistItem(id, dir, user) {
 export async function deleteChecklistItem(id, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 삭제할 권한이 없습니다.');
     const db = (await load());
-    const alive = db.checklistItems.filter((x) => !x.deleted_at);
-    const targets = withDescendants(alive, id);
+    const targets = withDescendants(aliveItems(db), id);
     if (!targets.length) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
     const now = new Date().toISOString();
     targets.forEach((x) => { x.deleted_at = now; });
@@ -2236,27 +2343,226 @@ function isDueOn(item, date) {
 }
 
 /**
- * 그 날짜에 체크해야 할 항목 목록.
- * **말단 항목(leaf)만** 대상이다 - 하위를 가진 항목은 묶음 제목 역할이라 체크하지 않는다.
- * 각 행에는 화면이 쓰는 `path`(상위 항목 경로)와 `check`(그 날짜의 체크 기록)를 붙인다.
+ * 날짜별 판정 뷰모델 🔑 - dailyTable()·dueItems() 가 이것을 편다. 주기·상속·발생 판정은 여기서 끝난다.
+ *
+ * 체크 대상(row)은 ① `check` 항목과 ② 체크항목·하위 프로세스가 없는 `process`(그 단계
+ * 자체를 체크한다. 상황만 달려 있어도 마찬가지)다. 둘 다 **일일체크리스트 포함(`daily`)**
+ * 으로 체크한 것만 대상이다 - 업무프로세스 탭에서 고른다. 상위에 상황(situation)이 있으면 그 상황이 **그 날짜에 발생
+ * 처리된 경우에만** 대상에 든다. 발생 안 된 상황은 프로세스 밑에 「상황 발생 시」
+ * 후보(chip)로만 나온다.
+ *
  * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f assignee 를 주면 그 담당자 항목만
+ * @param {{assignee?:string}} f assignee 를 주면 상속 담당자가 그 사람인 항목만
+ * @returns {Promise<{date, done, total, raised, groups:Array}>}
+ *   groups[]     = { item, name, done, total, processes: ProcessVM[], loose: Row[] }
+ *   ProcessVM    = { item, no, done, total, rows: Row[], subs: ProcessVM[],
+ *                    situations: SituationVM[], self: Row|null }
+ *   SituationVM  = { item, active: check|null, canRaise: (user)=>bool, rows, subs, done, total }
+ *   Row          = 항목 + { path, check, assignee_eff_id, assignee_eff_name, process_id }
+ */
+export async function dailyFlow(date, f = {}) {
+    const db = (await load());
+    const day = String(date || today()).slice(0, 10);
+    const alive = aliveItems(db).filter((i) => i.active);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const kids = new Map();
+    alive.forEach((i) => {
+        const k = i.parent_id ?? null;
+        if (!kids.has(k)) kids.set(k, []);
+        kids.get(k).push(i);
+    });
+    kids.forEach((v, k) => kids.set(k, sortChecklist(v)));
+    const checks = db.checklistChecks.filter((c) => c.check_date === day);
+    const checkOf = (id) => checks.find((c) => c.item_id === id) ?? null;
+
+    /** 담당자 필터 - 상속 담당자로 판정한다. 담당자 없는 공통 업무는 누구의 목록에나 든다 */
+    const passes = (item) => {
+        if (!f.assignee) return true;
+        const eff = effectiveAssignee(item, byId).id;
+        return !eff || eff === f.assignee;
+    };
+
+    /** 체크 대상 한 줄 */
+    const rowOf = (item, processId) => {
+        const eff = effectiveAssignee(item, byId);
+        return {
+            ...item,
+            path: pathOf(item, byId),
+            check: checkOf(item.id),
+            assignee_eff_id: eff.id,
+            assignee_eff_name: eff.name,
+            process_id: processId,
+        };
+    };
+
+    /** 프로세스 한 단계 (하위 프로세스·상황·체크항목을 재귀로 모은다) */
+    const buildProcess = (item, no) => {
+        const children = kids.get(item.id) ?? [];
+        const vm = {
+            item, no, rows: [], subs: [], situations: [], self: null, done: 0, total: 0,
+        };
+        // 체크항목·하위 프로세스가 없는 단계는 단계 자체가 체크 대상이다 (상황만 달려 있어도)
+        // 🔑 일일체크리스트 포함(daily)으로 체크한 것만 대상이다
+        const leaf = !children.some((c) => c.kind !== CHECK_KIND.SITUATION);
+        if (leaf && item.daily && isDueOn(item, day) && passes(item)) {
+            vm.self = rowOf(item, item.parent_id);
+        }
+        let subNo = 0;
+        children.forEach((c) => {
+            if (c.kind === CHECK_KIND.CHECK) {
+                if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.id));
+            } else if (c.kind === CHECK_KIND.SITUATION) {
+                const s = buildSituation(c);
+                if (s) vm.situations.push(s);
+            } else {
+                subNo += 1;
+                const p = buildProcess(c, subNo);
+                if (p) vm.subs.push(p);
+            }
+        });
+        const own = [vm.self, ...vm.rows].filter(Boolean);
+        vm.total = own.length + vm.subs.reduce((n, p) => n + p.total, 0)
+            + vm.situations.reduce((n, s) => n + s.total, 0);
+        vm.done = own.filter((r) => r.check).length + vm.subs.reduce((n, p) => n + p.done, 0)
+            + vm.situations.reduce((n, s) => n + s.done, 0);
+        const visible = own.length || vm.subs.length || vm.situations.length;
+        return visible ? vm : null;
+    };
+
+    /** 상황 - 발생 처리(그 날짜의 체크 기록)된 경우에만 하위가 집계에 든다 */
+    const buildSituation = (item) => {
+        const active = checkOf(item.id);
+        const eff = effectiveAssignee(item, byId);
+        const vm = {
+            item: { ...item, assignee_eff_id: eff.id, assignee_eff_name: eff.name,
+                path: pathOf(item, byId) },
+            active,
+            rows: [],
+            subs: [],
+            done: 0,
+            total: 0,
+        };
+        const children = kids.get(item.id) ?? [];
+        let subNo = 0;
+        children.forEach((c) => {
+            if (c.kind === CHECK_KIND.CHECK) {
+                if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.parent_id));
+            } else if (c.kind === CHECK_KIND.PROCESS) {
+                subNo += 1;
+                const p = buildProcess(c, subNo);
+                if (p) vm.subs.push(p);
+            }
+            // 상황 아래 상황은 두지 않는다 (allowedChildKinds) - 있어도 무시한다
+        });
+        // 담당자 필터가 있으면 내 일이 하나도 없는 상황은 후보에도 안 보인다
+        if (f.assignee && !vm.rows.length && !vm.subs.length && !passes(item)) return null;
+        if (active) {
+            vm.total = vm.rows.length + vm.subs.reduce((n, p) => n + p.total, 0);
+            vm.done = vm.rows.filter((r) => r.check).length
+                + vm.subs.reduce((n, p) => n + p.done, 0);
+        }
+        return vm;
+    };
+
+    const groups = (kids.get(null) ?? []).filter((g) => g.kind === CHECK_KIND.GROUP).map((g) => {
+        const roots = kids.get(g.id) ?? [];
+        const processes = [];
+        const loose = [];      // 업무항목에 바로 둔 체크항목 (흐름 없는 단독 업무)
+        let no = 0;
+        roots.forEach((r) => {
+            if (r.kind === CHECK_KIND.CHECK) {
+                if (r.daily && isDueOn(r, day) && passes(r)) loose.push(rowOf(r, null));
+            } else if (r.kind === CHECK_KIND.PROCESS) {
+                no += 1;
+                const p = buildProcess(r, no);
+                if (p) processes.push(p);
+            }
+        });
+        const total = processes.reduce((n, p) => n + p.total, 0) + loose.length;
+        const done = processes.reduce((n, p) => n + p.done, 0)
+            + loose.filter((r) => r.check).length;
+        return { item: g, name: g.title, processes, loose, done, total };
+    }).filter((c) => c.processes.length || c.loose.length);
+
+    return {
+        date: day,
+        groups,
+        total: groups.reduce((n, c) => n + c.total, 0),
+        done: groups.reduce((n, c) => n + c.done, 0),
+        raised: checks.filter((c) => byId.get(c.item_id)?.kind === CHECK_KIND.SITUATION).length,
+    };
+}
+
+/**
+ * 일일체크리스트 표 뷰모델 🔑 - dailyFlow 를 **프로세스 단위 구간(section)** 으로 편다.
+ * 화면은 업무항목 · 프로세스 · 체크리스트 세 컬럼으로 그린다.
+ *
+ *   groups[]   = { item, name, done, total, sections: Section[] }
+ *   Section    = { key, path: string[], sit: item|null, rows: Row[], situations: SituationVM[] }
+ *     path       프로세스 경로 (하위 프로세스·대응 프로세스는 `상위 › 하위`). 상황 아래면 상황명도 든다
+ *     sit        이 구간이 발생한 상황 아래 있으면 그 상황 (화면이 주황으로 표시한다)
+ *     rows       그 구간에서 체크할 항목 (단계 자체 체크 포함)
+ *     situations 그 프로세스에 직접 달린 상황 - 발생 전이면 후보, 발생했으면 해제·내용 수정용
+ * 발생 안 된 상황의 하위 구간은 나오지 않는다. 구간 순서 = 업무 순서다.
+ */
+export async function dailyTable(date, f = {}) {
+    const flow = await dailyFlow(date, f);
+    const groups = flow.groups.map((g) => {
+        const sections = [];
+        const walkP = (p, path, sit) => {
+            const here = [...path, p.item.title];
+            const rows = [p.self, ...p.rows].filter(Boolean);
+            if (rows.length || p.situations.length) {
+                sections.push({ key: p.item.id, path: here, sit, rows, situations: p.situations });
+            }
+            p.subs.forEach((s) => walkP(s, here, sit));
+            p.situations.filter((s) => s.active).forEach((s) => {
+                const sPath = [...here, s.item.title];
+                if (s.rows.length) {
+                    sections.push({
+                        key: s.item.id, path: sPath, sit: s.item, rows: s.rows, situations: [],
+                    });
+                }
+                s.subs.forEach((sp) => walkP(sp, sPath, s.item));
+            });
+        };
+        g.processes.forEach((p) => walkP(p, [], null));
+        if (g.loose.length) {
+            sections.push({ key: `loose-${g.item.id}`, path: [], sit: null, rows: g.loose, situations: [] });
+        }
+        return { item: g.item, name: g.name, done: g.done, total: g.total, sections };
+    });
+    return { date: flow.date, done: flow.done, total: flow.total, raised: flow.raised, groups };
+}
+
+/** dailyFlow 결과에서 체크 대상 줄만 평평하게 뽑는다 (발생 안 된 상황의 하위는 뺀다) */
+function flattenFlow(flow) {
+    const out = [];
+    const walkP = (p) => {
+        if (p.self) out.push(p.self);
+        out.push(...p.rows);
+        p.subs.forEach(walkP);
+        p.situations.forEach((s) => {
+            if (!s.active) return;
+            out.push(...s.rows);
+            s.subs.forEach(walkP);
+        });
+    };
+    flow.groups.forEach((c) => {
+        c.processes.forEach(walkP);
+        out.push(...c.loose);
+    });
+    return out;
+}
+
+/**
+ * 그 날짜에 체크해야 할 항목 목록 (평평한 형태 - 집계·호환용).
+ * dailyFlow() 와 같은 판정이라 두 화면의 숫자가 어긋나지 않는다.
+ * @param {string} date YYYY-MM-DD
+ * @param {{assignee?:string}} f
  */
 export async function dueItems(date, f = {}) {
-    const db = (await load());
-    const alive = db.checklistItems.filter((i) => !i.deleted_at);
-    const byId = new Map(alive.map((i) => [i.id, i]));
-    const hasChild = new Set(alive.map((i) => i.parent_id).filter(Boolean));
-
-    let rows = alive.filter((i) => i.active && !hasChild.has(i.id) && isDueOn(i, date));
-    if (f.assignee) rows = rows.filter((i) => i.assignee_id === f.assignee);
-
-    const checks = db.checklistChecks.filter((c) => c.check_date === date);
-    return sortChecklist(rows).map((i) => ({
-        ...i,
-        path: pathOf(i, byId),
-        check: checks.find((c) => c.item_id === i.id) ?? null,
-    }));
+    return flattenFlow(await dailyFlow(date, f));
 }
 
 /** 그 날짜의 체크 기록 (항목별 1건) */
@@ -2267,21 +2573,39 @@ export async function listChecks(date) {
 /**
  * 체크 처리 - on 이면 기록을 만들고, 아니면 지운다.
  * 항목·날짜당 1건이므로 이미 있으면 메모만 갱신한다.
+ * 🔑 상황(situation) 노드에 쓰면 **발생 처리**다. 발생을 해제하면 그 상황 아래
+ * 체크 기록도 같은 날짜 것은 함께 지운다 (끼어들었던 단계가 통째로 빠진다).
+ * 상위 상황이 발생 처리되지 않은 항목은 체크할 수 없다.
  */
 export async function setCheck(itemId, date, on, memo, user) {
     const db = (await load());
-    const item = db.checklistItems.find((x) => x.id === itemId && !x.deleted_at);
+    const alive = aliveItems(db);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const item = byId.get(itemId);
     if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
-    if (!canCheckItem(user, item)) {
+
+    const eff = effectiveAssignee(item, byId);
+    if (!canCheckItem(user, { ...item, assignee_eff_id: eff.id })) {
         throw new Error('담당자 본인 또는 체크리스트 관리자만 체크할 수 있습니다.');
     }
 
     const day = String(date || today()).slice(0, 10);
+    const sits = situationAncestors(item, byId);
+    const isOn = (id) => db.checklistChecks.some((c) => c.item_id === id && c.check_date === day);
+    if (on && sits.some((id) => !isOn(id))) {
+        throw new Error('상위 상황을 먼저 발생 처리해야 체크할 수 있습니다.');
+    }
+
     const at = db.checklistChecks
         .findIndex((c) => c.item_id === itemId && c.check_date === day);
 
     if (!on) {
         if (at >= 0) db.checklistChecks.splice(at, 1);
+        if (item.kind === CHECK_KIND.SITUATION) {
+            const under = new Set(withDescendants(alive, itemId).map((x) => x.id));
+            db.checklistChecks = db.checklistChecks
+                .filter((c) => !(under.has(c.item_id) && c.check_date === day));
+        }
         await save(db);
         return null;
     }
@@ -2309,16 +2633,18 @@ export async function setCheck(itemId, date, on, memo, user) {
 /**
  * 그 날짜의 진행 요약.
  * `missed` 는 **전날 미체크 건수**다 - 수시(adhoc)는 날짜 개념이 없어 세지 않는다.
+ * `raised` 는 그 날짜에 발생 처리된 상황 수다.
  * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f 오늘 할 일 탭의 담당자 필터와 같은 조건
+ * @param {{assignee?:string}} f 일일체크리스트 탭의 담당자 필터와 같은 조건
  */
 export async function checklistSummary(date, f = {}) {
-    const rows = await dueItems(date, f);
+    const flow = await dailyFlow(date, f);
     const prevDate = addDays(date, -1);
     const prev = await dueItems(prevDate, f);
     return {
-        total: rows.length,
-        done: rows.filter((r) => r.check).length,
+        total: flow.total,
+        done: flow.done,
+        raised: flow.raised,
         missed: prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC).length,
         prevDate,
     };
