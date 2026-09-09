@@ -131,6 +131,7 @@ export async function render(root, { user, params }) {
 | 당일상차리스트 | ✅ | ✅ |
 | 이슈등록 | ✅ | ✅ |
 | 공지사항 | ✅ | ✅ |
+| 업무체크리스트 | ✅ | ✅ |
 | 사용자관리 (관리자) | ✅ | ❌ |
 
 탭바에 없는 메뉴도 **모바일에서 햄버거 버튼(☰)의 서랍으로 접근할 수 있다.**
@@ -236,6 +237,12 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 `listNotices` `getNotice` `createNotice` `updateNotice` `deleteNotice` `canManageNotice` /
 `listNoticeComments` `addNoticeComment` `updateNoticeComment` `deleteNoticeComment`
 `canEditNoticeComment`
+
+업무체크리스트(자세한 내용은 [checklist.md](checklist.md)):
+`listChecklistItems` `checklistTree` `createChecklistItem` `updateChecklistItem`
+`moveChecklistItem` `deleteChecklistItem` / `dueItems` `listChecks` `setCheck`
+`checklistSummary` `canManageChecklist` `canCheckItem`
+(주기 판정은 `dueItems` 한 곳에만 둔다)
 
 ### 실시간 갱신
 

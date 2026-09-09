@@ -53,33 +53,34 @@ export const COMPANIES = Object.values(COMPANY);
  * createIssue  : 이슈 등록 (상태 변경은 updateStatus 와 함께 있어야 한다)
  * closeOrder   : 주문처리현황의 출고 완료처리
  * manageNotice : 공지사항 등록·수정·삭제 (조회와 댓글 등록은 모든 로그인 사용자)
+ * manageChecklist : 업무체크리스트 항목 등록·수정·삭제 (체크는 담당자 본인도 한다)
  */
 export const PERMISSION = {
     [ROLE.ADMIN]: {
         viewAll: true, download: true, manageUsers: true,
         createOrder: true, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true,
+        manageNotice: true, manageChecklist: true,
     },
     [ROLE.YONGMA]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true,
+        manageNotice: true, manageChecklist: true,
     },
     [ROLE.SHIPPER_ADMIN]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: true,
     },
     [ROLE.SHIPPER_SALES]: {
         viewAll: false, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: false,
     },
     // 현장작업자 - 출고주문처리·당일상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
-        manageNotice: false,
+        manageNotice: false, manageChecklist: false,
     },
 };
 
@@ -361,6 +362,132 @@ export const ISSUE_STATUS = [
     ISSUE_STATE.CLOSE_REQ, ISSUE_STATE.CLOSED,
 ];
 
+/* ------------------------------ 업무체크리스트 ------------------------------ */
+
+/** 체크 주기 코드 - 저장값 (checklist_items.cycle) */
+export const CHECK_CYCLE = {
+    DAILY: 'daily',      // 매일
+    WEEKLY: 'weekly',    // 매주 지정 요일 (weekday)
+    MONTHLY: 'monthly',  // 매월 지정 일자 (monthday, 말일 보정)
+    ADHOC: 'adhoc',      // 수시 - 날짜와 무관하게 항상 표시된다
+};
+
+/** 주기 표시 문구 */
+export const CHECK_CYCLES = {
+    [CHECK_CYCLE.DAILY]: '일',
+    [CHECK_CYCLE.WEEKLY]: '주',
+    [CHECK_CYCLE.MONTHLY]: '월',
+    [CHECK_CYCLE.ADHOC]: '수시',
+};
+
+/** 요일 - 배열 순서가 Date.getDay() 값(0=일)과 같다 */
+export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
+
+/**
+ * 주기 한 줄 표시 - 요일·일자까지 붙인다 (예: `주(화)` `월(25일)`).
+ * 목록·카드가 같은 문구를 쓰도록 여기 한 곳에서 만든다.
+ */
+export function cycleLabel(item) {
+    const base = CHECK_CYCLES[item?.cycle] ?? '';
+    if (item?.cycle === CHECK_CYCLE.WEEKLY) {
+        return `${base}(${WEEKDAYS[Number(item.weekday) || 0]})`;
+    }
+    if (item?.cycle === CHECK_CYCLE.MONTHLY) return `${base}(${Number(item.monthday) || 1}일)`;
+    return base;
+}
+
+/**
+ * 체크리스트 노드 종류 - 저장값 (checklist_items.kind) 🔑
+ *   group     : 업무항목(입고·출고 …). 사용자가 만드는 최상위 묶음. 흐름 한 벌의 제목이다
+ *   process   : 업무 흐름의 한 단계. 같은 부모 아래에서 sort_order 순서가 곧 업무 순서다
+ *   situation : 그 단계에서 생길 수 있는 상황(예: 입고수량오류). 발생 처리하면
+ *               하위 프로세스·체크항목이 그 날짜에 끼어든다
+ *   check     : 담당자가 실제로 체크하는 항목 (주기·담당자를 가진다)
+ */
+export const CHECK_KIND = {
+    GROUP: 'group',
+    PROCESS: 'process',
+    SITUATION: 'situation',
+    CHECK: 'check',
+};
+
+/** 종류 표시 문구 */
+export const CHECK_KINDS = {
+    [CHECK_KIND.GROUP]: '업무항목',
+    [CHECK_KIND.PROCESS]: '프로세스',
+    [CHECK_KIND.SITUATION]: '상황',
+    [CHECK_KIND.CHECK]: '체크항목',
+};
+
+/**
+ * 종류별로 둘 수 있는 하위 종류. 키 `root` 는 최상위(부모 없음)다.
+ *   최상위    : 업무항목만 (사용자가 「업무항목 추가」로 만든다)
+ *   업무항목  : 프로세스(업무 흐름) · 체크항목(흐름 없는 단독 업무)
+ *   프로세스  : 체크항목 · 상황 · 하위 프로세스(세부 단계)
+ *   상황      : 대응 프로세스 · 체크항목(간단한 상황은 프로세스 없이 바로)
+ *   체크항목  : 없음 (말단)
+ */
+export const CHECK_KIND_CHILDREN = {
+    root: [CHECK_KIND.GROUP],
+    [CHECK_KIND.GROUP]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
+    [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION, CHECK_KIND.PROCESS],
+    [CHECK_KIND.SITUATION]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
+    [CHECK_KIND.CHECK]: [],
+};
+
+/**
+ * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 같은 이름의 업무항목을 만들고
+ * 아래 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 같은 이름이 이미 있으면 거부한다.
+ * `children` 이 없는 항목은 체크항목이고, 프로세스·상황은 kind 를 적는다.
+ */
+export const CHECK_TEMPLATES = {
+    입고: [
+        { kind: CHECK_KIND.PROCESS, title: '하차 파렛트수 확인', children: [
+            { title: '차량 도착 시각 기록' },
+            { title: '하차 파렛트수 = 송장 파렛트수 대조' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고거래명세서 확인', children: [
+            { title: '거래명세서 수령·품목 대조' },
+            { kind: CHECK_KIND.SITUATION, title: '입고수량오류',
+                description: '명세서 수량과 실물 수량이 다를 때', children: [
+                    { kind: CHECK_KIND.PROCESS, title: '수량 차이 기록', children: [
+                        { title: '품목별 차이 수량 사진 촬영' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '화주 담당자 보고', children: [
+                        { title: '이슈등록 (업무구분: 입고)' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '명세서 정정본 수령' },
+                ] },
+            { kind: CHECK_KIND.SITUATION, title: '제품 틀림',
+                description: '명세서에 없는 제품이 왔거나 품목이 다를 때', children: [
+                    { kind: CHECK_KIND.PROCESS, title: '오입고 제품 격리', children: [
+                        { title: '격리 구역 이동·표시' },
+                    ] },
+                    { kind: CHECK_KIND.PROCESS, title: '반송 여부 확인', children: [
+                        { title: '화주 회신 기록' },
+                    ] },
+                ] },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고검수', children: [
+            { title: 'LOT 확인' },
+            { title: '유효기간 작성' },
+            { title: '외관·파손 확인' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고라벨 부착', children: [
+            { title: '파렛트별 라벨 출력·부착' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '입고적치', children: [
+            { title: '로케이션 지정·적치' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: 'WMS 입고처리', children: [
+            { title: 'WMS 입고 확정' },
+        ] },
+        { kind: CHECK_KIND.PROCESS, title: '실물 입고적치 검증', children: [
+            { title: 'WMS 재고 = 실물 로케이션 대조' },
+        ] },
+    ],
+};
+
 /**
  * 메뉴 정의
  * icon      : icons.js 의 아이콘 키
@@ -368,12 +495,19 @@ export const ISSUE_STATUS = [
  * mobile    : 모바일 하단 탭바에 노출 (false 인 메뉴는 햄버거 서랍에서만 접근)
  */
 export const MENUS = [
+    { key: 'notices', path: '#/notices', label: '공지사항', icon: 'notice', mobile: true },
+    {
+        key: 'checklist',
+        path: '#/checklist',
+        label: '업무체크리스트',
+        icon: 'checklist',
+        mobile: true,
+    },
     { key: 'orders', path: '#/orders', label: '주문정보등록', icon: 'orders', mobile: false },
     { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
     { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
     { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
-    { key: 'notices', path: '#/notices', label: '공지사항', icon: 'notice', mobile: true },
     {
         key: 'users',
         path: '#/users',
@@ -419,9 +553,10 @@ export const APP_TABS = [
  * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
  */
 export const APP_MENU = [
+    { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
+    { key: 'checklist', route: '#/checklist', title: '업무체크리스트', icon: 'checklist' },
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
-    { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
     { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },

@@ -62,6 +62,12 @@ create or replace function public.can_manage_notice()
     select public.my_role() in ('admin', 'yongma')
 $$;
 
+/* 업무체크리스트 항목 등록·수정·삭제 (config.js 의 manageChecklist) */
+create or replace function public.can_manage_checklist()
+    returns boolean language sql stable as $$
+    select public.my_role() in ('admin', 'yongma', 'shipper_admin')
+$$;
+
 /* 출고·검수·적치·상차 처리 */
 create or replace function public.can_update_status()
     returns boolean language sql stable as $$
@@ -332,6 +338,108 @@ create table if not exists public.notice_comments (
 
 create index if not exists notice_comments_notice_idx on public.notice_comments (notice_id);
 
+-- ─────────────────────── 업무체크리스트 항목 (checklist_items) ───────────────────────
+-- 업무항목(group) → 프로세스(process) → 체크항목(check)/상황(situation) 트리.
+-- 최상위는 업무항목뿐이고 사용자가 만든다. parent_id 로 하위 항목이 이어진다.
+-- 체크 대상은 체크항목과 하위가 없는 프로세스이고, 상황 노드의 체크 기록은 「발생」이다.
+-- 주기 판정(일·주·월·수시, 말일 보정)은 db.js 의 dueItems() 한 곳에서만 한다.
+-- 삭제는 체크 기록을 남기려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
+
+create table if not exists public.checklist_items (
+    id              text        primary key,
+    category        text        not null,                     -- 업무항목 이름 (옛 컬럼 · 화면 로직은 안 쓴다)
+    parent_id       text        references public.checklist_items (id),
+    kind            text        not null default 'check'      -- config.js 의 CHECK_KIND
+                                check (kind in ('group', 'process', 'situation', 'check')),
+    title           text        not null,
+    description     text        not null default '',
+    cycle           text        not null default 'daily'
+                                check (cycle in ('daily', 'weekly', 'monthly', 'adhoc')),
+    weekday         smallint    check (weekday between 0 and 6),   -- 주 - 0=일
+    monthday        smallint    check (monthday between 1 and 31), -- 월 - 말일은 보정된다
+    assignee_id     uuid        references public.profiles (id),
+    assignee_name   text        not null default '',
+    sort_order      integer     not null default 0,           -- 형제 사이의 표시 순서
+    active          boolean     not null default true,
+    daily           boolean     not null default false,       -- 일일체크리스트 포함 (업무프로세스 탭에서 체크)
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,
+    deleted_at      timestamptz                               -- 삭제 시각 (있으면 목록에서 제외)
+);
+
+comment on table public.checklist_items is '업무체크리스트 흐름 트리(프로세스·상황·체크항목). 등록·수정·삭제는 manageChecklist 권한';
+
+-- 기존 구축분에 종류(kind) 컬럼 추가. 하위가 있는 옛 항목은 프로세스, 없으면 체크항목으로 본다
+alter table public.checklist_items add column if not exists kind text not null default 'check';
+alter table public.checklist_items drop constraint if exists checklist_items_kind_check;
+alter table public.checklist_items add constraint checklist_items_kind_check
+    check (kind in ('group', 'process', 'situation', 'check'));
+update public.checklist_items i set kind = 'process'
+ where i.kind = 'check'
+   and exists (select 1 from public.checklist_items c where c.parent_id = i.id);
+
+-- 일일체크리스트 포함 여부. 컬럼이 없던 시절의 항목은 모두 포함으로 본다 (화면에서 끌 수 있다)
+alter table public.checklist_items add column if not exists daily boolean not null default false;
+update public.checklist_items set daily = true
+ where kind in ('check', 'process') and daily = false and updated_at is null
+   and created_at < '2026-09-09T02:00:00Z';
+
+-- 고정 구분(입고·출고·반품·기타) 시절의 최상위 항목을 업무항목(group) 아래로 옮긴다.
+-- 업무항목이 아닌 최상위 항목의 category 마다 업무항목 한 개를 만들고 그 밑에 붙인다.
+insert into public.checklist_items (id, category, parent_id, kind, title, sort_order, created_at)
+select 'ci_grp_' || md5(o.category), o.category, null, 'group', o.category,
+       row_number() over (order by min(o.sort_order), o.category), now()
+  from public.checklist_items o
+ where o.parent_id is null and o.kind <> 'group' and o.deleted_at is null
+ group by o.category
+on conflict (id) do nothing;
+update public.checklist_items o set parent_id = 'ci_grp_' || md5(o.category)
+ where o.parent_id is null and o.kind <> 'group';
+
+/*
+ * 담당자 상속 🔑 - 자기 담당자가 없으면 가장 가까운 상위의 담당자. 끝까지 없으면 null(공통).
+ * db.js 의 effectiveAssignee() 와 같은 규칙이다. 체크 RLS 가 이 값으로 판정한다.
+ */
+create or replace function public.checklist_effective_assignee(p_item text)
+    returns uuid language sql stable as $$
+    with recursive up as (
+        select id, parent_id, assignee_id, 0 as depth
+          from public.checklist_items where id = p_item
+        union all
+        select i.id, i.parent_id, i.assignee_id, up.depth + 1
+          from public.checklist_items i join up on i.id = up.parent_id
+         where up.depth < 50
+    )
+    select assignee_id from up where assignee_id is not null order by depth limit 1
+$$;
+
+create index if not exists checklist_items_cat_idx
+    on public.checklist_items (category, sort_order);
+create index if not exists checklist_items_parent_idx on public.checklist_items (parent_id);
+create index if not exists checklist_items_assignee_idx on public.checklist_items (assignee_id);
+
+-- ─────────────────────── 업무체크리스트 체크 (checklist_checks) ───────────────────────
+-- 항목 1건을 그 날짜에 처리했다는 기록. 체크 해제는 행 삭제다.
+-- 상황(kind='situation') 노드에 남긴 기록은 **그 날짜에 그 상황이 발생했다**는 뜻이고
+-- memo 가 발생 내용이다 (별도 테이블을 두지 않는다).
+-- 🔑 항목·날짜당 1건이라 unique 로 못 박는다 (두 사람이 같이 눌러도 한 건만 남는다).
+
+create table if not exists public.checklist_checks (
+    id              text        primary key,
+    item_id         text        not null
+                                references public.checklist_items (id) on delete cascade,
+    check_date      date        not null,
+    memo            text        not null default '',
+    checked_by      uuid        references public.profiles (id),
+    checked_by_name text        not null default '',
+    checked_at      timestamptz not null default now(),
+    unique (item_id, check_date)
+);
+
+create index if not exists checklist_checks_date_idx on public.checklist_checks (check_date);
+
 -- ═══════════════════════════════ RLS 정책 ═══════════════════════════════
 -- 화면에서도 권한을 판정하지만, 서버에서 한 번 더 막는다.
 -- anon 키는 정적 파일에 그대로 담겨 공개되므로 이 정책이 유일한 방어선이다.
@@ -345,6 +453,8 @@ alter table public.issues           enable row level security;
 alter table public.issue_comments   enable row level security;
 alter table public.notices          enable row level security;
 alter table public.notice_comments  enable row level security;
+alter table public.checklist_items  enable row level security;
+alter table public.checklist_checks enable row level security;
 
 -- ── 사용자 ──
 drop policy if exists profiles_select on public.profiles;
@@ -507,6 +617,49 @@ drop policy if exists notice_comments_delete on public.notice_comments;
 create policy notice_comments_delete on public.notice_comments for delete to authenticated
     using (created_by = auth.uid() or public.my_role() = 'admin');
 
+-- ── 업무체크리스트 항목 ── 조회는 로그인 사용자 모두, 편집은 manageChecklist 권한자만
+drop policy if exists checklist_items_select on public.checklist_items;
+create policy checklist_items_select on public.checklist_items for select to authenticated
+    using (true);
+
+drop policy if exists checklist_items_insert on public.checklist_items;
+create policy checklist_items_insert on public.checklist_items for insert to authenticated
+    with check (public.can_manage_checklist() and created_by = auth.uid());
+
+drop policy if exists checklist_items_update on public.checklist_items;
+create policy checklist_items_update on public.checklist_items for update to authenticated
+    using (public.can_manage_checklist())
+    with check (public.can_manage_checklist());
+
+-- 삭제는 화면이 deleted_at 을 찍는 soft delete 로 하지만, 정리용 실삭제도 같은 권한으로 연다
+drop policy if exists checklist_items_delete on public.checklist_items;
+create policy checklist_items_delete on public.checklist_items for delete to authenticated
+    using (public.can_manage_checklist());
+
+-- ── 업무체크리스트 체크 ── 담당자 본인이 찍거나, 관리 권한자가 대신 찍는다
+drop policy if exists checklist_checks_select on public.checklist_checks;
+create policy checklist_checks_select on public.checklist_checks for select to authenticated
+    using (true);
+
+drop policy if exists checklist_checks_insert on public.checklist_checks;
+create policy checklist_checks_insert on public.checklist_checks for insert to authenticated
+    with check (checked_by = auth.uid() and (
+        public.can_manage_checklist()
+        or public.checklist_effective_assignee(item_id) is null
+        or public.checklist_effective_assignee(item_id) = auth.uid()
+    ));
+
+-- 메모만 고친다 (체크한 사람·날짜는 바꾸지 않는다)
+drop policy if exists checklist_checks_update on public.checklist_checks;
+create policy checklist_checks_update on public.checklist_checks for update to authenticated
+    using (checked_by = auth.uid() or public.can_manage_checklist())
+    with check (checked_by = auth.uid() or public.can_manage_checklist());
+
+drop policy if exists checklist_checks_delete on public.checklist_checks;
+create policy checklist_checks_delete on public.checklist_checks for delete to authenticated
+    using (checked_by = auth.uid() or public.can_manage_checklist()
+        or public.checklist_effective_assignee(item_id) = auth.uid());
+
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
 
@@ -587,6 +740,8 @@ alter publication supabase_realtime add table public.issue_comments;
 alter publication supabase_realtime add table public.notices;
 alter publication supabase_realtime add table public.notice_comments;
 alter publication supabase_realtime add table public.profiles;
+alter publication supabase_realtime add table public.checklist_items;
+alter publication supabase_realtime add table public.checklist_checks;
 
 -- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
 -- 화주영업팀은 본인 등록건만 보이므로(RLS) 앱의 assertRepOwner() 만으로는 남의 묶음을
