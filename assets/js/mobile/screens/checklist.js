@@ -1,12 +1,11 @@
 /**
- * 업무체크리스트 - 일일체크리스트 (모바일 앱).
+ * 일일체크리스트 (모바일 앱).
  *
- *   #/checklist   날짜 이동 · 업무항목 카드 안에 [프로세스 | 체크리스트] 2단 표 · 큰 체크 터치 영역
+ *   #/checklist   날짜 이동 · 업무구분 머리 → 업무항목 소제목 → 체크 줄 한 열 · 미완료 먼저, 완료는 접힘
  *
- * 웹 화면(pages/checklist.js)의 **일일체크리스트 탭만** 옮긴 것이다. 웹은 업무항목·프로세스·
- * 체크리스트 3컬럼 표인데, 폰에서는 업무항목을 카드 제목으로 올리고 프로세스 | 체크리스트
- * 2단만 남긴다 (docs/checklist.md). 업무프로세스 편집은 웹에만 둔다.
- * 🔑 주기·담당자 상속·상황 발생 판정은 화면이 하지 않는다 - db.dailyTable() ·
+ * 목적은 **오늘 내가 빠뜨리면 안 되는 것**을 훑고 체크하는 것이다. 흐름 구조는 줄 아래 작은
+ * 캡션(①프로세스 › ⚠상황)으로만 남긴다. 업무 흐름을 보려면 #/process(보기 전용) 로 간다.
+ * 🔑 주기·담당자 상속·상황 발생·어제 미체크 판정은 화면이 하지 않는다 - db.dailyTable() ·
  * db.canCheckItem() 이 준 결과만 그린다. 웹과 같은 함수라 판정이 갈라지지 않는다.
  */
 import * as db from '../../db.js';
@@ -14,11 +13,16 @@ import { icon } from '../../icons.js';
 import { CHECK_KIND, cycleLabel } from '../../config.js';
 import { esc, num, today, addDays, fmtDateTime, toast } from '../../util.js';
 import {
-    emptyState, tag, card, bigCounter, sheet, pollGuard, closeAllSheets,
+    emptyState, tag, bigCounter, sheet, pollGuard, closeAllSheets,
 } from '../ui.js';
 
-/** 조회 조건 - 다른 화면에 다녀와도 유지한다 */
-const state = { date: today() };
+/** 조회 조건 - 다른 화면에 다녀와도 유지한다. openDone 은 완료 줄을 펼쳐 둔 업무항목 id */
+const state = { date: today(), openDone: new Set() };
+
+/** ①②③ 원문자 - 프로세스 순번 캡션용 (20 넘으면 숫자 그대로) */
+function circled(n) {
+    return n >= 1 && n <= 20 ? String.fromCodePoint(0x2460 + n - 1) : String(n);
+}
 
 export async function render(root, { user }) {
     root.innerHTML = `
@@ -57,15 +61,18 @@ export async function render(root, { user }) {
         counterEl.innerHTML = bigCounter(sum.done, sum.total, note);
         missedEl.innerHTML = sum.missed
             ? `<button class="m-btn m-btn--block" type="button" id="btn-missed"
-                 >어제 미체크 ${num(sum.missed)}건</button>`
+                 >어제 미체크 ${num(sum.missed)}건 보기</button>`
             : '';
         missedEl.querySelector('#btn-missed')?.addEventListener('click', () => {
             state.date = sum.prevDate;
             reload();
         });
 
-        listEl.innerHTML = table.groups.length
-            ? table.groups.map((g) => groupCard(g, user)).join('')
+        listEl.innerHTML = table.divisions.length
+            ? table.divisions.map((d) => `
+<h3 class="m-dl-div">${esc(d.name)}
+  ${tag(`${num(d.done)} / ${num(d.total)}`, d.total && d.done === d.total ? 'green' : 'gray')}</h3>
+${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')
             : emptyState('이 날짜에 해야 할 항목이 없습니다.');
     }
 
@@ -80,6 +87,14 @@ export async function render(root, { user }) {
     }
 
     listEl.addEventListener('click', (e) => {
+        const fold = e.target.closest('[data-fold]');
+        if (fold) {
+            const id = fold.dataset.fold;
+            if (state.openDone.has(id)) state.openDone.delete(id);
+            else state.openDone.add(id);
+            reload();
+            return;
+        }
         const raise = e.target.closest('[data-raise]');
         if (raise) {
             const s = sits.get(raise.dataset.raise);
@@ -143,57 +158,55 @@ function collectSituations(table) {
 }
 
 /**
- * 업무항목 카드 한 장 - 안은 [프로세스 | 체크리스트] 2단 표.
- * 프로세스 칸이 왼쪽, 그 프로세스의 체크항목들이 오른쪽에 쌓인다 (웹 표의 rowspan 과 같은 뜻).
+ * 업무항목 한 묶음 - 소제목 아래 미완료 줄(업무 순서)과 상황 칩, 그 뒤에 완료 줄(접힘).
+ * 웹의 같은 목록을 한 열로 편 것이다.
  */
-function groupCard(g, user) {
-    const body = `<div class="m-dl">${g.sections.map((sec) => sectionHtml(sec, user)).join('')}</div>`;
-    return card(esc(g.name), body, {
-        badges: tag(`${num(g.done)} / ${num(g.total)}`,
-            g.total && g.done === g.total ? 'green' : 'gray'),
+function groupHtml(g, user) {
+    const open = state.openDone.has(g.item.id);
+    const done = [];
+    const parts = [];
+    g.sections.forEach((sec) => {
+        sec.rows.forEach((r) => {
+            if (r.check) done.push({ r, sec });
+            else parts.push(itemRow(r, sec, user));
+        });
+        if (sec.situations.length) parts.push(sitChips(sec.situations, user));
     });
-}
-
-/** 구간(프로세스) 한 단 - 왼쪽 프로세스 경로, 오른쪽 체크 줄들 + 상황 칩 */
-function sectionHtml(sec, user) {
-    const done = sec.rows.filter((r) => r.check).length;
-    const inSit = !!sec.sit;
+    if (done.length) {
+        parts.push(`
+<button class="m-dq-fold" type="button" data-fold="${esc(g.item.id)}">
+  ${icon(open ? 'down' : 'next', 'm-icon')} 완료 ${num(done.length)}건 ${open ? '접기' : '보기'}</button>`);
+        if (open) parts.push(done.map(({ r, sec }) => itemRow(r, sec, user)).join(''));
+    }
+    if (!parts.length) parts.push('<p class="m-chk__meta" style="padding:6px 2px">할 항목이 없습니다.</p>');
     return `
-<div class="m-dl__sec ${inSit ? 'is-sit' : ''}">
-  <div class="m-dl__proc">
-    ${sec.path.length ? pathHtml(sec.path, sec.sit) : '<span class="m-dl__proc-name">단독 업무</span>'}
-    ${sec.rows.length ? `<span class="m-dl__proc-cnt">${num(done)} / ${num(sec.rows.length)}</span>` : ''}
-  </div>
-  <div class="m-dl__items">
-    ${sec.rows.map((r) => itemRow(r, user)).join('')}
-    ${sec.situations.length ? sitChips(sec.situations, user) : ''}
-  </div>
-</div>`;
+<div class="m-dq-grp">${esc(g.name)} <span class="m-chk__meta">${num(g.done)} / ${num(g.total)}</span></div>
+${parts.join('')}`;
 }
 
-/** 프로세스 경로 - 상위는 작게, 마지막 이름은 굵게. 상황 아래 구간이면 상황명을 주황으로 */
-function pathHtml(path, sit) {
-    return path.map((name, i) => {
-        const isSit = sit && name === sit.title;
-        const last = i === path.length - 1;
-        const cls = isSit ? 'm-dl__proc-sit' : (last ? 'm-dl__proc-name' : 'm-dl__proc-parent');
-        return `<span class="${cls}">${isSit ? icon('issues', 'm-icon') : ''}${esc(name)}</span>`;
-    }).join('');
+/** 프로세스 캡션 - `① 하차 파렛트수 확인 › ⚠ 입고수량오류 › ① 수량 차이 기록` */
+function pathCaption(sec) {
+    if (!sec.path.length) return '단독 업무';
+    return sec.path.map((n) => (n.sit
+        ? `<span class="is-sit">${icon('issues', 'm-icon')}${esc(n.title)}</span>`
+        : `${circled(n.no)} ${esc(n.title)}`)).join(' › ');
 }
 
 /** 체크 줄 - 줄 전체가 터치 영역 (48px 이상, 장갑 낀 손) */
-function itemRow(r, user) {
+function itemRow(r, sec, user) {
     const locked = !db.canCheckItem(user, r);
     const done = !!r.check;
     const isStep = r.kind === CHECK_KIND.PROCESS;
+    const meta = `${isStep ? '' : `${esc(cycleLabel(r))} · `}${esc(r.assignee_eff_name || '공통')}`;
     return `
 <div class="m-chk ${done ? 'is-done' : ''} ${locked ? 'is-locked' : ''}"
      data-item="${esc(r.id)}">
   <span class="m-chk__box">${icon(done ? 'check' : 'square', 'm-icon')}</span>
   <span class="m-chk__text">
-    ${isStep ? '<span class="m-chk__path">단계 완료</span>' : ''}
-    <span class="m-chk__title">${esc(r.title)}</span>
-    <span class="m-chk__meta">${isStep ? '' : esc(cycleLabel(r))}${doneNote(r)}</span>
+    <span class="m-chk__title">${isStep ? '단계 완료 · ' : ''}${esc(r.title)}
+      ${r.late && !done ? '<span class="m-chk__late">어제 미체크</span>' : ''}</span>
+    <span class="m-chk__path ${sec.sit ? 'is-sit' : ''}">${pathCaption(sec)}</span>
+    <span class="m-chk__meta">${meta}${doneNote(r)}</span>
   </span>
   ${done ? `<button class="m-btn m-btn--sm ${r.check.memo ? 'is-on' : ''}" type="button"
       data-memo="${esc(r.id)}" aria-label="메모">${icon('memo', 'm-icon')}</button>` : ''}
