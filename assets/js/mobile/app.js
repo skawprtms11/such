@@ -64,6 +64,7 @@ const SCREENS = {
     issues: () => import('./screens/issues.js'),
     notices: () => import('./screens/notices.js'),
     checklist: () => import('./screens/checklist.js'),
+    process: () => import('./screens/process.js'),
     wait: () => import('./screens/wait.js'),
     stock: () => import('./screens/stock.js'),
     account: () => import('./screens/account.js'),

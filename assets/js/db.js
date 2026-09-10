@@ -2018,7 +2018,7 @@ export function canCheckItem(user, item) {
     return !a || a === user.id;
 }
 
-/** 정렬 - 형제 순서(sort_order) → 등록순. 업무항목(최상위)도 같은 규칙이다 */
+/** 정렬 - 형제 순서(sort_order) → 등록순. 업무구분(최상위)·업무항목도 같은 규칙이다 */
 function sortChecklist(rows) {
     return rows.slice().sort((a, b) => {
         if ((a.sort_order ?? 0) !== (b.sort_order ?? 0)) {
@@ -2048,10 +2048,22 @@ export async function listChecklistItems(f = {}) {
     return sortChecklist(rows);
 }
 
-/** 업무항목(최상위 group) 목록 - 비활성도 함께 준다 (업무프로세스 탭이 켜고 끈다) */
-export async function listChecklistGroups() {
+/** 업무구분(최상위 division) 목록 - 비활성도 함께 준다 (업무프로세스 탭이 켜고 끈다) */
+export async function listChecklistDivisions() {
     return sortChecklist(aliveItems(await load())
-        .filter((i) => i.kind === CHECK_KIND.GROUP && !i.parent_id));
+        .filter((i) => i.kind === CHECK_KIND.DIVISION && !i.parent_id));
+}
+
+/**
+ * 업무항목(group) 목록 - 비활성도 함께 준다.
+ * @param {string|null} [divisionId] 업무구분 id. 주지 않으면 전체, `null` 이면 업무구분이 없는
+ *   옛 최상위 업무항목만 (스키마 마이그레이션 전 데이터 · mock)
+ */
+export async function listChecklistGroups(divisionId) {
+    let rows = aliveItems(await load()).filter((i) => i.kind === CHECK_KIND.GROUP);
+    if (divisionId === null) rows = rows.filter((i) => !i.parent_id);
+    else if (divisionId) rows = rows.filter((i) => i.parent_id === divisionId);
+    return sortChecklist(rows);
 }
 
 /**
@@ -2118,24 +2130,29 @@ export function allowedChildKinds(parentKind) {
     return CHECK_KIND_CHILDREN[parentKind ?? 'root'] ?? [];
 }
 
-/** 등록·수정 입력값 검증 - 종류·주기에 따라 필수값이 다르다 */
-function checkItemInput(patch, base, db, parent) {
+/**
+ * 등록·수정 입력값 검증 - 종류·주기에 따라 필수값이 다르다.
+ * @param {boolean} [relation=true] 상위-종류 관계를 검사할지. 수정에서 부모가 그대로면 건너뛴다
+ *   (스키마 마이그레이션 전의 옛 최상위 업무항목도 이름·담당자를 고칠 수 있어야 한다)
+ */
+function checkItemInput(patch, base, db, parent, relation = true) {
     const title = String(patch.title ?? base.title ?? '').trim();
     if (!title) throw new Error('이름을 입력하세요.');
 
     const kind = patch.kind ?? base.kind ?? CHECK_KIND.CHECK;
     if (!Object.values(CHECK_KIND).includes(kind)) throw new Error('종류가 올바르지 않습니다.');
-    if (!allowedChildKinds(parent?.kind).includes(kind)) {
+    if (relation && !allowedChildKinds(parent?.kind).includes(kind)) {
         const where = parent ? `${CHECK_KINDS[parent.kind]} 아래` : '최상위';
         throw new Error(`${where}에는 ${CHECK_KINDS[kind]}을(를) 둘 수 없습니다.`);
     }
 
-    // category 는 업무항목 이름이다 - 업무항목은 자기 이름, 그 아래는 상위를 따른다 (옛 컬럼 호환)
+    // category 는 최상위(업무구분) 이름이다 - 최상위는 자기 이름, 그 아래는 상위를 따른다 (옛 컬럼 호환)
     const category = parent ? parent.category : title;
-    if (kind === CHECK_KIND.GROUP) {
-        const dup = aliveItems(db).find((i) => i.kind === CHECK_KIND.GROUP
-            && i.id !== base.id && i.title === title);
-        if (dup) throw new Error(`같은 이름의 업무항목이 이미 있습니다: ${title}`);
+    // 업무구분은 전체에서, 업무항목은 같은 업무구분 안에서 이름이 겹치면 안 된다
+    if (kind === CHECK_KIND.DIVISION || kind === CHECK_KIND.GROUP) {
+        const dup = aliveItems(db).find((i) => i.kind === kind && i.id !== base.id
+            && (i.parent_id ?? null) === (parent?.id ?? null) && i.title === title);
+        if (dup) throw new Error(`같은 이름의 ${CHECK_KINDS[kind]}이(가) 이미 있습니다: ${title}`);
     }
 
     // 주기는 체크항목만 뜻이 있다. 프로세스·상황은 daily 로 두고 화면에서 보이지 않는다
@@ -2185,7 +2202,7 @@ function siblingsOf(db, parentId) {
         .filter((i) => (i.parent_id ?? null) === (parentId ?? null)));
 }
 
-/** 항목 등록 - 최상위는 업무항목만, 그 아래는 상위가 허용하는 종류만 (allowedChildKinds) */
+/** 항목 등록 - 최상위는 업무구분만, 그 아래는 상위가 허용하는 종류만 (allowedChildKinds) */
 export async function createChecklistItem(payload, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 등록할 권한이 없습니다.');
     const db = (await load());
@@ -2220,16 +2237,20 @@ function insertChecklistItem(db, payload, user) {
 }
 
 /**
- * 견본(config.js 의 CHECK_TEMPLATES)으로 업무항목 한 벌을 만든다.
- * 같은 이름의 업무항목이 이미 있으면 거부한다 (흐름이 두 벌 생기지 않게).
+ * 견본(config.js 의 CHECK_TEMPLATES)으로 업무구분 아래에 업무항목 한 벌을 만든다.
+ * 그 업무구분에 같은 이름의 업무항목이 이미 있으면 거부한다 (흐름이 두 벌 생기지 않게).
+ * @param {string} name 견본 이름 (= 만들 업무항목 이름)
+ * @param {string} divisionId 업무항목을 넣을 업무구분
  * @returns {{group:object, count:number}} 만든 업무항목과 등록한 항목 수(업무항목 포함)
  */
-export async function seedChecklistTemplate(name, user) {
+export async function seedChecklistTemplate(name, divisionId, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 등록할 권한이 없습니다.');
     const tpl = CHECK_TEMPLATES[name];
     if (!tpl?.length) throw new Error('견본이 없는 업무항목입니다.');
     const db = (await load());
-    const group = insertChecklistItem(db, { kind: CHECK_KIND.GROUP, title: name }, user);
+    const group = insertChecklistItem(db, {
+        kind: CHECK_KIND.GROUP, title: name, parent_id: divisionId,
+    }, user);
     let count = 1;
     const walk = (nodes, parentId) => {
         nodes.forEach((n) => {
@@ -2245,6 +2266,48 @@ export async function seedChecklistTemplate(name, user) {
         });
     };
     walk(tpl, group.id);
+    await save(db);
+    return { group, count };
+}
+
+/**
+ * 업무항목 복제 🔑 - 프로세스·상황·체크항목까지 통째로 복사해 같은 업무구분 맨 뒤에 둔다.
+ * 비슷한 흐름(B2B출고 → B2C출고)을 처음부터 다시 짜지 않게 한다. 체크 기록은 복사하지 않는다.
+ * @returns {{group:object, count:number}} 새 업무항목과 복사한 항목 수(업무항목 포함)
+ */
+export async function duplicateChecklistGroup(id, user) {
+    if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 등록할 권한이 없습니다.');
+    const db = (await load());
+    const alive = aliveItems(db);
+    const src = alive.find((x) => x.id === id && x.kind === CHECK_KIND.GROUP);
+    if (!src) throw new Error('복제할 업무항목을 찾을 수 없습니다.');
+
+    // 겹치지 않는 이름을 고른다 - 「이름 복사」 「이름 복사 2」 …
+    const siblings = alive.filter((x) => x.kind === CHECK_KIND.GROUP
+        && (x.parent_id ?? null) === (src.parent_id ?? null)).map((x) => x.title);
+    let title = `${src.title} 복사`;
+    for (let n = 2; siblings.includes(title); n += 1) title = `${src.title} 복사 ${n}`;
+
+    let count = 0;
+    const copy = (item, parentId, newTitle) => {
+        const row = insertChecklistItem(db, {
+            parent_id: parentId,
+            kind: item.kind,
+            title: newTitle ?? item.title,
+            description: item.description,
+            cycle: item.cycle,
+            weekday: item.weekday,
+            monthday: item.monthday,
+            assignee_id: item.assignee_id,
+            active: item.active,
+            daily: item.daily,
+        }, user);
+        count += 1;
+        sortChecklist(alive.filter((c) => c.parent_id === item.id))
+            .forEach((c) => copy(c, row.id));
+        return row;
+    };
+    const group = copy(src, src.parent_id, title);
     await save(db);
     return { group, count };
 }
@@ -2265,8 +2328,9 @@ function withDescendants(rows, id) {
 }
 
 /**
- * 항목 수정. 업무항목 이름을 바꾸면 하위의 category(옛 컬럼)도 함께 맞춘다.
+ * 항목 수정. 최상위 이름을 바꾸면 하위의 category(옛 컬럼)도 함께 맞춘다.
  * 종류(kind)는 바꾸지 않는다 - 하위 구조가 달라져야 해서 지우고 다시 만든다.
+ * **업무항목은 `parent_id` 로 다른 업무구분으로 옮길 수 있다** (형제 맨 뒤로 간다).
  */
 export async function updateChecklistItem(id, patch, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 수정할 권한이 없습니다.');
@@ -2274,10 +2338,20 @@ export async function updateChecklistItem(id, patch, user) {
     const item = aliveItems(db).find((x) => x.id === id);
     if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
 
-    const parent = item.parent_id
-        ? db.checklistItems.find((x) => x.id === item.parent_id)
-        : null;
-    const v = checkItemInput({ ...patch, kind: item.kind }, item, db, parent);
+    let parentId = item.parent_id ?? null;
+    let reparented = false;
+    const wantParent = patch.parent_id === undefined ? undefined : (patch.parent_id || null);
+    if (item.kind === CHECK_KIND.GROUP && wantParent !== undefined && wantParent !== parentId) {
+        reparented = true;
+        const target = wantParent ? aliveItems(db).find((x) => x.id === wantParent) : null;
+        if (wantParent && !target) throw new Error('옮길 업무구분을 찾을 수 없습니다.');
+        parentId = wantParent;
+        item.parent_id = parentId;
+        const last = siblingsOf(db, parentId).filter((x) => x.id !== id).at(-1);
+        item.sort_order = (last?.sort_order ?? 0) + 1;
+    }
+    const parent = parentId ? db.checklistItems.find((x) => x.id === parentId) : null;
+    const v = checkItemInput({ ...patch, kind: item.kind }, item, db, parent, reparented);
     const moved = v.category !== item.category;
     Object.assign(item, v, { updated_at: new Date().toISOString() });
     if (moved) {
@@ -2354,7 +2428,8 @@ function isDueOn(item, date) {
  * @param {string} date YYYY-MM-DD
  * @param {{assignee?:string}} f assignee 를 주면 상속 담당자가 그 사람인 항목만
  * @returns {Promise<{date, done, total, raised, groups:Array}>}
- *   groups[]     = { item, name, done, total, processes: ProcessVM[], loose: Row[] }
+ *   groups[]     = { item, name, division, done, total, processes: ProcessVM[], loose: Row[] }
+ *   division     = 업무구분 항목. 옛 최상위 업무항목(업무구분 없음)은 이름 `미분류` 의 가상 항목
  *   ProcessVM    = { item, no, done, total, rows: Row[], subs: ProcessVM[],
  *                    situations: SituationVM[], self: Row|null }
  *   SituationVM  = { item, active: check|null, canRaise: (user)=>bool, rows, subs, done, total }
@@ -2464,7 +2539,17 @@ export async function dailyFlow(date, f = {}) {
         return vm;
     };
 
-    const groups = (kids.get(null) ?? []).filter((g) => g.kind === CHECK_KIND.GROUP).map((g) => {
+    // 업무구분 순서 → 그 안의 업무항목 순서. 업무구분 없는 옛 업무항목은 「미분류」 로 뒤에 붙인다
+    const roots0 = kids.get(null) ?? [];
+    const UNSORTED = { id: null, title: '미분류', kind: CHECK_KIND.DIVISION };
+    const pairs = [];
+    roots0.filter((d) => d.kind === CHECK_KIND.DIVISION).forEach((d) => {
+        (kids.get(d.id) ?? []).filter((g) => g.kind === CHECK_KIND.GROUP)
+            .forEach((g) => pairs.push([d, g]));
+    });
+    roots0.filter((g) => g.kind === CHECK_KIND.GROUP).forEach((g) => pairs.push([UNSORTED, g]));
+
+    const groups = pairs.map(([division, g]) => {
         const roots = kids.get(g.id) ?? [];
         const processes = [];
         const loose = [];      // 업무항목에 바로 둔 체크항목 (흐름 없는 단독 업무)
@@ -2481,7 +2566,7 @@ export async function dailyFlow(date, f = {}) {
         const total = processes.reduce((n, p) => n + p.total, 0) + loose.length;
         const done = processes.reduce((n, p) => n + p.done, 0)
             + loose.filter((r) => r.check).length;
-        return { item: g, name: g.title, processes, loose, done, total };
+        return { item: g, name: g.title, division, processes, loose, done, total };
     }).filter((c) => c.processes.length || c.loose.length);
 
     return {
@@ -2495,32 +2580,43 @@ export async function dailyFlow(date, f = {}) {
 
 /**
  * 일일체크리스트 표 뷰모델 🔑 - dailyFlow 를 **프로세스 단위 구간(section)** 으로 편다.
- * 화면은 업무항목 · 프로세스 · 체크리스트 세 컬럼으로 그린다.
+ * 화면은 업무구분 · 업무항목 · 프로세스 · 체크리스트 네 컬럼으로 그린다.
  *
- *   groups[]   = { item, name, done, total, sections: Section[] }
- *   Section    = { key, path: string[], sit: item|null, rows: Row[], situations: SituationVM[] }
- *     path       프로세스 경로 (하위 프로세스·대응 프로세스는 `상위 › 하위`). 상황 아래면 상황명도 든다
+ *   divisions[] = { item, name, done, total, groups: Group[] }   업무구분 묶음 (표의 첫 컬럼)
+ *   groups[]    = Group[] 를 평평하게 (앱·집계용)
+ *   Group       = { item, name, division, done, total, sections: Section[] }
+ *   Section    = { key, path: PathNode[], sit: item|null, rows: Row[], situations: SituationVM[] }
+ *     path       프로세스 경로 `[{title, no, sit}]` (하위·대응 프로세스는 상위부터. 상황이면 sit=true, no=null)
  *     sit        이 구간이 발생한 상황 아래 있으면 그 상황 (화면이 주황으로 표시한다)
- *     rows       그 구간에서 체크할 항목 (단계 자체 체크 포함)
+ *     rows       그 구간에서 체크할 항목 (단계 자체 체크 포함). `late` = 전날에도 대상이었는데
+ *                체크하지 않은 항목 (수시 제외) - 화면이 줄 안에 「어제 미체크」 로 표시한다
  *     situations 그 프로세스에 직접 달린 상황 - 발생 전이면 후보, 발생했으면 해제·내용 수정용
  * 발생 안 된 상황의 하위 구간은 나오지 않는다. 구간 순서 = 업무 순서다.
  */
 export async function dailyTable(date, f = {}) {
     const flow = await dailyFlow(date, f);
+    const prev = await dueItems(addDays(flow.date, -1), f);
+    const lateIds = new Set(prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC)
+        .map((r) => r.id));
+    const mark = (rows) => rows.map((r) => ({ ...r, late: lateIds.has(r.id) }));
     const groups = flow.groups.map((g) => {
         const sections = [];
         const walkP = (p, path, sit) => {
-            const here = [...path, p.item.title];
-            const rows = [p.self, ...p.rows].filter(Boolean);
+            const here = [...path, { title: p.item.title, no: p.no, sit: false }];
+            const rows = mark([p.self, ...p.rows].filter(Boolean));
             if (rows.length || p.situations.length) {
                 sections.push({ key: p.item.id, path: here, sit, rows, situations: p.situations });
             }
             p.subs.forEach((s) => walkP(s, here, sit));
             p.situations.filter((s) => s.active).forEach((s) => {
-                const sPath = [...here, s.item.title];
+                const sPath = [...here, { title: s.item.title, no: null, sit: true }];
                 if (s.rows.length) {
                     sections.push({
-                        key: s.item.id, path: sPath, sit: s.item, rows: s.rows, situations: [],
+                        key: s.item.id,
+                        path: sPath,
+                        sit: s.item,
+                        rows: mark(s.rows),
+                        situations: [],
                     });
                 }
                 s.subs.forEach((sp) => walkP(sp, sPath, s.item));
@@ -2528,11 +2624,33 @@ export async function dailyTable(date, f = {}) {
         };
         g.processes.forEach((p) => walkP(p, [], null));
         if (g.loose.length) {
-            sections.push({ key: `loose-${g.item.id}`, path: [], sit: null, rows: g.loose, situations: [] });
+            sections.push({
+                key: `loose-${g.item.id}`, path: [], sit: null, rows: mark(g.loose), situations: [],
+            });
         }
-        return { item: g.item, name: g.name, done: g.done, total: g.total, sections };
+        return {
+            item: g.item,
+            name: g.name,
+            division: g.division,
+            done: g.done,
+            total: g.total,
+            sections,
+        };
     });
-    return { date: flow.date, done: flow.done, total: flow.total, raised: flow.raised, groups };
+    const divisions = [];
+    groups.forEach((g) => {
+        let d = divisions.find((x) => x.item.id === g.division.id);
+        if (!d) {
+            d = { item: g.division, name: g.division.title, done: 0, total: 0, groups: [] };
+            divisions.push(d);
+        }
+        d.groups.push(g);
+        d.done += g.done;
+        d.total += g.total;
+    });
+    return {
+        date: flow.date, done: flow.done, total: flow.total, raised: flow.raised, groups, divisions,
+    };
 }
 
 /** dailyFlow 결과에서 체크 대상 줄만 평평하게 뽑는다 (발생 안 된 상황의 하위는 뺀다) */

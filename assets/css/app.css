@@ -1567,54 +1567,48 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .cl-missed { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 
 
-/* ===== 일일체크리스트 표 (dl) - 업무항목 · 프로세스 · 체크리스트 3컬럼 ===== */
-table.dl { table-layout: auto; }
-table.dl td { vertical-align: top; }
-.dl__c-check { width: 36px; text-align: center; }
-.dl__c-check input[type="checkbox"] { width: 18px; height: 18px; margin-top: 4px; cursor: pointer; }
-.dl__c-group { width: 140px; }
-.dl__c-proc { width: 220px; }
-.dl__c-done { width: 120px; }
-.dl__c-memo { width: 44px; }
+/* ===== 일일체크리스트 (dq) - 계층 머리글 + 체크 줄 목록. 미완료 먼저, 완료는 접는다 ===== */
+.seg { display: inline-flex; border: 1px solid var(--gray-300); border-radius: 8px; overflow: hidden; }
+.seg__btn { height: 30px; padding: 0 12px; border: none; background: #fff; color: var(--gray-700); font: inherit; font-size: 12.5px; cursor: pointer; }
+.seg__btn + .seg__btn { border-left: 1px solid var(--gray-300); }
+.seg__btn.is-active { background: var(--gray-900); color: #fff; }
 
-.dl__group { background: var(--gray-100); border-right: 1px solid var(--gray-200); }
-.dl__group-name { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.dq { display: flex; flex-direction: column; }
+.dq-div { display: flex; align-items: baseline; gap: 10px; margin-top: 18px; padding-bottom: 5px; border-bottom: 2px solid var(--gray-900); }
+.dq-div:first-child { margin-top: 4px; }
+.dq-div__name { font-size: 15px; font-weight: 800; }
+.dq-div__cnt { color: var(--gray-500); font-size: 12.5px; }
+.dq-grp { display: grid; grid-template-columns: 160px 1fr; border-bottom: 1px solid var(--gray-200); }
+.dq-grp__name { padding: 12px 10px 12px 2px; border-right: 1px solid var(--gray-200); font-weight: 700; font-size: 13.5px; color: var(--gray-700); }
+.dq-grp__name small { display: block; font-weight: 400; color: var(--gray-500); font-size: 12px; }
+.dq-grp__rows { min-width: 0; }
 
-.dl__proc { background: #fafbfd; border-right: 1px solid var(--gray-200); font-size: 12.5px; line-height: 1.5; }
-.dl__proc.is-sit { background: #fffaf0; }
-.dl__proc-parent { color: var(--gray-500); }
-.dl__proc-name { font-weight: 700; color: var(--gray-900); }
-.dl__proc-sit { display: inline-flex; align-items: center; gap: 2px; color: var(--amber); font-weight: 700; }
-.dl__proc-sep { margin: 0 4px; color: var(--gray-300); }
-.dl__proc-cnt { display: block; margin-top: 2px; color: var(--gray-500); font-size: 11.5px; }
+.dq-row { display: grid; grid-template-columns: 28px 1fr 96px 110px 34px; align-items: center; gap: 10px; min-height: 42px; padding: 5px 4px 5px 10px; border-bottom: 1px solid var(--gray-200); font-size: 13.5px; }
+.dq-row:last-child { border-bottom: none; }
+.dq-row input[type="checkbox"] { width: 17px; height: 17px; margin: 0; cursor: pointer; }
+.dq-row__main { min-width: 0; cursor: pointer; }
+.dq-row__title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.dq-row__step { color: var(--gray-500); font-size: 11.5px; }
+.dq-row__desc { display: block; color: var(--gray-500); font-size: 12px; }
+.dq-row__proc { display: block; color: var(--gray-500); font-size: 11.5px; margin-top: 1px; }
+.dq-row__proc .is-sit { color: var(--amber); font-weight: 600; }
+.dq-row__who { color: var(--gray-700); font-size: 12px; }
+.dq-row__at { color: var(--green); font-size: 12px; white-space: nowrap; }
+.dq-row.is-done .dq-row__title { color: var(--gray-500); text-decoration: line-through; }
+.dq-row.is-locked { color: var(--gray-500); } .dq-row.is-locked .dq-row__main { cursor: default; }
+.dq-row.is-sit { background: #fffdf7; }
+.dq-late { display: inline-block; padding: 0 6px; border: 1px solid var(--red); border-radius: 999px; color: var(--red); font-size: 11px; font-weight: 600; line-height: 16px; }
+.dq-row .btn--icon.is-on { color: var(--blue); }
+.dq-sits { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px 8px 48px; border-bottom: 1px solid var(--gray-200); }
+.dq-sits__label { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-500); font-size: 12px; }
+.dq-fold { display: inline-flex; align-items: center; gap: 4px; padding: 8px 10px; border: none; background: transparent; color: var(--gray-500); font: inherit; font-size: 12.5px; cursor: pointer; }
+.dq-fold:hover { color: var(--gray-900); }
+.dq-empty { padding: 10px; color: var(--gray-500); font-size: 12.5px; }
 
-.dl__item { cursor: pointer; }
-.dl__item.is-locked { cursor: default; color: var(--gray-500); }
-.dl__item-step { display: inline-block; margin-right: 4px; color: var(--gray-500); font-size: 11.5px; }
-.dl__item-title { font-size: 13.5px; }
-.dl__item-desc { display: block; color: var(--gray-500); font-size: 12px; }
-.dl__item-meta { display: block; color: var(--gray-500); font-size: 11.5px; }
-.dl__row.is-done .dl__item-title { color: var(--gray-500); text-decoration: line-through; }
-.dl__row.is-sit td:not(.dl__group):not(.dl__proc) { background: #fffdf7; }
-.dl__done { color: var(--green); font-size: 12px; white-space: nowrap; }
-.dl__c-memo .btn--icon.is-on { color: var(--blue); }
-
-.dl__sitrow td { background: #fff; padding-top: 4px; padding-bottom: 6px; }
-.dl__sits { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.dl__sits-label { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-500); font-size: 12px; }
 .cl-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 28px;
-    padding: 0 10px;
-    border: 1px dashed var(--amber);
-    border-radius: 999px;
-    background: #fff;
-    color: var(--amber);
-    font: inherit;
-    font-size: 12.5px;
-    cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px;
+    border: 1px dashed var(--amber); border-radius: 999px; background: #fff; color: var(--amber);
+    font: inherit; font-size: 12.5px; cursor: pointer;
 }
 .cl-chip:hover { background: var(--amber-soft); }
 .cl-chip:disabled { border-color: var(--gray-300); color: var(--gray-500); cursor: default; }
@@ -1622,6 +1616,86 @@ table.dl td { vertical-align: top; }
 .cl-chip.is-active { border-style: solid; background: var(--amber-soft); cursor: default; font-weight: 700; }
 .cl-chip__note { font-weight: 400; color: var(--gray-700); }
 .cl-chip .btn--icon.btn--sm { width: 24px; height: 24px; min-height: 24px; padding: 0; }
+
+/* ===== 업무프로세스 플로우차트 (fc) - 매뉴얼처럼 읽는다. 편집 도구는 편집 모드에서만 ===== */
+.cl-manage:not(.is-edit) .fc-tools { display: none !important; }
+.fc-tools { display: inline-flex; align-items: center; gap: 4px; }
+.fc-tools .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
+.fc-tools .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
+.fc-tools .btn--ghost { color: var(--blue); border-color: transparent; }
+.fc-tools .btn--ghost:hover { background: var(--blue-soft); }
+
+.fc { --fc-main: 380px; --fc-axis: 190px; --fc-gap: 40px; display: flex; flex-direction: column; padding: 10px 6px 20px; }
+.fc-row { display: grid; grid-template-columns: var(--fc-main) 1fr; column-gap: var(--fc-gap); align-items: start; }
+.fc-arrow { grid-column: 1; position: relative; height: 24px; margin-left: calc(var(--fc-axis) - 1px); border-left: 1.5px solid var(--gray-700); }
+.fc-arrow::after { content: ''; position: absolute; left: -5px; bottom: -1px; border: 4px solid transparent; border-top: 6px solid var(--gray-700); }
+.fc-arrow--no::before { content: '아니오'; position: absolute; left: 10px; top: 4px; color: var(--gray-500); font-size: 11.5px; }
+.fc-arrow--sm { height: 16px; }
+
+.fc-step { grid-column: 1; border: 1.5px solid var(--gray-700); border-radius: 6px; background: #fff; }
+.fc-step__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 40px; padding: 6px 10px; }
+.fc-step__title { font-weight: 700; font-size: 13.5px; }
+.fc-step__desc { color: var(--gray-500); font-size: 12px; }
+.fc-step__sum { padding: 0 10px 8px 40px; color: var(--gray-500); font-size: 12px; }
+.fc-step__body { padding: 0 8px 8px; border-top: 1px dashed var(--gray-200); }
+.fc:not(.is-detail) .fc-step__body { display: none; }
+.fc.is-detail .fc-step__sum { display: none; }
+.fc-step.is-off { opacity: .6; }
+.fc-step--sub { border-width: 1px; border-color: var(--gray-300); }
+.fc-step--sub > .fc-step__head { min-height: 34px; }
+.fc-step--sub > .fc-step__head .fb-no { background: #fff; color: var(--blue); border: 1.5px solid var(--blue); height: 22px; min-width: 22px; }
+.fc-sub { margin: 6px 4px 4px 22px; padding-left: 12px; border-left: 2px solid var(--gray-200); }
+.fc-sub .fc-arrow { margin-left: 24px; }
+.fc-loose { border-style: dashed; }
+.fc-add { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 6px; }
+
+/* 판단 마름모 + 분기 레인
+   - 주 축은 마름모 아래로도 행 끝까지 이어진다 (fc-branch__main::after)
+   - 합류선은 레인 왼쪽 아래에서 내려와 왼쪽으로 꺾여 주 축에 닿는다 (화살촉은 축을 향한다)
+   - 다음 「아니오」 화살표가 그 아래에서 이어진다 */
+.fc-branch { position: relative; padding-bottom: 24px; align-items: stretch; }
+.fc-branch__main { position: relative; grid-column: 1; display: flex; flex-direction: column; align-items: center; }
+.fc-branch__main::after { content: ''; flex: 1; width: 0; min-height: 12px; border-left: 1.5px solid var(--gray-700); }
+.fc-diamond { position: relative; width: 132px; height: 132px; display: flex; align-items: center; justify-content: center; }
+.fc-diamond::before { content: ''; position: absolute; inset: 18px; transform: rotate(45deg); border: 1.5px solid var(--amber); background: #fff; border-radius: 4px; }
+.fc-diamond span { position: relative; text-align: center; font-size: 12px; font-weight: 700; line-height: 1.25; max-width: 96px; }
+.fc-branch__yes { position: absolute; top: 65px; left: calc(var(--fc-axis) + 66px); width: calc(var(--fc-main) - var(--fc-axis) - 66px + var(--fc-gap) - 4px); border-top: 1.5px solid var(--amber); }
+.fc-branch__yes::after { content: ''; position: absolute; right: -1px; top: -5px; border: 4px solid transparent; border-left: 6px solid var(--amber); }
+.fc-branch__yes::before { content: '예'; position: absolute; left: 14px; top: -20px; color: var(--amber); font-size: 11.5px; font-weight: 700; }
+.fc-lane { grid-column: 2; position: relative; border: 1.5px dashed var(--amber); border-radius: 10px; background: #fffaf0; padding: 8px 10px 10px; }
+.fc-lane__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--amber); font-weight: 700; font-size: 13px; }
+.fc-lane__head small { color: var(--gray-700); font-weight: 400; font-size: 12px; }
+.fc-lane .fc-step { border-color: var(--amber); }
+.fc-lane .fc-step > .fc-step__head .fb-no { background: var(--amber); }
+.fc-lane .fc-step--sub > .fc-step__head .fb-no { background: #fff; color: var(--amber); border-color: var(--amber); }
+.fc-lane .fc-arrow { border-color: var(--amber); margin-left: 23px; }
+.fc-lane .fc-arrow::after { border-top-color: var(--amber); }
+.fc-lane__merge { margin-top: 8px; color: var(--amber); font-size: 12px; font-weight: 600; }
+.fc-lane.is-off { opacity: .6; }
+/* 합류선 - 레인 왼쪽 아래 → 아래로 → 왼쪽으로 → 주 축 (화살촉이 축을 향한다) */
+.fc-lane::after { content: ''; position: absolute; left: 24px; bottom: -13px; height: 13px; border-left: 1.5px solid var(--amber); }
+.fc-branch::after { content: ''; position: absolute; left: calc(var(--fc-axis) + 6px); right: calc(100% - var(--fc-main) - var(--fc-gap) - 25px); bottom: 11px; border-bottom: 1.5px solid var(--amber); }
+.fc-branch::before { content: ''; position: absolute; left: calc(var(--fc-axis) + 1px); bottom: 7px; border: 4.5px solid transparent; border-right: 7px solid var(--amber); z-index: 1; }
+
+.fc-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 0; color: var(--gray-700); font-size: 12px; }
+.fc-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.fc-legend i { display: inline-block; width: 20px; height: 12px; border: 1.5px solid var(--gray-700); }
+.fc-legend i.dia { transform: rotate(45deg) scale(.7); border-color: var(--amber); } .fc-legend i.dash { border-style: dashed; border-color: var(--amber); }
+
+@media (max-width: 960px) {
+    .fc { --fc-main: 100%; }
+    .fc-row { grid-template-columns: 1fr; row-gap: 8px; }
+    .fc-lane { grid-column: 1; margin-left: 24px; }
+    .fc-branch__yes, .fc-branch::after, .fc-branch::before, .fc-lane::after { display: none; }
+    .fc-branch { padding-bottom: 6px; }
+}
+@media print {
+    body.cl-printing .sidebar, body.cl-printing .topbar, body.cl-printing .tabbar, body.cl-printing .tabs,
+    body.cl-printing .cl-gbar, body.cl-printing .cl-ghead--div, body.cl-printing .fc-tools,
+    body.cl-printing .cl-print-hide { display: none !important; }
+    body.cl-printing .main { margin: 0; } body.cl-printing .card { border: none; box-shadow: none; }
+    body.cl-printing .fc-step__body { display: block !important; } body.cl-printing .fc-step__sum { display: none !important; }
+}
 
 /* ===== 구조도 보드 (fb-*) - 업무프로세스 탭 ===== */
 .fb { display: flex; flex-direction: column; padding: 12px; }
@@ -1696,6 +1770,11 @@ table.dl td { vertical-align: top; }
 .fb .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
 .fb .fb-card__head .btn--sm, .fb .fb-card__add .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
 .fb-branch .fb-row--sub { grid-template-columns: 1fr; }
+/* 카드 안 하위 프로세스의 상황은 옆에 둘 자리가 없어 아래로 내린다 (왼쪽 점선으로 잇는다) */
+.fb-chain .fb-row--sub { grid-template-columns: 1fr; gap: 6px 0; }
+.fb-chain .fb-row--sub > .fb-branch { margin-left: 18px; padding-left: 12px; }
+.fb-chain .fb-row--sub > .fb-branch::before { display: none; }
+.fb-chain .fb-row--sub > .fb-branch::after { top: 0; bottom: 0; }
 /* 보드 안의 체크 줄 - 제목이 세로로 부서지지 않게 메타(주기·담당·시각)를 다음 줄로 흘린다 */
 .fb .cl-item { flex-wrap: wrap; row-gap: 2px; }
 .fb .cl-item__title { flex: 1 1 180px; min-width: 120px; word-break: keep-all; overflow-wrap: anywhere; }
@@ -1756,6 +1835,13 @@ table.dl td { vertical-align: top; }
 .cl-gtab.is-active { border-color: var(--blue); background: var(--blue); color: #fff; }
 .cl-gtab.is-off { opacity: .55; }
 .cl-gbar__actions { display: flex; gap: 6px; flex: none; }
+.cl-gtabs__label { color: var(--gray-500); font-size: 12px; font-weight: 700; margin-right: 2px; }
+.cl-gbar--div { padding-bottom: 8px; border-bottom: 1px solid var(--gray-200); }
+.cl-gtab--div { height: 34px; padding: 0 16px; font-weight: 700; border-color: var(--gray-700); color: var(--gray-900); }
+.cl-gtab--div.is-active { border-color: var(--gray-900); background: var(--gray-900); color: #fff; }
+.cl-ghead--div { background: var(--gray-100); border-color: var(--gray-300); margin-bottom: 8px; }
+.cl-ghead__crumb { color: var(--gray-500); font-size: 13px; }
+.cl-kind--div { background: var(--gray-900); color: #fff; }
 .cl-ghead {
     display: flex;
     align-items: center;
@@ -1874,6 +1960,10 @@ table.dl td { vertical-align: top; }
 }
 @media (max-width: 860px) {
     .cl-item__who { display: none; }
+    .dq-grp { grid-template-columns: 1fr; }
+    .dq-grp__name { border-right: none; border-bottom: 1px dashed var(--gray-200); padding: 8px 10px 4px; }
+    .dq-row { grid-template-columns: 28px 1fr 34px; }
+    .dq-row__who, .dq-row__at { display: none; }
     .fb-card__desc { display: none; }
     .cl-gbar { flex-wrap: wrap; }
 }

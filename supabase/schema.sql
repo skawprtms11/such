@@ -339,8 +339,8 @@ create table if not exists public.notice_comments (
 create index if not exists notice_comments_notice_idx on public.notice_comments (notice_id);
 
 -- ─────────────────────── 업무체크리스트 항목 (checklist_items) ───────────────────────
--- 업무항목(group) → 프로세스(process) → 체크항목(check)/상황(situation) 트리.
--- 최상위는 업무항목뿐이고 사용자가 만든다. parent_id 로 하위 항목이 이어진다.
+-- 업무구분(division) → 업무항목(group) → 프로세스(process) → 체크항목(check)/상황(situation) 트리.
+-- 최상위는 업무구분뿐이고 사용자가 만든다. parent_id 로 하위 항목이 이어진다.
 -- 체크 대상은 체크항목과 하위가 없는 프로세스이고, 상황 노드의 체크 기록은 「발생」이다.
 -- 주기 판정(일·주·월·수시, 말일 보정)은 db.js 의 dueItems() 한 곳에서만 한다.
 -- 삭제는 체크 기록을 남기려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
@@ -350,7 +350,7 @@ create table if not exists public.checklist_items (
     category        text        not null,                     -- 업무항목 이름 (옛 컬럼 · 화면 로직은 안 쓴다)
     parent_id       text        references public.checklist_items (id),
     kind            text        not null default 'check'      -- config.js 의 CHECK_KIND
-                                check (kind in ('group', 'process', 'situation', 'check')),
+                                check (kind in ('division', 'group', 'process', 'situation', 'check')),
     title           text        not null,
     description     text        not null default '',
     cycle           text        not null default 'daily'
@@ -375,7 +375,7 @@ comment on table public.checklist_items is '업무체크리스트 흐름 트리(
 alter table public.checklist_items add column if not exists kind text not null default 'check';
 alter table public.checklist_items drop constraint if exists checklist_items_kind_check;
 alter table public.checklist_items add constraint checklist_items_kind_check
-    check (kind in ('group', 'process', 'situation', 'check'));
+    check (kind in ('division', 'group', 'process', 'situation', 'check'));
 update public.checklist_items i set kind = 'process'
  where i.kind = 'check'
    and exists (select 1 from public.checklist_items c where c.parent_id = i.id);
@@ -397,6 +397,16 @@ select 'ci_grp_' || md5(o.category), o.category, null, 'group', o.category,
 on conflict (id) do nothing;
 update public.checklist_items o set parent_id = 'ci_grp_' || md5(o.category)
  where o.parent_id is null and o.kind <> 'group';
+
+-- 업무구분(division) 도입 - 업무구분 없이 최상위에 있던 업무항목마다 같은 이름의 업무구분을
+-- 만들어 그 아래로 옮긴다 (입고 › 입고). 이름은 화면에서 바꾼다.
+insert into public.checklist_items (id, category, parent_id, kind, title, sort_order, created_at)
+select 'ci_div_' || md5(g.title), g.title, null, 'division', g.title, g.sort_order, now()
+  from public.checklist_items g
+ where g.parent_id is null and g.kind = 'group' and g.deleted_at is null
+on conflict (id) do nothing;
+update public.checklist_items g set parent_id = 'ci_div_' || md5(g.title)
+ where g.parent_id is null and g.kind = 'group';
 
 /*
  * 담당자 상속 🔑 - 자기 담당자가 없으면 가장 가까운 상위의 담당자. 끝까지 없으면 null(공통).

@@ -1,15 +1,17 @@
 /**
  * 업무체크리스트 화면.
  *
- *   탭1 일일체크리스트 - 업무프로세스 탭에서 지정한 **체크항목만** 표(업무항목 · 프로세스 ·
- *                      체크리스트)로 보고 항목마다 완료 체크한다. 상황(입고수량오류 등)은
- *                      프로세스 줄 아래 칩으로 「발생」 처리하면 대응 절차의 체크항목이
- *                      그 아래 줄로 끼어든다
- *   탭2 업무프로세스   - 구조도(보드) 위에서 업무항목 → 프로세스 → 체크항목/상황 → 대응 프로세스를
- *                      등록·정렬·수정한다 (manageChecklist). 업무항목은 사용자가 만든다
+ *   탭1 일일체크리스트 - **오늘 내가 빠뜨리면 안 되는 것**을 훑고 체크하는 목록.
+ *                      업무구분·업무항목은 계층 머리글, 줄은 체크항목 하나. 미완료 먼저,
+ *                      완료는 접는다. 어제 밀린 항목은 줄 안에 표시한다. 상황(입고수량오류 등)은
+ *                      프로세스 줄 뒤 칩으로 「발생」 처리하면 대응 항목이 아래 줄로 끼어든다
+ *   탭2 업무프로세스   - **매뉴얼처럼 읽는 플로우차트.** 업무구분 → 업무항목을 고르면 시작 → 프로세스
+ *                      박스 → 판단 마름모(상황 발생?) → 분기 레인(대응 단계) → 합류 → 완료.
+ *                      개요/상세 두 배율, 편집 모드(도구는 이때만), 인쇄
  *
- * 주기·담당자 상속·상황 발생 판정은 화면이 하지 않는다. db.dailyTable() · db.canCheckItem()
- * 이 준 결과만 그린다 (docs/checklist.md). 앱 화면(mobile/screens/checklist.js)도 같다.
+ * 주기·담당자 상속·상황 발생·어제 미체크 판정은 화면이 하지 않는다. db.dailyTable() ·
+ * db.canCheckItem() 이 준 결과만 그린다 (docs/checklist.md). 앱(mobile/screens/checklist.js ·
+ * process.js)도 같다.
  */
 import { can } from '../auth.js';
 import * as db from '../db.js';
@@ -26,8 +28,21 @@ const state = {
     tab: 'today',
     date: today(),
     assignee: 'me',                    // 'me' | 'all' | 사용자 id
-    group: null,                       // 업무프로세스 탭에서 보고 있는 업무항목 id
+    showDone: false,                   // 일일: 완료 줄을 펼쳐 보이기 (세그먼트 「전체」)
+    openDone: new Set(),               // 일일: 「완료 N건 보기」 로 펼쳐 둔 업무항목 id
+    division: null,                    // 업무프로세스: 보고 있는 업무구분 id ('' = 미분류)
+    group: null,                       // 업무프로세스: 보고 있는 업무항목 id
+    detail: false,                     // 업무프로세스: 상세(체크항목 펼침) 배율
+    edit: false,                       // 업무프로세스: 편집 모드 (도구 표시)
 };
+
+/** 업무구분이 없는 옛 업무항목을 담는 가상 업무구분 (스키마 마이그레이션 전 데이터 · mock) */
+const UNSORTED_ID = '';
+
+/** ①②③ 원문자 - 프로세스 순번 캡션용 (20 넘으면 숫자 그대로) */
+function circled(n) {
+    return n >= 1 && n <= 20 ? String.fromCodePoint(0x2460 + n - 1) : String(n);
+}
 
 /** 아이콘 버튼 한 개 - 문구 대신 아이콘만 두므로 aria-label·title 로 뜻을 알린다 */
 function iconBtn(name, label, attr, cls = 'btn btn--icon btn--sm') {
@@ -39,6 +54,13 @@ function iconBtn(name, label, attr, cls = 'btn btn--icon btn--sm') {
 function textBtn(name, label, attr, cls = 'btn btn--sm') {
     return `<button class="${cls}" type="button" ${attr}>
         ${icon(name, 'icon icon--sm')}<span>${esc(label)}</span></button>`;
+}
+
+/** 두 칸 세그먼트 (미완료|전체 · 개요|상세) */
+function segHtml(id, items, cur) {
+    return `<span class="seg" id="${id}">${items.map(([k, label]) => `
+<button class="seg__btn ${k === cur ? 'is-active' : ''}" type="button" data-seg="${esc(k)}"
+  >${esc(label)}</button>`).join('')}</span>`;
 }
 
 export async function render(root, { user }) {
@@ -99,7 +121,11 @@ export async function render(root, { user }) {
     }
 
     await reload();
-    return db.subscribe(guarded);
+    const unwatch = db.subscribe(guarded);
+    return () => {
+        document.body.classList.remove('cl-printing');
+        unwatch();
+    };
 }
 
 /* ============================== 탭1 일일체크리스트 ============================== */
@@ -119,6 +145,7 @@ async function drawToday(body, headSum, user, users, canManage, reload) {
 
     headSum.textContent = `${num(sum.done)} / ${num(sum.total)}`;
 
+    body.className = 'card__body';
     body.innerHTML = `
 <div class="toolbar">
   <div class="cl-datenav">
@@ -127,7 +154,7 @@ async function drawToday(body, headSum, user, users, canManage, reload) {
     ${iconBtn('next', '다음 날짜', 'id="btn-next"')}
     <button class="btn btn--sm" id="btn-today" type="button">오늘</button>
   </div>
-  <label class="field" style="flex:0 0 180px">
+  <label class="field" style="flex:0 0 170px">
     <span class="field__label">담당자</span>
     <select id="f-assignee" ${canManage ? '' : 'disabled'}>
       <option value="me" ${state.assignee === 'me' ? 'selected' : ''}>나</option>
@@ -138,33 +165,23 @@ async function drawToday(body, headSum, user, users, canManage, reload) {
         >${esc(u.name)}</option>`).join('')}` : ''}
     </select>
   </label>
+  ${segHtml('seg-done', [['open', '미완료'], ['all', '전체']], state.showDone ? 'all' : 'open')}
   <div class="toolbar__spacer"></div>
   <div class="cl-progress">
-    <span class="cl-progress__num">${num(sum.done)} / ${num(sum.total)}</span>
+    <span class="cl-progress__num">남은 ${num(sum.total - sum.done)} · ${num(sum.done)} / ${num(sum.total)}</span>
     <div class="bar"><div class="bar__fill ${pct === 100 ? 'is-done' : ''}"
       style="width:${pct}%"></div></div>
   </div>
   ${sum.raised ? `<span class="tag tag--amber">상황 발생 ${num(sum.raised)}건</span>` : ''}
   ${sum.missed ? `
   <button class="btn btn--sm cl-missed" id="btn-missed" type="button"
-    >어제 미체크 ${num(sum.missed)}건</button>` : ''}
+    >어제 미체크 ${num(sum.missed)}건 →</button>` : ''}
 </div>
-${table.groups.length ? `
-<div class="table-wrap">
-  <table class="grid dl">
-    <thead>
-      <tr>
-        <th class="dl__c-group">업무항목</th>
-        <th class="dl__c-proc">프로세스</th>
-        <th class="dl__c-check"></th>
-        <th>체크리스트</th>
-        <th class="dl__c-done">완료</th>
-        <th class="dl__c-memo"></th>
-      </tr>
-    </thead>
-    <tbody>${table.groups.map((g) => groupRows(g, user)).join('')}</tbody>
-  </table>
-</div>` : '<p class="empty">이 날짜에 해야 할 항목이 없습니다.</p>'}`;
+${table.divisions.length ? `<div class="dq">${table.divisions.map((d) => `
+<div class="dq-div"><span class="dq-div__name">${esc(d.name)}</span>
+  <span class="dq-div__cnt">${num(d.done)} / ${num(d.total)}</span></div>
+${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')}</div>`
+        : '<p class="empty">이 날짜에 해야 할 항목이 없습니다.</p>'}`;
 
     body.querySelector('#btn-prev').addEventListener('click', () => {
         state.date = addDays(state.date, -1);
@@ -186,9 +203,23 @@ ${table.groups.length ? `
         state.assignee = e.target.value;
         reload();
     });
+    body.querySelectorAll('#seg-done [data-seg]').forEach((el) => {
+        el.addEventListener('click', () => {
+            state.showDone = el.dataset.seg === 'all';
+            reload();
+        });
+    });
     body.querySelector('#btn-missed')?.addEventListener('click', () => {
         state.date = sum.prevDate;
         reload();
+    });
+    body.querySelectorAll('[data-fold]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const id = el.dataset.fold;
+            if (state.openDone.has(id)) state.openDone.delete(id);
+            else state.openDone.add(id);
+            reload();
+        });
     });
 
     /** 체크/해제 */
@@ -268,97 +299,80 @@ ${table.groups.length ? `
     });
 }
 
-/** 구간 하나가 차지하는 줄 수 (체크항목 줄 + 상황 칩 줄) */
-function sectionSpan(sec) {
-    return sec.rows.length + (sec.situations.length ? 1 : 0);
-}
-
-/** 업무항목 한 묶음의 표 줄들 - 업무항목·프로세스 칸은 rowspan 으로 한 번만 쓴다 */
-function groupRows(g, user) {
-    const span = g.sections.reduce((n, s) => n + sectionSpan(s), 0);
-    if (!span) return '';
-    const allDone = g.total > 0 && g.done === g.total;
-    const groupCell = `
-<td class="dl__group" rowspan="${span}">
-  <span class="dl__group-name">${esc(g.name)}</span>
-  <span class="tag ${allDone ? 'tag--green' : 'tag--gray'}">${num(g.done)} / ${num(g.total)}</span>
-</td>`;
-    let first = true;
-    return g.sections.map((sec) => {
-        const html = sectionRows(sec, user, first ? groupCell : '');
-        first = false;
-        return html;
-    }).join('');
-}
-
-/** 구간(프로세스) 하나의 줄들 - 프로세스 칸은 첫 줄에만 rowspan 으로 */
-function sectionRows(sec, user, groupCell) {
-    const span = sectionSpan(sec);
-    const done = sec.rows.filter((r) => r.check).length;
-    const inSit = !!sec.sit;
-    const procCell = `
-<td class="dl__proc ${inSit ? 'is-sit' : ''}" rowspan="${span}">
-  ${sec.path.length ? pathHtml(sec.path, sec.sit) : '<span class="dl__proc-name">단독 업무</span>'}
-  ${sec.rows.length ? `<span class="dl__proc-cnt">${num(done)} / ${num(sec.rows.length)}</span>` : ''}
-</td>`;
-    const lines = sec.rows.map((r, i) => `
-<tr class="dl__row ${r.check ? 'is-done' : ''} ${inSit ? 'is-sit' : ''}">
-  ${i === 0 ? groupCell : ''}
-  ${i === 0 ? procCell : ''}
-  ${itemCells(r, user)}
-</tr>`);
-    if (sec.situations.length) {
-        lines.push(`
-<tr class="dl__sitrow">
-  ${sec.rows.length ? '' : groupCell}
-  ${sec.rows.length ? '' : procCell}
-  <td colspan="4">${sitChips(sec.situations, user)}</td>
-</tr>`);
+/**
+ * 업무항목 한 묶음 - 왼쪽 이름 칸, 오른쪽에 미완료 줄(업무 순서)과 상황 칩, 그 뒤 완료 줄.
+ * 완료 줄은 세그먼트가 「전체」이거나 「완료 N건 보기」 를 눌렀을 때만 펼친다.
+ */
+function groupHtml(g, user) {
+    const open = state.showDone || state.openDone.has(g.item.id);
+    const done = [];
+    const parts = [];
+    g.sections.forEach((sec) => {
+        sec.rows.forEach((r) => {
+            if (r.check) done.push({ r, sec });
+            else parts.push(rowHtml(r, sec, user));
+        });
+        if (sec.situations.length) parts.push(sitChips(sec.situations, user));
+    });
+    if (done.length) {
+        if (!state.showDone) {
+            parts.push(`
+<button class="dq-fold" type="button" data-fold="${esc(g.item.id)}">
+  ${icon(open ? 'down' : 'next', 'icon icon--sm')}완료 ${num(done.length)}건 ${open ? '접기' : '보기'}</button>`);
+        }
+        if (open) parts.push(done.map(({ r, sec }) => rowHtml(r, sec, user)).join(''));
     }
-    return lines.join('');
+    if (!parts.length) parts.push('<p class="dq-empty">할 항목이 없습니다.</p>');
+    const allDone = g.total > 0 && g.done === g.total;
+    return `
+<div class="dq-grp">
+  <div class="dq-grp__name">${esc(g.name)}
+    <small class="${allDone ? 'is-done' : ''}">${num(g.done)} / ${num(g.total)}</small></div>
+  <div class="dq-grp__rows">${parts.join('')}</div>
+</div>`;
 }
 
-/** 프로세스 경로 - `상위 › 하위`. 상황 아래 구간이면 상황명을 주황으로 */
-function pathHtml(path, sit) {
-    return path.map((name, i) => {
-        const isSit = sit && name === sit.title;
-        const last = i === path.length - 1;
-        const cls = isSit ? 'dl__proc-sit' : (last ? 'dl__proc-name' : 'dl__proc-parent');
-        const mark = isSit ? icon('issues', 'icon icon--sm') : '';
-        return `<span class="${cls}">${mark}${esc(name)}</span>`;
-    }).join('<span class="dl__proc-sep">›</span>');
+/** 프로세스 캡션 - `① 하차 파렛트수 확인 › ⚠ 입고수량오류 › ① 수량 차이 기록` */
+function pathCaption(sec) {
+    if (!sec.path.length) return '단독 업무';
+    return sec.path.map((n) => (n.sit
+        ? `<span class="is-sit">${icon('issues', 'icon icon--sm')}${esc(n.title)}</span>`
+        : `${circled(n.no)} ${esc(n.title)}`)).join(' › ');
 }
 
-/** 체크항목 줄의 셀들 - 체크 · 체크리스트 · 완료 · 메모 */
-function itemCells(r, user) {
+/** 체크 줄 하나 */
+function rowHtml(r, sec, user) {
     const locked = !db.canCheckItem(user, r);
     const done = !!r.check;
     const isStep = r.kind === CHECK_KIND.PROCESS;
-    const meta = `${isStep ? '' : `${esc(cycleLabel(r))} · `}${esc(r.assignee_eff_name || '공통')}`;
     const doneAt = done
         ? `${esc(fmtDateTime(r.check.checked_at).slice(11))} ${esc(r.check.checked_by_name)}`
         : '';
     return `
-  <td class="dl__c-check">
-    <input type="checkbox" data-check="${esc(r.id)}" ${done ? 'checked' : ''}
-           ${locked ? 'disabled' : ''} aria-label="${esc(r.title)}">
-  </td>
-  <td class="dl__item ${locked ? 'is-locked' : ''}" data-title="${esc(r.id)}">
-    ${isStep ? '<span class="dl__item-step">단계 완료</span>' : ''}
-    <span class="dl__item-title">${esc(r.title)}</span>
-    ${r.description ? `<span class="dl__item-desc">${esc(r.description)}</span>` : ''}
-    <span class="dl__item-meta">${meta}</span>
-  </td>
-  <td class="dl__c-done">${done ? `<span class="dl__done">${doneAt}</span>` : ''}</td>
-  <td class="dl__c-memo">${iconBtn('memo', r.check?.memo ? `메모: ${r.check.memo}` : '메모',
-        `data-memo="${esc(r.id)}"`, `btn btn--icon btn--sm ${r.check?.memo ? 'is-on' : ''}`)}</td>`;
+<div class="dq-row ${done ? 'is-done' : ''} ${locked ? 'is-locked' : ''} ${sec.sit ? 'is-sit' : ''}">
+  <input type="checkbox" data-check="${esc(r.id)}" ${done ? 'checked' : ''}
+         ${locked ? 'disabled' : ''} aria-label="${esc(r.title)}">
+  <span class="dq-row__main" data-title="${esc(r.id)}">
+    <span class="dq-row__title">
+      ${isStep ? '<span class="dq-row__step">단계 완료</span>' : ''}
+      <span>${esc(r.title)}</span>
+      ${r.late && !done ? '<span class="dq-late">어제 미체크</span>' : ''}
+    </span>
+    ${r.description ? `<span class="dq-row__desc">${esc(r.description)}</span>` : ''}
+    <span class="dq-row__proc">${pathCaption(sec)}${isStep ? '' : ` · ${esc(cycleLabel(r))}`}</span>
+  </span>
+  <span class="dq-row__who">${esc(r.assignee_eff_name || '공통')}</span>
+  <span class="dq-row__at">${doneAt}</span>
+  ${iconBtn('memo', r.check?.memo ? `메모: ${r.check.memo}` : '메모',
+        `data-memo="${esc(r.id)}"`, `btn btn--icon btn--sm ${r.check?.memo ? 'is-on' : ''}`)}
+</div>`;
 }
 
 /** 프로세스에 달린 상황 칩 줄 - 발생 전은 점선 「발생」, 발생하면 주황 실선 + 내용·해제 */
 function sitChips(situations, user) {
     return `
-<div class="dl__sits">
-  <span class="dl__sits-label">${icon('issues', 'icon icon--sm')}상황</span>
+<div class="dq-sits">
+  <span class="dq-sits__label">${icon('issues', 'icon icon--sm')}상황</span>
   ${situations.map((s) => {
         const mine = db.canCheckItem(user, s.item);
         const id = esc(s.item.id);
@@ -384,108 +398,141 @@ function sitChips(situations, user) {
 </div>`;
 }
 
-/* ============================== 탭2 업무프로세스 (구조도 보드) ============================== */
+/* ============================== 탭2 업무프로세스 (플로우차트) ============================== */
 
 /**
- * 보드가 그리는 프로세스 VM 모양
- *   { item, no, rows, subs, situations: [{ item, rows, subs }] }
- * 트리를 이 모양으로 바꿔 넣는다 (treeToVM).
+ * 플로우차트 - 업무항목 한 벌. 가운데 줄기(시작 → 프로세스 → 완료)에 상황마다
+ * 판단 마름모를 두고, 「예」 는 오른쪽 분기 레인(대응 단계) → 합류, 「아니오」 는 아래로.
+ * 편집 도구(fc-tools)는 편집 모드에서만 보인다 (.cl-manage.is-edit).
+ * @param {{item, processes:Array, loose:Array}} g treeToVM 으로 만든 업무항목 VM
  */
-
-/** 구조도 보드 - 프로세스 카드가 세로로 이어지고(화살표), 상황은 카드 오른쪽 분기 칸에 놓인다 */
-function boardHtml(g) {
-    const rows = g.processes.map((p, i) => `
-${i ? '<div class="fb-link"></div>' : ''}
-<div class="fb-row">
-  <div class="fb-main">${procCardHtml(p, false)}</div>
-  ${branchHtml(p.situations)}
-</div>`);
+function flowHtml(g) {
+    if (!g.processes.length && !g.loose.length) {
+        return '<p class="empty">아직 프로세스가 없습니다. 편집 모드에서 「프로세스 추가」로 시작하세요.</p>';
+    }
+    const parts = [];
+    // 상황 분기 뒤에는 「아니오」 화살표가 이미 다음 단계를 가리키므로 화살표를 또 그리지 않는다
+    let needArrow = false;
+    g.processes.forEach((p) => {
+        if (needArrow) parts.push('<div class="fc-row"><div class="fc-arrow"></div></div>');
+        parts.push(`<div class="fc-row">${stepHtml(p, false)}</div>`);
+        const isLast = p === g.processes.at(-1) && !g.loose.length;
+        p.situations.forEach((s, i) => {
+            parts.push(branchHtml(s, i === 0, isLast && i === p.situations.length - 1));
+        });
+        needArrow = !p.situations.length;
+    });
     if (g.loose.length) {
-        rows.push(`
-${rows.length ? '<div class="fb-link fb-link--dashed"></div>' : ''}
-<div class="fb-row">
-  <div class="fb-main">
-    <div class="fb-card fb-card--loose">
-      <div class="fb-card__head"><span class="fb-card__title">단독 업무</span>
-        <span class="fb-card__desc">흐름 없이 그때그때 하는 일</span></div>
-      <div class="fb-card__body">${g.loose.map(rowHtml).join('')}</div>
-    </div>
+        if (needArrow) parts.push('<div class="fc-row"><div class="fc-arrow"></div></div>');
+        parts.push(`
+<div class="fc-row">
+  <div class="fc-step fc-loose">
+    <div class="fc-step__head"><span class="fc-step__title">단독 업무</span>
+      <span class="fc-step__desc">흐름 없이 그때그때 하는 일</span></div>
+    <div class="fc-step__sum">체크 ${num(g.loose.length)}</div>
+    <div class="fc-step__body">${g.loose.map(editRow).join('')}</div>
   </div>
 </div>`);
     }
-    if (!rows.length) return '<p class="empty">아직 프로세스가 없습니다. 「프로세스 추가」로 시작하세요.</p>';
-    return `<div class="fb">${rows.join('')}</div>`;
+    return `<div class="fc ${state.detail || state.edit ? 'is-detail' : ''}">${parts.join('')}</div>
+<div class="fc-legend">
+  <span><i></i>프로세스 (체크항목 수 · 담당)</span>
+  <span><i class="dia"></i>판단 — 상황 발생?</span>
+  <span><i class="dash"></i>분기 레인 — 대응 단계, 끝나면 합류</span>
+</div>`;
 }
 
-/** 상황 분기 칸 - 프로세스 카드 오른쪽. 상황이 없으면 비운다 */
-function branchHtml(situations) {
-    if (!situations.length) return '';
-    return `<div class="fb-branch">${situations.map(sitCardHtml).join('')}</div>`;
-}
-
-/** 프로세스 카드 - 안에 체크항목, 하위 프로세스 사슬(fb-chain), 추가 버튼이 들어간다 */
-function procCardHtml(p, sub) {
-    const inactive = p.item.active === false;
-    const who = p.item.assignee_name
-        ? `<span class="fb-card__who">${icon('account', 'icon icon--sm')}${esc(p.item.assignee_name)}</span>`
+/** 프로세스 박스 - 개요는 요약 한 줄, 상세는 체크항목 목록. 하위 프로세스는 안쪽 사슬 */
+function stepHtml(p, sub) {
+    const it = p.item;
+    const inactive = it.active === false;
+    const leaf = !p.rows.length && !p.subs.length;
+    const who = it.assignee_name
+        ? `<span class="fb-card__who">${icon('account', 'icon icon--sm')}${esc(it.assignee_name)}</span>`
         : '';
+    const sum = [
+        p.rows.length ? `체크 ${num(p.rows.length)}` : (leaf ? '단계 완료 체크' : ''),
+        p.subs.length ? `하위 ${num(p.subs.length)}` : '',
+        p.situations.length ? `상황 ${num(p.situations.length)}` : '',
+    ].filter(Boolean).join(' · ');
     return `
-<div class="fb-card fb-card--proc ${sub ? 'fb-card--sub' : ''} ${inactive ? 'is-off' : ''}"
-     data-proc="${esc(p.item.id)}">
-  <div class="fb-card__head">
+<div class="fc-step ${sub ? 'fc-step--sub' : ''} ${inactive ? 'is-off' : ''}" data-proc="${esc(it.id)}">
+  <div class="fc-step__head">
     <span class="fb-no">${sub ? `${icon('forward', 'icon icon--sm')}${p.no}` : p.no}</span>
-    <span class="fb-card__title">${esc(p.item.title)}</span>
-    ${p.item.description ? `<span class="fb-card__desc">${esc(p.item.description)}</span>` : ''}
+    <span class="fc-step__title">${esc(it.title)}</span>
+    ${it.description ? `<span class="fc-step__desc">${esc(it.description)}</span>` : ''}
     ${who}
     ${inactive ? '<span class="tag tag--gray">비활성</span>' : ''}
-    ${!p.rows.length && !p.subs.length ? dailyToggle(p.item) : ''}
-    <span class="toolbar__spacer"></span>${toolsHtml(p.item)}
+    ${leaf ? `<span class="fc-tools">${dailyToggle(it)}</span>` : ''}
+    <span class="toolbar__spacer"></span>
+    <span class="fc-tools">${toolsHtml(it)}</span>
   </div>
-  <div data-slot="${esc(p.item.id)}"></div>
-  <div class="fb-card__body">
-    ${!p.rows.length && !p.subs.length
-        ? '<p class="fb-card__empty">체크항목이 없으면 단계 자체를 체크합니다 (「일일」 로 포함 여부 지정)</p>' : ''}
-    ${p.rows.map(rowHtml).join('')}
+  <div data-slot="${esc(it.id)}"></div>
+  <div class="fc-step__sum">${esc(sum)}</div>
+  <div class="fc-step__body">
+    ${p.rows.map(editRow).join('')}
     ${p.subs.length ? `
-    <div class="fb-chain">
+    <div class="fc-sub">
       ${p.subs.map((s, i) => `
-      ${i ? '<div class="fb-link fb-link--sm"></div>' : ''}
-      <div class="fb-row fb-row--sub">
-        <div class="fb-main">${procCardHtml(s, true)}</div>
-        ${branchHtml(s.situations)}
-      </div>`).join('')}
+      ${i ? '<div class="fc-arrow fc-arrow--sm"></div>' : ''}
+      ${stepHtml(s, true)}
+      ${s.situations.map(subBranchHtml).join('')}`).join('')}
     </div>` : ''}
-    <div class="fb-card__add">${addButtons(p.item)}</div>
+    <div class="fc-tools fc-add">${addButtons(it)}</div>
   </div>
 </div>`;
 }
 
-/** 상황 카드 - 프로세스 카드 오른쪽 분기 칸. 대응 프로세스·체크항목 편집 도구가 붙는다 */
-function sitCardHtml(s) {
-    const inactive = s.item.active === false;
+/**
+ * 판단 마름모 + 분기 레인 한 단 (최상위 프로세스의 상황).
+ * first 가 아니면 앞 상황의 「아니오」 화살표가 이미 있어 앞 화살표를 빼고,
+ * last 면 아래로 가는 「아니오」 화살표를 뺀다 (뒤에 단계가 없다)
+ */
+function branchHtml(s, first = true, last = false) {
     return `
-<div class="fb-card fb-card--sit ${inactive ? 'is-off' : ''}">
-  <div class="fb-card__head">
-    <span class="fb-no fb-no--sit">${icon('issues', 'icon icon--sm')}</span>
-    <span class="fb-card__title">${esc(s.item.title)}</span>
-    ${inactive ? '<span class="tag tag--gray">비활성</span>' : ''}
-    <span class="toolbar__spacer"></span>
-    ${toolsHtml(s.item)}
+${first ? '<div class="fc-row"><div class="fc-arrow"></div></div>' : ''}
+<div class="fc-row fc-branch">
+  <div class="fc-branch__main">
+    <div class="fc-diamond"><span>${esc(s.item.title)}<br>발생?</span></div>
+    <span class="fc-branch__yes"></span>
   </div>
-  <div data-slot="${esc(s.item.id)}"></div>
-  ${s.item.description ? `<p class="fb-card__desc fb-card__desc--block">${esc(s.item.description)}</p>` : ''}
-  <div class="fb-card__body">
-    ${s.rows.map(rowHtml).join('')}
-    ${s.subs.length ? `
-    <div class="fb-chain">
-      ${s.subs.map((p, i) => `
-      ${i ? '<div class="fb-link fb-link--sm"></div>' : ''}
-      <div class="fb-row fb-row--sub"><div class="fb-main">${procCardHtml(p, true)}</div></div>`).join('')}
-    </div>` : ''}
-    ${!s.rows.length && !s.subs.length ? '<p class="fb-card__empty">대응 절차를 추가하세요</p>' : ''}
-    <div class="fb-card__add">${addButtons(s.item)}</div>
-  </div>
+  ${laneHtml(s)}
+</div>
+${last ? '' : '<div class="fc-row"><div class="fc-arrow fc-arrow--no"></div></div>'}`;
+}
+
+/** 카드 안 하위 프로세스의 상황 - 옆에 둘 자리가 없어 아래에 레인만 붙인다 */
+function subBranchHtml(s) {
+    return `
+<div class="fc-arrow fc-arrow--sm"></div>
+<div class="fc-lane fc-lane--inline ${s.item.active === false ? 'is-off' : ''}">
+  ${laneInner(s, true)}
 </div>`;
+}
+
+/** 분기 레인 - 상황 설명, 대응 단계 사슬, 합류 표시 */
+function laneHtml(s) {
+    return `<div class="fc-lane ${s.item.active === false ? 'is-off' : ''}">${laneInner(s, false)}</div>`;
+}
+
+function laneInner(s, inline) {
+    const it = s.item;
+    return `
+  <div class="fc-lane__head">
+    ${icon('issues', 'icon icon--sm')}${inline ? `${esc(it.title)} 발생 시` : `${esc(it.title)} 발생 시`}
+    ${it.description ? `<small>${esc(it.description)}</small>` : ''}
+    ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
+    <span class="toolbar__spacer"></span>
+    <span class="fc-tools">${toolsHtml(it)}</span>
+  </div>
+  <div data-slot="${esc(it.id)}"></div>
+  ${s.rows.length ? `<div class="fc-step__body" style="display:block">${s.rows.map(editRow).join('')}</div>` : ''}
+  ${s.subs.map((p, i) => `
+  ${i ? '<div class="fc-arrow fc-arrow--sm"></div>' : '<div class="fc-arrow fc-arrow--sm"></div>'}
+  ${stepHtml(p, true)}`).join('')}
+  ${!s.rows.length && !s.subs.length ? '<p class="fb-card__empty">대응 절차 없음 · 발생 내용만 기록</p>' : ''}
+  <div class="fc-tools fc-add">${addButtons(it)}</div>
+  <div class="fc-lane__merge">↩ 다음 단계로 합류</div>`;
 }
 
 /** 일일체크리스트 포함 토글 - 켠 항목만 일일체크리스트에 나온다 */
@@ -497,22 +544,23 @@ function dailyToggle(item) {
 </label>`;
 }
 
-/** 체크항목 한 줄 (편집 도구 포함) */
-function rowHtml(r) {
+/** 체크항목 한 줄 (플로우차트 상세 · 편집 도구는 편집 모드에서만) */
+function editRow(r) {
     return `
 <div class="cl-item cl-item--edit ${r.active === false ? 'is-off' : ''} ${r.daily ? '' : 'is-skip'}">
-  ${dailyToggle(r)}
+  <span class="fc-tools">${dailyToggle(r)}</span>
+  <span class="cl-kind cl-kind--check">${icon('square', 'icon icon--sm')}</span>
   <span class="cl-item__title">${esc(r.title)}
     ${r.description ? `<span class="cl-item__desc">${esc(r.description)}</span>` : ''}</span>
-  <span class="cl-item__cycle">${esc(cycleLabel(r))}</span>
+  <span class="cl-item__cycle">${esc(cycleLabel(r))}${r.daily ? '' : ' · 일일 제외'}</span>
   <span class="cl-item__who">${esc(r.assignee_name || '')}</span>
   ${r.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
-  ${toolsHtml(r)}
+  <span class="fc-tools">${toolsHtml(r)}</span>
 </div>
 <div data-slot="${esc(r.id)}"></div>`;
 }
 
-/** 트리 노드를 보드 VM(프로세스 모양)으로 바꾼다 */
+/** 트리 노드를 플로우차트 VM(프로세스 모양)으로 바꾼다 */
 function treeToVM(node, no) {
     const vm = { item: node.item, no, rows: [], subs: [], situations: [] };
     let subNo = 0;
@@ -541,7 +589,21 @@ function treeToSitVM(node) {
 }
 
 async function drawManage(body, user, users, reload) {
-    const groups = await db.listChecklistGroups();
+    const divisions = await db.listChecklistDivisions();
+    // 업무구분 없는 옛 업무항목이 있으면 「미분류」 탭을 마지막에 붙인다 (옮길 수 있게)
+    const orphans = await db.listChecklistGroups(null);
+    const divTabs = [
+        ...divisions,
+        ...(orphans.length
+            ? [{ id: UNSORTED_ID, title: '미분류', kind: CHECK_KIND.DIVISION, active: true }]
+            : []),
+    ];
+    if (!divTabs.some((d) => d.id === state.division)) state.division = divTabs[0]?.id ?? null;
+    const division = divTabs.find((d) => d.id === state.division) ?? null;
+    const isUnsorted = division?.id === UNSORTED_ID;
+
+    let groups = [];
+    if (division) groups = isUnsorted ? orphans : await db.listChecklistGroups(division.id);
     if (!groups.some((g) => g.id === state.group)) state.group = groups[0]?.id ?? null;
     const group = groups.find((g) => g.id === state.group) ?? null;
     const rows = group
@@ -562,53 +624,116 @@ async function drawManage(body, user, users, reload) {
         });
         gvm = { item: tree.item, processes, loose };
     }
-    const templates = Object.keys(CHECK_TEMPLATES)
+    const templates = (division && !isUnsorted ? Object.keys(CHECK_TEMPLATES) : [])
         .filter((name) => !groups.some((g) => g.title === name));
+    const who = (it) => (it.assignee_name
+        ? `<span class="fb-card__who">${icon('account', 'icon icon--sm')}${esc(it.assignee_name)}</span>`
+        : '');
 
+    body.className = `card__body cl-manage ${state.edit ? 'is-edit' : ''}`;
     body.innerHTML = `
+<div class="cl-gbar cl-gbar--div">
+  <div class="cl-gtabs" role="tablist">
+    <span class="cl-gtabs__label">업무구분</span>
+    ${divTabs.map((d) => `
+    <button class="cl-gtab cl-gtab--div ${d.id === state.division ? 'is-active' : ''} ${d.active ? '' : 'is-off'}"
+            type="button" role="tab" data-division="${esc(d.id)}">${esc(d.title)}</button>`).join('')}
+    ${divTabs.length ? '' : '<span class="cl-gtabs__empty">업무구분이 없습니다. 편집 모드에서 「업무구분 추가」로 시작하세요.</span>'}
+  </div>
+  <div class="cl-gbar__actions">
+    ${segHtml('seg-zoom', [['over', '개요'], ['detail', '상세']], state.detail || state.edit ? 'detail' : 'over')}
+    <button class="btn btn--sm ${state.edit ? 'btn--primary' : ''}" type="button" id="btn-edit">
+      ${icon('edit', 'icon icon--sm')}<span>${state.edit ? '편집 끝' : '편집'}</span></button>
+    ${group ? textBtn('sheet', '인쇄', 'id="btn-print"') : ''}
+    <span class="fc-tools">${textBtn('plus', '업무구분 추가', 'id="btn-add-division"', 'btn btn--primary btn--sm')}</span>
+  </div>
+</div>
+<div data-slot="root"></div>
+${division ? `
+<div class="cl-ghead cl-ghead--div">
+  <span class="cl-kind cl-kind--div">${icon('checklist', 'icon icon--sm')}</span>
+  <strong class="cl-ghead__title">${esc(division.title)}</strong>
+  ${isUnsorted ? '<span class="cl-ghead__desc">업무구분이 정해지지 않은 업무항목 — 편집 모드의 수정에서 업무구분을 고르세요</span>' : `
+  ${division.description ? `<span class="cl-ghead__desc">${esc(division.description)}</span>` : ''}
+  ${who(division)}
+  ${division.active ? '' : '<span class="tag tag--gray">비활성</span>'}
+  <span class="fc-tools">${toolsHtml(division, '업무구분')}</span>`}
+  <span class="toolbar__spacer"></span>
+  ${isUnsorted ? '' : `<span class="fc-tools">
+  ${templates.map((name) => textBtn('checklist', `견본: ${name}`, `data-seed="${esc(name)}"`)).join('')}
+  ${textBtn('plus', '업무항목 추가', `data-add="${esc(division.id)}" data-kind="${CHECK_KIND.GROUP}"`, 'btn btn--primary btn--sm')}</span>`}
+</div>
+${isUnsorted ? '' : `<div data-slot="${esc(division.id)}"></div>`}
 <div class="cl-gbar">
   <div class="cl-gtabs" role="tablist">
+    <span class="cl-gtabs__label">업무항목</span>
     ${groups.map((g) => `
     <button class="cl-gtab ${g.id === state.group ? 'is-active' : ''} ${g.active ? '' : 'is-off'}"
             type="button" role="tab" data-group="${esc(g.id)}">
       ${icon('checklist', 'icon icon--sm')}<span>${esc(g.title)}</span></button>`).join('')}
-    ${groups.length ? '' : '<span class="cl-gtabs__empty">업무항목이 없습니다. 오른쪽 「업무항목 추가」로 시작하세요.</span>'}
+    ${groups.length ? '' : '<span class="cl-gtabs__empty">이 업무구분에 업무항목이 없습니다. 편집 모드에서 「업무항목 추가」 또는 견본으로 시작하세요.</span>'}
   </div>
-  <div class="cl-gbar__actions">
-    ${templates.map((name) => textBtn('checklist', `견본: ${name}`, `data-seed="${esc(name)}"`)).join('')}
-    ${textBtn('plus', '업무항목 추가', 'id="btn-add-group"', 'btn btn--primary btn--sm')}
-  </div>
-</div>
-<div data-slot="root"></div>
+</div>` : ''}
 ${group ? `
-<div class="cl-ghead">
+<div class="cl-ghead cl-print-keep">
   <span class="cl-kind cl-kind--group">${icon('checklist', 'icon icon--sm')}</span>
+  <span class="cl-ghead__crumb">${esc(division.title)} ›</span>
   <strong class="cl-ghead__title">${esc(group.title)}</strong>
   ${group.description ? `<span class="cl-ghead__desc">${esc(group.description)}</span>` : ''}
-  ${group.assignee_name ? `<span class="fb-card__who">${icon('account', 'icon icon--sm')}${esc(group.assignee_name)}</span>` : ''}
+  ${who(group)}
   ${group.active ? '' : '<span class="tag tag--gray">비활성</span>'}
-  ${iconBtn('up', '업무항목 순서 위로', `data-move="${esc(group.id)}" data-dir="up"`)}
-  ${iconBtn('down', '업무항목 순서 아래로', `data-move="${esc(group.id)}" data-dir="down"`)}
-  ${iconBtn('edit', '업무항목 수정', `data-edit="${esc(group.id)}"`)}
-  ${iconBtn('trash', '업무항목 삭제', `data-del="${esc(group.id)}"`, 'btn btn--icon btn--sm btn--danger')}
+  <span class="fc-tools">
+    ${toolsHtml(group, '업무항목')}
+    ${textBtn('sheet', '복제', `data-dup="${esc(group.id)}"`)}
+  </span>
   <span class="toolbar__spacer"></span>
+  <span class="fc-tools">
   ${textBtn('plus', '프로세스 추가', `data-add="${esc(group.id)}" data-kind="${CHECK_KIND.PROCESS}"`, 'btn btn--primary btn--sm')}
   ${textBtn('plus', '단독 체크항목', `data-add="${esc(group.id)}" data-kind="${CHECK_KIND.CHECK}"`)}
+  </span>
 </div>
 <div data-slot="${esc(group.id)}"></div>
+${state.edit ? `
 <p class="cl-guide">
-  <span class="fb-no">1</span> 프로세스 카드는 위에서 아래로 업무 순서이고,
-  <span class="fb-no fb-no--sit">${icon('issues', 'icon icon--sm')}</span> 상황은 카드 오른쪽 분기에 놓입니다.
+  프로세스 박스의 순서가 업무 순서입니다. 상황은 프로세스에 달아 두면 「발생?」 판단과 분기 레인으로 그려집니다.
   체크항목 앞의 <span class="cl-daily is-on"><span>일일</span></span> 을 켠 것만 일일체크리스트에 나옵니다.
-  담당자를 비우면 상위(프로세스 → 업무항목)의 담당자를 따릅니다.
-</p>
-${boardHtml(gvm)}` : ''}`;
+  담당자를 비우면 상위(프로세스 → 업무항목 → 업무구분)의 담당자를 따릅니다.
+</p>` : ''}
+${flowHtml(gvm)}` : ''}`;
 
+    body.querySelectorAll('[data-division]').forEach((el) => {
+        el.addEventListener('click', () => {
+            state.division = el.dataset.division;
+            state.group = null;
+            reload();
+        });
+    });
     body.querySelectorAll('[data-group]').forEach((el) => {
         el.addEventListener('click', () => {
             state.group = el.dataset.group;
             reload();
         });
+    });
+    body.querySelectorAll('#seg-zoom [data-seg]').forEach((el) => {
+        el.addEventListener('click', () => {
+            state.detail = el.dataset.seg === 'detail';
+            if (!state.detail) state.edit = false;      // 개요로 돌아가면 편집도 끝난다
+            reload();
+        });
+    });
+    body.querySelector('#btn-edit').addEventListener('click', () => {
+        state.edit = !state.edit;
+        if (state.edit) state.detail = true;
+        reload();
+    });
+    body.querySelector('#btn-print')?.addEventListener('click', () => {
+        document.body.classList.add('cl-printing');
+        const off = () => {
+            document.body.classList.remove('cl-printing');
+            window.removeEventListener('afterprint', off);
+        };
+        window.addEventListener('afterprint', off);
+        window.print();
     });
 
     /** 슬롯에 인라인 폼을 연다. slotId 는 부모 노드 id 또는 'root' */
@@ -617,9 +742,10 @@ ${boardHtml(gvm)}` : ''}`;
         const slot = body.querySelector(`[data-slot="${slotId}"]`);
         if (!slot) return;
         const parent = parentId
-            ? (rows.find((r) => r.id === parentId) ?? groups.find((g) => g.id === parentId))
+            ? (rows.find((r) => r.id === parentId) ?? groups.find((g) => g.id === parentId)
+                ?? divisions.find((d) => d.id === parentId))
             : null;
-        slot.innerHTML = formHtml(item, kind, parent, users);
+        slot.innerHTML = formHtml(item, kind, parent, users, divisions);
         const form = slot.querySelector('form');
 
         const sync = () => {
@@ -648,12 +774,19 @@ ${boardHtml(gvm)}` : ''}`;
                 assignee_id: f.get('assignee_id') || null,
                 active: f.get('active') === 'on',
                 daily: f.get('daily') === 'on',
-                parent_id: parentId ?? null,
+                // 업무항목은 폼에서 업무구분을 고른다 (수정 시 다른 업무구분으로 옮길 수 있다)
+                parent_id: kind === CHECK_KIND.GROUP && f.has('parent_id')
+                    ? (f.get('parent_id') || null) : (parentId ?? null),
             };
             try {
-                if (item) await db.updateChecklistItem(item.id, payload, user);
-                else {
+                if (item) {
+                    await db.updateChecklistItem(item.id, payload, user);
+                    if (kind === CHECK_KIND.GROUP && payload.parent_id) {
+                        state.division = payload.parent_id;
+                    }
+                } else {
                     const made = await db.createChecklistItem(payload, user);
+                    if (kind === CHECK_KIND.DIVISION) state.division = made.id;
                     if (kind === CHECK_KIND.GROUP) state.group = made.id;
                 }
                 toast(item ? '수정했습니다.' : '등록했습니다.', 'success');
@@ -664,15 +797,28 @@ ${boardHtml(gvm)}` : ''}`;
         });
     }
 
-    body.querySelector('#btn-add-group')
-        .addEventListener('click', () => openForm('root', null, null, CHECK_KIND.GROUP));
+    body.querySelector('#btn-add-division')
+        .addEventListener('click', () => openForm('root', null, null, CHECK_KIND.DIVISION));
+    body.querySelector('[data-dup]')?.addEventListener('click', async () => {
+        const msg = `「${group.title}」 을(를) 프로세스·상황·체크항목까지 통째로 복제할까요?`;
+        if (!(await confirmDialog(msg))) return;
+        try {
+            const r = await db.duplicateChecklistGroup(group.id, user);
+            state.group = r.group.id;
+            toast(`「${r.group.title}」 으로 항목 ${num(r.count)}개를 복제했습니다.`, 'success');
+            await reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
     body.querySelectorAll('[data-seed]').forEach((el) => {
         el.addEventListener('click', async () => {
             const name = el.dataset.seed;
-            const msg = `「${name}」 견본 업무항목을 만들까요?\n만든 뒤 자유롭게 고칠 수 있습니다.`;
+            const msg = `「${division.title}」 아래에 「${name}」 견본 업무항목을 만들까요?\n`
+                + '만든 뒤 자유롭게 고칠 수 있습니다.';
             if (!(await confirmDialog(msg))) return;
             try {
-                const r = await db.seedChecklistTemplate(name, user);
+                const r = await db.seedChecklistTemplate(name, division.id, user);
                 state.group = r.group.id;
                 toast(`항목 ${num(r.count)}개를 등록했습니다.`, 'success');
                 await reload();
@@ -681,7 +827,6 @@ ${boardHtml(gvm)}` : ''}`;
             }
         });
     });
-
     body.querySelectorAll('[data-daily]').forEach((el) => {
         el.addEventListener('change', async () => {
             try {
@@ -701,7 +846,8 @@ ${boardHtml(gvm)}` : ''}`;
     body.querySelectorAll('[data-edit]').forEach((el) => {
         el.addEventListener('click', () => {
             const item = rows.find((r) => r.id === el.dataset.edit)
-                ?? groups.find((g) => g.id === el.dataset.edit);
+                ?? groups.find((g) => g.id === el.dataset.edit)
+                ?? divisions.find((d) => d.id === el.dataset.edit);
             openForm(item.id, item, item.parent_id, item.kind);
         });
     });
@@ -718,8 +864,11 @@ ${boardHtml(gvm)}` : ''}`;
     body.querySelectorAll('[data-del]').forEach((el) => {
         el.addEventListener('click', async () => {
             const item = rows.find((r) => r.id === el.dataset.del)
-                ?? groups.find((g) => g.id === el.dataset.del);
-            const kids = countDescendants(rows, item.id);
+                ?? groups.find((g) => g.id === el.dataset.del)
+                ?? divisions.find((d) => d.id === el.dataset.del);
+            const kids = item.kind === CHECK_KIND.DIVISION
+                ? (await db.listChecklistItems({ root: item.id, includeInactive: true })).length - 1
+                : countDescendants(rows, item.id);
             const label = CHECK_KINDS[item.kind];
             const msg = kids
                 ? `${label} 「${item.title}」 아래 항목 ${kids}개도 함께 삭제됩니다. 계속할까요?`
@@ -754,37 +903,54 @@ function addButtons(item) {
         `data-add="${esc(item.id)}" data-kind="${esc(k)}"`, 'btn btn--sm btn--ghost')).join('');
 }
 
-/** 순서·수정·삭제 도구 (업무프로세스 탭) */
-function toolsHtml(item) {
+/** 순서·수정·삭제 도구 (편집 모드) */
+function toolsHtml(item, what = '') {
+    const w = what ? `${what} ` : '';
     return `
-  ${iconBtn('up', '위로', `data-move="${esc(item.id)}" data-dir="up"`)}
-  ${iconBtn('down', '아래로', `data-move="${esc(item.id)}" data-dir="down"`)}
-  ${iconBtn('edit', '수정', `data-edit="${esc(item.id)}"`)}
-  ${iconBtn('trash', '삭제', `data-del="${esc(item.id)}"`, 'btn btn--icon btn--sm btn--danger')}`;
+  ${iconBtn('up', `${w}순서 위로`, `data-move="${esc(item.id)}" data-dir="up"`)}
+  ${iconBtn('down', `${w}순서 아래로`, `data-move="${esc(item.id)}" data-dir="down"`)}
+  ${iconBtn('edit', `${w}수정`, `data-edit="${esc(item.id)}"`)}
+  ${iconBtn('trash', `${w}삭제`, `data-del="${esc(item.id)}"`, 'btn btn--icon btn--sm btn--danger')}`;
 }
 
 /** 인라인 편집 폼 - 종류에 따라 필드가 다르다 (등록·수정 같은 마크업) */
-function formHtml(item, kind, parent, users) {
+function formHtml(item, kind, parent, users, divisions = []) {
     const cycle = item?.cycle ?? CHECK_CYCLE.DAILY;
     const isCheck = kind === CHECK_KIND.CHECK;
     const isSit = kind === CHECK_KIND.SITUATION;
+    const isGroup = kind === CHECK_KIND.GROUP;
     const titleLabel = {
-        group: '업무항목 이름', process: '프로세스명', situation: '상황명', check: '항목명',
+        division: '업무구분 이름', group: '업무항목 이름', process: '프로세스명',
+        situation: '상황명', check: '항목명',
     }[kind];
     const descLabel = {
-        group: '설명', process: '설명', situation: '어떤 때인지 (대응 요령)', check: '설명',
+        division: '설명', group: '설명', process: '설명',
+        situation: '어떤 때인지 (대응 요령)', check: '설명',
     }[kind];
+    const placeholder = {
+        division: '예: 입고, 출고, 반품', group: '예: B2B출고, B2C출고',
+    }[kind] ?? '';
+    const curParent = parent?.id ?? '';
     return `
 <form class="cl-form">
   <div class="cl-form__head">
     <span class="tag tag--blue">${esc(CHECK_KINDS[kind])} ${item ? '수정' : '추가'}</span>
-    ${parent ? `<span class="cl-form__parent">${esc(CHECK_KINDS[parent.kind])} 「${esc(parent.title)}」 아래</span>` : ''}
+    ${parent && !isGroup ? `<span class="cl-form__parent">${esc(CHECK_KINDS[parent.kind])} 「${esc(parent.title)}」 아래</span>` : ''}
   </div>
   <label class="field">
     <span class="field__label">${esc(titleLabel)} *</span>
     <input type="text" name="title" required maxlength="100" value="${esc(item?.title ?? '')}"
-           placeholder="${kind === CHECK_KIND.GROUP ? '예: 입고, 출고, 반품' : ''}">
+           placeholder="${esc(placeholder)}">
   </label>
+  ${isGroup ? `
+  <label class="field" style="flex:0 0 160px">
+    <span class="field__label">업무구분</span>
+    <select name="parent_id" ${divisions.length ? 'required' : ''}>
+      ${curParent ? '' : '<option value="">미분류</option>'}
+      ${divisions.map((d) => `
+      <option value="${esc(d.id)}" ${d.id === curParent ? 'selected' : ''}>${esc(d.title)}</option>`).join('')}
+    </select>
+  </label>` : ''}
   <label class="field">
     <span class="field__label">${esc(descLabel)}</span>
     <input type="text" name="description" maxlength="200"
@@ -813,7 +979,7 @@ function formHtml(item, kind, parent, users) {
   <label class="field" style="flex:0 0 160px">
     <span class="field__label">담당자${isSit || isCheck ? '' : ' (기본)'}</span>
     <select name="assignee_id">
-      <option value="">${parent ? '상위 담당 따름' : '공통'}</option>
+      <option value="">${parent || isGroup ? '상위 담당 따름' : '공통'}</option>
       ${users.map((u) => `
       <option value="${esc(u.id)}" ${u.id === item?.assignee_id ? 'selected' : ''}
         >${esc(u.name)}</option>`).join('')}

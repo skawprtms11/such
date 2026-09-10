@@ -398,13 +398,15 @@ export function cycleLabel(item) {
 
 /**
  * 체크리스트 노드 종류 - 저장값 (checklist_items.kind) 🔑
- *   group     : 업무항목(입고·출고 …). 사용자가 만드는 최상위 묶음. 흐름 한 벌의 제목이다
+ *   division  : 업무구분(입고·출고·반품 …). 사용자가 만드는 **최상위** 묶음
+ *   group     : 업무항목(B2B출고·B2C출고 …). 업무구분 아래 흐름 한 벌의 제목이다
  *   process   : 업무 흐름의 한 단계. 같은 부모 아래에서 sort_order 순서가 곧 업무 순서다
  *   situation : 그 단계에서 생길 수 있는 상황(예: 입고수량오류). 발생 처리하면
  *               하위 프로세스·체크항목이 그 날짜에 끼어든다
  *   check     : 담당자가 실제로 체크하는 항목 (주기·담당자를 가진다)
  */
 export const CHECK_KIND = {
+    DIVISION: 'division',
     GROUP: 'group',
     PROCESS: 'process',
     SITUATION: 'situation',
@@ -413,6 +415,7 @@ export const CHECK_KIND = {
 
 /** 종류 표시 문구 */
 export const CHECK_KINDS = {
+    [CHECK_KIND.DIVISION]: '업무구분',
     [CHECK_KIND.GROUP]: '업무항목',
     [CHECK_KIND.PROCESS]: '프로세스',
     [CHECK_KIND.SITUATION]: '상황',
@@ -421,14 +424,16 @@ export const CHECK_KINDS = {
 
 /**
  * 종류별로 둘 수 있는 하위 종류. 키 `root` 는 최상위(부모 없음)다.
- *   최상위    : 업무항목만 (사용자가 「업무항목 추가」로 만든다)
+ *   최상위    : 업무구분만 (사용자가 「업무구분 추가」로 만든다)
+ *   업무구분  : 업무항목
  *   업무항목  : 프로세스(업무 흐름) · 체크항목(흐름 없는 단독 업무)
  *   프로세스  : 체크항목 · 상황 · 하위 프로세스(세부 단계)
  *   상황      : 대응 프로세스 · 체크항목(간단한 상황은 프로세스 없이 바로)
  *   체크항목  : 없음 (말단)
  */
 export const CHECK_KIND_CHILDREN = {
-    root: [CHECK_KIND.GROUP],
+    root: [CHECK_KIND.DIVISION],
+    [CHECK_KIND.DIVISION]: [CHECK_KIND.GROUP],
     [CHECK_KIND.GROUP]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
     [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION, CHECK_KIND.PROCESS],
     [CHECK_KIND.SITUATION]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
@@ -436,8 +441,9 @@ export const CHECK_KIND_CHILDREN = {
 };
 
 /**
- * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 같은 이름의 업무항목을 만들고
- * 아래 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 같은 이름이 이미 있으면 거부한다.
+ * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 **보고 있는 업무구분 아래에** 같은 이름의
+ * 업무항목을 만들고 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 그 업무구분에 같은 이름이
+ * 이미 있으면 거부한다.
  * `children` 이 없는 항목은 체크항목이고, 프로세스·상황은 kind 를 적는다.
  */
 export const CHECK_TEMPLATES = {
@@ -554,7 +560,8 @@ export const APP_TABS = [
  */
 export const APP_MENU = [
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
-    { key: 'checklist', route: '#/checklist', title: '업무체크리스트', icon: 'checklist' },
+    { key: 'checklist', route: '#/checklist', title: '일일체크리스트', icon: 'checklist' },
+    { key: 'process', route: '#/process', title: '업무프로세스', icon: 'sheet' },
     { key: 'status', route: '#/status', title: '주문처리현황', icon: 'status' },
     { key: 'issues', route: '#/issues', title: '이슈등록', icon: 'issues' },
     { key: 'wait', route: '#/wait', title: '상차대기', icon: 'clock' },
