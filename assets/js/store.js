@@ -106,7 +106,7 @@ const TABLES = [
         name: 'checklist_items',
         cols: [
             'id', 'category', 'parent_id', 'kind', 'title', 'description',
-            'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name',
+            'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name', 'sub_assignees',
             'sort_order', 'active', 'daily',
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
         ],

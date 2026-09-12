@@ -1597,16 +1597,14 @@ button.m-pallet:disabled { cursor: default; }
 .m-fc__sub { margin: 6px 0 0 6px; padding-left: 10px; border-left: 2px solid var(--m-gray-200); }
 .m-fc__sub .m-fc__step { border-width: 1px; border-color: var(--m-gray-300); padding: 6px 8px; }
 .m-fc__sub .m-fc__no { width: 20px; height: 20px; font-size: 11px; background: #fff; color: var(--m-blue); border: 1.5px solid var(--m-blue); }
-.m-fc__dec { display: flex; align-items: center; gap: 10px; margin-left: 10px; padding: 6px 0; color: var(--m-amber); font-weight: 700; font-size: 14px; }
-.m-fc__dia { flex: none; width: 28px; height: 28px; position: relative; }
-.m-fc__dia::before { content: ''; position: absolute; inset: 4px; transform: rotate(45deg); border: 1.5px solid var(--m-amber); background: #fff; border-radius: 3px; }
-.m-fc__branch { margin: 0 0 4px 22px; padding: 8px 8px 8px 10px; border-left: 2px dashed var(--m-amber); }
-.m-fc__branch .m-fc__step { border-color: var(--m-amber); }
-.m-fc__branch .m-fc__no { background: var(--m-amber); }
-.m-fc__branch .m-fc__line { border-color: var(--m-amber); }
+/* 상황 블록 - 프로세스 박스 아래 주황 상자 (「X 발생 시」 → 대응 → 처리 후 다음 단계) */
+.m-fc__sit { margin: 6px 0 4px 22px; padding: 8px 10px; border: 1.5px dashed var(--m-amber); border-radius: 8px; background: #fffaf0; }
+.m-fc__sit-head { color: var(--m-amber); font-weight: 800; font-size: 14px; }
+.m-fc__sit-head::before { content: '⚠ '; }
+.m-fc__sit .m-fc__step { border-color: var(--m-amber); margin-top: 6px; }
+.m-fc__sit .m-fc__no { background: var(--m-amber); }
+.m-fc__sit .m-fc__line { border-color: var(--m-amber); }
 .m-fc__merge { font-size: 12.5px; color: var(--m-amber); font-weight: 600; margin-top: 6px; }
-.m-fc__yes { font-size: 12px; color: var(--m-amber); margin-left: 24px; }
-.m-fc__no-label { font-size: 12px; color: var(--m-gray-500); margin-left: 30px; }
 .m-fc__loose { border-style: dashed; }
 
 /* 상황 칩 - 발생 전 점선 「발생」, 발생하면 주황 실선(누르면 시트) */

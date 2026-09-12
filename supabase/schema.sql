@@ -357,8 +357,9 @@ create table if not exists public.checklist_items (
                                 check (cycle in ('daily', 'weekly', 'monthly', 'adhoc')),
     weekday         smallint    check (weekday between 0 and 6),   -- 주 - 0=일
     monthday        smallint    check (monthday between 1 and 31), -- 월 - 말일은 보정된다
-    assignee_id     uuid        references public.profiles (id),
+    assignee_id     uuid        references public.profiles (id),   -- 정담당자
     assignee_name   text        not null default '',
+    sub_assignees   jsonb       not null default '[]'::jsonb,    -- 부담당자 여러 명 [{id, name}]
     sort_order      integer     not null default 0,           -- 형제 사이의 표시 순서
     active          boolean     not null default true,
     daily           boolean     not null default false,       -- 일일체크리스트 포함 (업무프로세스 탭에서 체크)
@@ -382,6 +383,8 @@ update public.checklist_items i set kind = 'process'
 
 -- 일일체크리스트 포함 여부. 컬럼이 없던 시절의 항목은 모두 포함으로 본다 (화면에서 끌 수 있다)
 alter table public.checklist_items add column if not exists daily boolean not null default false;
+-- 부담당자(여러 명) - 정담당자와 한 묶음으로 상속된다 (db.js effectiveAssignee · 아래 checklist_can_check)
+alter table public.checklist_items add column if not exists sub_assignees jsonb not null default '[]'::jsonb;
 update public.checklist_items set daily = true
  where kind in ('check', 'process') and daily = false and updated_at is null
    and created_at < '2026-09-09T02:00:00Z';
@@ -423,6 +426,33 @@ create or replace function public.checklist_effective_assignee(p_item text)
          where up.depth < 50
     )
     select assignee_id from up where assignee_id is not null order by depth limit 1
+$$;
+
+/**
+ * 이 항목을 로그인 사용자가 체크할 수 있는지 🔑 - db.js 의 canCheckItem() 과 같은 규칙.
+ * 가장 가까운 상위 중 정담당자나 부담당자가 있는 곳의 담당자 묶음을 본다.
+ *   관리 권한자  또는  담당자 없음(공통)  또는  정담당자 본인  또는  부담당자 중 한 명
+ */
+create or replace function public.checklist_can_check(p_item text)
+    returns boolean language sql stable as $$
+    with recursive up as (
+        select id, parent_id, assignee_id, sub_assignees, 0 as depth
+          from public.checklist_items where id = p_item
+        union all
+        select i.id, i.parent_id, i.assignee_id, i.sub_assignees, up.depth + 1
+          from public.checklist_items i join up on i.id = up.parent_id
+         where up.depth < 50
+    ), eff as (
+        select assignee_id, coalesce(sub_assignees, '[]'::jsonb) as subs
+          from up
+         where assignee_id is not null or jsonb_array_length(coalesce(sub_assignees, '[]'::jsonb)) > 0
+         order by depth limit 1
+    )
+    select public.can_manage_checklist()
+        or not exists (select 1 from eff)
+        or exists (select 1 from eff e where e.assignee_id = auth.uid())
+        or exists (select 1 from eff e, jsonb_array_elements(e.subs) s
+                    where (s->>'id')::uuid = auth.uid())
 $$;
 
 create index if not exists checklist_items_cat_idx
@@ -653,11 +683,7 @@ create policy checklist_checks_select on public.checklist_checks for select to a
 
 drop policy if exists checklist_checks_insert on public.checklist_checks;
 create policy checklist_checks_insert on public.checklist_checks for insert to authenticated
-    with check (checked_by = auth.uid() and (
-        public.can_manage_checklist()
-        or public.checklist_effective_assignee(item_id) is null
-        or public.checklist_effective_assignee(item_id) = auth.uid()
-    ));
+    with check (checked_by = auth.uid() and public.checklist_can_check(item_id));
 
 -- 메모만 고친다 (체크한 사람·날짜는 바꾸지 않는다)
 drop policy if exists checklist_checks_update on public.checklist_checks;
@@ -667,8 +693,7 @@ create policy checklist_checks_update on public.checklist_checks for update to a
 
 drop policy if exists checklist_checks_delete on public.checklist_checks;
 create policy checklist_checks_delete on public.checklist_checks for delete to authenticated
-    using (checked_by = auth.uid() or public.can_manage_checklist()
-        or public.checklist_effective_assignee(item_id) = auth.uid());
+    using (checked_by = auth.uid() or public.checklist_can_check(item_id));
 
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)

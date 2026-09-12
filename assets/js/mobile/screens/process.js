@@ -4,8 +4,8 @@
  *   #/process   업무구분 → 업무항목을 고르면 그 흐름을 세로 스테퍼(플로우차트)로 보여 준다
  *
  * 현장에서 매뉴얼을 펼쳐 보는 화면이다. 편집은 웹(업무프로세스 탭)에서만 한다.
- * 그리는 규칙은 웹 플로우차트와 같다 - 시작/끝, 프로세스 박스, 상황은 「발생?」 판단 뒤
- * 들여쓴 점선 분기(대응 단계 1→2→3)와 「합류」 표시, 하위 프로세스는 박스 안 작은 사슬.
+ * 그리는 규칙은 웹 업무프로세스 탭과 같다 - 시작/끝, 프로세스 박스, 상황은 박스 아래 주황 블록
+ * (「X 발생 시」 → 대응 체크항목·대응 단계 1→2→3 → 처리 후 다음 단계), 하위 프로세스는 박스 안 작은 사슬.
  */
 import * as db from '../../db.js';
 import { CHECK_KIND, cycleLabel } from '../../config.js';
@@ -15,7 +15,7 @@ import { emptyState, segment, pollGuard } from '../ui.js';
 /** 보고 있던 업무구분·업무항목을 기억한다 */
 const state = { division: null, group: null };
 
-export async function render(root, { user }) {
+export async function render(root) {
     root.innerHTML = `
 <div id="pick-div"></div>
 <div id="pick-grp"></div>
@@ -65,7 +65,7 @@ export async function render(root, { user }) {
         }
         const rows = await db.listChecklistItems({ root: group.id });
         const tree = db.checklistTree(rows)[0];
-        flowEl.innerHTML = flowHtml(division, group, tree, user);
+        flowEl.innerHTML = flowHtml(division, group, tree);
     }
 
     await reload();
@@ -73,7 +73,7 @@ export async function render(root, { user }) {
 }
 
 /** 업무항목 한 벌의 흐름 */
-function flowHtml(division, group, tree, user) {
+function flowHtml(division, group, tree) {
     const kids = tree?.children ?? [];
     const processes = kids.filter((c) => c.item.kind === CHECK_KIND.PROCESS);
     const loose = kids.filter((c) => c.item.kind === CHECK_KIND.CHECK).map((c) => c.item);
@@ -85,7 +85,7 @@ function flowHtml(division, group, tree, user) {
   <span class="m-fc__term">시작</span>
   ${processes.map((p, i) => `
   <div class="m-fc__line"></div>
-  ${stepHtml(p, i + 1, false, user)}`).join('')}
+  ${stepHtml(p, i + 1, processes[i + 1] ? { no: i + 2, title: processes[i + 1].item.title } : null)}`).join('')}
   ${loose.length ? `
   <div class="m-fc__line"></div>
   <div class="m-fc__step m-fc__loose">
@@ -98,8 +98,11 @@ function flowHtml(division, group, tree, user) {
 </div>`;
 }
 
-/** 프로세스 한 단계 - 체크항목 목록, 하위 프로세스 사슬, 상황 분기 */
-function stepHtml(node, no, sub, user) {
+/**
+ * 프로세스 한 단계 - 체크항목 목록, 하위 프로세스 사슬, 상황 블록
+ * @param {{no:number,title:string}|null} next 이 단계 다음 단계 (상황 처리 후 돌아갈 곳)
+ */
+function stepHtml(node, no, next) {
     const kids = node.children;
     const checks = kids.filter((c) => c.item.kind === CHECK_KIND.CHECK).map((c) => c.item);
     const subs = kids.filter((c) => c.item.kind === CHECK_KIND.PROCESS);
@@ -111,33 +114,33 @@ function stepHtml(node, no, sub, user) {
   <span class="m-fc__text">
     <span class="m-fc__title">${esc(it.title)}</span>
     ${it.description ? `<span class="m-fc__desc">${esc(it.description)}</span>` : ''}
-    ${it.assignee_name ? `<span class="m-fc__desc">담당 ${esc(it.assignee_name)}</span>` : ''}
+    ${it.assignee_name || (it.sub_assignees ?? []).length ? `<span class="m-fc__desc">담당 ${esc(it.assignee_name)}${(it.sub_assignees ?? []).length
+        ? ` · 부 ${esc(it.sub_assignees.map((s) => s.name).join(', '))}` : ''}</span>` : ''}
     ${checks.length ? `<ul class="m-fc__items">${checks.map((r) => `
       <li>${esc(r.title)} <small>${esc(cycleLabel(r))}${r.daily ? '' : ' · 일일 제외'}</small></li>`).join('')}</ul>` : ''}
     ${!checks.length && !subs.length ? '<span class="m-fc__desc">단계 완료를 체크</span>' : ''}
     ${subs.length ? `<div class="m-fc__sub">${subs.map((s, i) => `
-      ${i ? '<div class="m-fc__line"></div>' : ''}${stepHtml(s, i + 1, true, user)}`).join('')}</div>` : ''}
+      ${i ? '<div class="m-fc__line"></div>' : ''}${stepHtml(s, i + 1,
+    subs[i + 1] ? { no: i + 2, title: subs[i + 1].item.title } : next)}`).join('')}</div>` : ''}
   </span>
 </div>
-${sits.map((s) => branchHtml(s, user)).join('')}`;
+${sits.map((s) => sitHtml(s, next)).join('')}`;
 }
 
-/** 상황 분기 - 「발생?」 판단 → 들여쓴 점선 레인(대응 단계) → 합류 */
-function branchHtml(node, user) {
+/** 상황 블록 - 「X 발생 시」 → 대응 체크항목 · 대응 단계 → 처리 후 다음 단계 */
+function sitHtml(node, next) {
     const it = node.item;
     const checks = node.children.filter((c) => c.item.kind === CHECK_KIND.CHECK).map((c) => c.item);
     const subs = node.children.filter((c) => c.item.kind === CHECK_KIND.PROCESS);
     return `
-<div class="m-fc__line"></div>
-<div class="m-fc__dec"><span class="m-fc__dia"></span>${esc(it.title)} 발생?</div>
-<div class="m-fc__yes">예 ↓</div>
-<div class="m-fc__branch">
+<div class="m-fc__sit">
+  <div class="m-fc__sit-head">${esc(it.title)} 발생 시</div>
   ${it.description ? `<div class="m-fc__desc">${esc(it.description)}</div>` : ''}
   ${checks.length ? `<ul class="m-fc__items">${checks.map((r) => `<li>${esc(r.title)}</li>`).join('')}</ul>` : ''}
   ${subs.map((s, i) => `
-  ${i ? '<div class="m-fc__line"></div>' : ''}${stepHtml(s, i + 1, true, user)}`).join('')}
+  ${i ? '<div class="m-fc__line"></div>' : ''}${stepHtml(s, i + 1,
+    subs[i + 1] ? { no: i + 2, title: subs[i + 1].item.title } : next)}`).join('')}
   ${!checks.length && !subs.length ? '<div class="m-fc__desc">대응 절차 없음 · 발생 내용만 기록</div>' : ''}
-  <div class="m-fc__merge">↩ 다음 단계로 합류</div>
-</div>
-<div class="m-fc__no-label">아니오 ↓</div>`;
+  <div class="m-fc__merge">↩ 처리 후 ${next ? `${next.no}. ${esc(next.title)} 로 이어감` : '흐름 마침'}</div>
+</div>`;
 }
