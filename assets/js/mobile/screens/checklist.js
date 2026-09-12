@@ -197,7 +197,10 @@ function itemRow(r, sec, user) {
     const locked = !db.canCheckItem(user, r);
     const done = !!r.check;
     const isStep = r.kind === CHECK_KIND.PROCESS;
-    const meta = `${isStep ? '' : `${esc(cycleLabel(r))} · `}${esc(r.assignee_eff_name || '공통')}`;
+    const subs = r.assignee_eff_subs ?? [];
+    let who = r.assignee_eff_name ? esc(r.assignee_eff_name) : '';
+    if (subs.length) who += `${who ? ' · ' : ''}부 ${esc(subs.map((s) => s.name).join(', '))}`;
+    const meta = `${isStep ? '' : `${esc(cycleLabel(r))} · `}${who || '공통'}`;
     return `
 <div class="m-chk ${done ? 'is-done' : ''} ${locked ? 'is-locked' : ''}"
      data-item="${esc(r.id)}">

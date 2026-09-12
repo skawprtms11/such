@@ -361,7 +361,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 | `notices` | 공지사항 | `title` `content` `important`(중요공지 - 목록 상단 고정) `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제 - soft delete) |
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
-| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name` `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
+| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
 | `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
@@ -460,7 +460,7 @@ Supabase Auth(이메일 + 비밀번호)로 연동했다. 권한은 서버의 RLS
     ↓
 Main Claude (= 부장 persona)
     ├─ chat INSERT: from='부장' (intake / plan)
-    ├─ ✋ Pre-confirm with 대표님 (rule below)
+    ├─ 계획을 톡방에 INSERT 하고 바로 진행 (auto 모드 — 확인은 아래 규칙의 예외만)
     ├─ Agent(dev-team) call ← Main Claude directly
     ├─ chat INSERT: from='dev-team' (proxied)
     ├─ Agent(code-review / security / ...) parallel
@@ -489,26 +489,25 @@ Format: markdown line breaks, bullet points (no prose blobs). First line: `[PASS
 
 - Spinning up N teams in parallel → INSERT N rows **right before or simultaneously with** dispatch
 - No Agent call without an INSERT. If missed, file a retroactive INSERT + entry in the learning log (`docs/AGENT_LEARNING_LOG.md`) immediately.
-- **Fixed order**: pre-confirm → INSERT → Agent call → result INSERT
+- **Fixed order**: 계획 INSERT → Agent call → result INSERT (확인은 🚦 예외 경우만)
 - Even a trivial 1-line direct fix gets one 부장-named INSERT (audit trail)
 
 This rule applies to both 부장 and 공동대표 personas.
 
-### 🚦 Pre-dispatch confirmation (required)
+### 🚦 Pre-dispatch confirmation — auto 모드에서는 생략한다
 
-**Always propose the dispatch plan to 대표님 before invoking teams.** No invoking N teams on a whim.
+**대표님 지시 (2026-09-13): auto 모드에서는 확인 없이 바로 진행한다.** 팀 디스패치·커밋·push·PR·
+Supabase 마이그레이션까지 계획을 톡방에 INSERT 하고 곧장 실행한 뒤 결과를 보고한다.
+"진행할까요?" 로 멈추지 않는다. 판단이 갈리는 곳은 **가정을 명시하고 진행**한 뒤 보고에 적는다.
 
 ```
-"다음 팀 부르려고 합니다 (병렬):
- - architect-team — 구조 설계
- - security-team — 보안 영향
- 예상 ~5분, 톡방에 INSERT 2건 박고 디스패치합니다.
- 진행할까요?"
+"다음 팀 부릅니다 (병렬): architect-team — 구조 설계 / security-team — 보안 영향
+ 톡방 INSERT 2건 후 디스패치합니다."   ← 알리고 바로 실행
 ```
 
-대표님 OK → INSERT N rows → invoke N Agent calls. Add / drop / tweak → revise and re-confirm.
-
-**Exceptions** (skip pre-confirm OK): 1–2 line hotfixes / plain Q&A / pre-approved by 대표님. (A retroactive single chat INSERT is still required.)
+**확인을 받는 경우는 이것뿐이다**: 운영 데이터 삭제·테이블 drop, RLS 를 넓게 여는 변경,
+`git push --force`·브랜치 삭제·`reset --hard` 로 남의 작업이 사라지는 경우, 요청 범위 자체가
+달라지는 결정. (A retroactive single chat INSERT is still required for every Agent call.)
 
 ### 🌐 In-house teams vs external tools
 

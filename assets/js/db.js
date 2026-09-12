@@ -37,6 +37,7 @@ function normalize(db) {
         i.description = i.description ?? '';
         i.assignee_id = i.assignee_id ?? null;
         i.assignee_name = i.assignee_name ?? '';
+        i.sub_assignees = Array.isArray(i.sub_assignees) ? i.sub_assignees : [];   // 부담당자
         i.sort_order = i.sort_order ?? 0;
         i.active = i.active !== false;
         i.deleted_at = i.deleted_at ?? null;
@@ -1997,7 +1998,8 @@ export async function deleteNoticeComment(id, user) {
  *   situation : 그 단계에서 생길 수 있는 상황. **발생 처리한 날짜에만** 하위가 끼어든다
  *   check     : 담당자가 실제로 체크하는 항목
  * 상황 발생은 별도 테이블 없이 **상황 노드에 그 날짜의 체크 기록**을 남기는 것으로 표현한다.
- * 담당자는 체크항목 → 상위 프로세스 순으로 상속된다 (effectiveAssignee).
+ * 담당자는 정담당자(assignee_id) 1명 + 부담당자(sub_assignees) 여러 명이고,
+ * 체크항목 → 상위 프로세스 순으로 상속된다 (effectiveAssignee).
  */
 
 /** 항목 등록·수정·삭제 권한 (체크는 담당자 본인도 한다) */
@@ -2007,15 +2009,19 @@ export function canManageChecklist(user) {
 
 /**
  * 이 항목을 체크(상황이면 발생 처리)할 수 있는지.
- * 담당자 본인, 담당자 미지정(공통 업무), 그리고 항목 관리 권한자(대신 체크)만 가능하다.
- * 담당자는 상위에서 상속된 값(`assignee_eff_id`)을 본다 - dailyFlow/dueItems 가 붙여 준다.
- * 🔑 웹·앱·서버 RLS(checklist_effective_assignee) 가 모두 이 기준을 쓴다.
+ * 정담당자 본인, 부담당자 중 한 명, 담당자 미지정(공통 업무), 그리고 항목 관리 권한자(대신 체크)만
+ * 가능하다. 담당자는 상위에서 상속된 값(`assignee_eff_id` · `assignee_eff_subs`)을 본다 -
+ * dailyFlow/dueItems 가 붙여 준다.
+ * 🔑 웹·앱·서버 RLS(checklist_can_check) 가 모두 이 기준을 쓴다.
  */
 export function canCheckItem(user, item) {
     if (!user || !item) return false;
     if (canManageChecklist(user)) return true;
-    const a = item.assignee_eff_id !== undefined ? item.assignee_eff_id : item.assignee_id;
-    return !a || a === user.id;
+    const inherited = item.assignee_eff_id !== undefined;
+    const main = inherited ? item.assignee_eff_id : item.assignee_id;
+    const subs = (inherited ? item.assignee_eff_subs : item.sub_assignees) ?? [];
+    if (!main && !subs.length) return true;                  // 공통 업무
+    return main === user.id || subs.some((s) => s.id === user.id);
 }
 
 /** 정렬 - 형제 순서(sort_order) → 등록순. 업무구분(최상위)·업무항목도 같은 규칙이다 */
@@ -2044,7 +2050,10 @@ export async function listChecklistItems(f = {}) {
     if (f.root) rows = withDescendants(rows, f.root);
     if (f.kind) rows = rows.filter((i) => i.kind === f.kind);
     if (!f.includeInactive) rows = rows.filter((i) => i.active);
-    if (f.assignee) rows = rows.filter((i) => i.assignee_id === f.assignee);
+    if (f.assignee) {
+        rows = rows.filter((i) => i.assignee_id === f.assignee
+            || (i.sub_assignees ?? []).some((s) => s.id === f.assignee));
+    }
     return sortChecklist(rows);
 }
 
@@ -2102,16 +2111,21 @@ function pathOf(item, byId) {
 }
 
 /**
- * 담당자 상속 🔑 - 자기 담당자가 없으면 가장 가까운 상위의 담당자를 쓴다.
- * 끝까지 없으면 공통 업무(누구나 체크)다. 서버의 checklist_effective_assignee() 와 같다.
+ * 담당자 상속 🔑 - 자기 담당자(정 또는 부)가 없으면 가장 가까운 상위의 담당자를 쓴다.
+ * 정·부는 한 묶음으로 상속된다 (상위에 정만 있으면 부도 비어 있는 채로 온다).
+ * 끝까지 없으면 공통 업무(누구나 체크)다. 서버의 checklist_can_check() 와 같은 규칙이다.
+ * @returns {{id:string|null, name:string, subs:Array<{id:string,name:string}>}}
  */
 function effectiveAssignee(item, byId) {
     let cur = item;
     while (cur) {
-        if (cur.assignee_id) return { id: cur.assignee_id, name: cur.assignee_name ?? '' };
+        const subs = cur.sub_assignees ?? [];
+        if (cur.assignee_id || subs.length) {
+            return { id: cur.assignee_id ?? null, name: cur.assignee_name ?? '', subs };
+        }
         cur = byId.get(cur.parent_id);
     }
-    return { id: null, name: '' };
+    return { id: null, name: '', subs: [] };
 }
 
 /** 상위 중 상황(situation) 노드 id 들 - 모두 발생 처리돼야 이 항목이 오늘 대상에 든다 */
@@ -2178,7 +2192,19 @@ function checkItemInput(patch, base, db, parent, relation = true) {
 
     const assigneeId = patch.assignee_id === undefined ? base.assignee_id : patch.assignee_id;
     const assignee = assigneeId ? db.users.find((u) => u.id === assigneeId) : null;
-    if (assigneeId && !assignee) throw new Error('담당자를 찾을 수 없습니다.');
+    if (assigneeId && !assignee) throw new Error('정담당자를 찾을 수 없습니다.');
+
+    // 부담당자 - 여러 명. 정담당자와 겹치거나 중복된 사람은 뺀다
+    const subIds = patch.sub_assignee_ids !== undefined
+        ? patch.sub_assignee_ids
+        : (base.sub_assignees ?? []).map((s) => s.id);
+    const subs = [];
+    [...new Set((subIds ?? []).filter(Boolean))].forEach((id) => {
+        if (id === assignee?.id) return;
+        const u = db.users.find((x) => x.id === id);
+        if (!u) throw new Error('부담당자를 찾을 수 없습니다.');
+        subs.push({ id: u.id, name: u.name });
+    });
 
     return {
         title,
@@ -2190,6 +2216,7 @@ function checkItemInput(patch, base, db, parent, relation = true) {
         monthday,
         assignee_id: assignee?.id ?? null,
         assignee_name: assignee?.name ?? '',
+        sub_assignees: subs,
         active: patch.active === undefined ? base.active !== false : !!patch.active,
         // 일일체크리스트 포함 여부 - 업무프로세스 탭에서 체크한 항목만 일일체크리스트에 나온다
         daily: patch.daily === undefined ? !!base.daily : !!patch.daily,
@@ -2299,6 +2326,7 @@ export async function duplicateChecklistGroup(id, user) {
             weekday: item.weekday,
             monthday: item.monthday,
             assignee_id: item.assignee_id,
+            sub_assignee_ids: (item.sub_assignees ?? []).map((s) => s.id),
             active: item.active,
             daily: item.daily,
         }, user);
@@ -2383,6 +2411,29 @@ export async function moveChecklistItem(id, dir, user) {
 }
 
 /**
+ * 형제 안에서 여러 항목의 순서를 한 번에 정한다 (드래그 정렬용).
+ * orderedIds 의 항목들이 원래 차지하던 자리를 새 순서로 다시 채운다.
+ * 목록에 없는 형제(다른 종류의 항목 등)는 제자리를 지킨다.
+ * @param {string|null} parentId 상위 항목 id (최상위면 null)
+ * @param {string[]} orderedIds 새 순서의 항목 id 목록 (모두 같은 상위 아래여야 한다)
+ */
+export async function reorderChecklistItems(parentId, orderedIds, user) {
+    if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 수정할 권한이 없습니다.');
+    const db = (await load());
+    const rows = siblingsOf(db, parentId || null);
+    const ids = [...new Set(orderedIds)];
+    if (ids.some((id) => !rows.some((r) => r.id === id))) {
+        throw new Error('같은 상위 아래의 항목끼리만 순서를 바꿀 수 있습니다.');
+    }
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const slots = rows.map((r, i) => (ids.includes(r.id) ? i : -1)).filter((i) => i >= 0);
+    const next = rows.slice();
+    slots.forEach((pos, k) => { next[pos] = byId.get(ids[k]); });
+    next.forEach((r, i) => { r.sort_order = i + 1; });
+    await save(db);
+}
+
+/**
  * 항목 삭제 - 하위 항목까지 함께 지운다.
  * 체크 기록을 남겨 두려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
  */
@@ -2453,8 +2504,9 @@ export async function dailyFlow(date, f = {}) {
     /** 담당자 필터 - 상속 담당자로 판정한다. 담당자 없는 공통 업무는 누구의 목록에나 든다 */
     const passes = (item) => {
         if (!f.assignee) return true;
-        const eff = effectiveAssignee(item, byId).id;
-        return !eff || eff === f.assignee;
+        const eff = effectiveAssignee(item, byId);
+        if (!eff.id && !eff.subs.length) return true;
+        return eff.id === f.assignee || eff.subs.some((s) => s.id === f.assignee);
     };
 
     /** 체크 대상 한 줄 */
@@ -2466,6 +2518,7 @@ export async function dailyFlow(date, f = {}) {
             check: checkOf(item.id),
             assignee_eff_id: eff.id,
             assignee_eff_name: eff.name,
+            assignee_eff_subs: eff.subs,
             process_id: processId,
         };
     };
@@ -2510,7 +2563,7 @@ export async function dailyFlow(date, f = {}) {
         const eff = effectiveAssignee(item, byId);
         const vm = {
             item: { ...item, assignee_eff_id: eff.id, assignee_eff_name: eff.name,
-                path: pathOf(item, byId) },
+                assignee_eff_subs: eff.subs, path: pathOf(item, byId) },
             active,
             rows: [],
             subs: [],
@@ -2703,8 +2756,8 @@ export async function setCheck(itemId, date, on, memo, user) {
     if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
 
     const eff = effectiveAssignee(item, byId);
-    if (!canCheckItem(user, { ...item, assignee_eff_id: eff.id })) {
-        throw new Error('담당자 본인 또는 체크리스트 관리자만 체크할 수 있습니다.');
+    if (!canCheckItem(user, { ...item, assignee_eff_id: eff.id, assignee_eff_subs: eff.subs })) {
+        throw new Error('담당자(정·부) 본인 또는 체크리스트 관리자만 체크할 수 있습니다.');
     }
 
     const day = String(date || today()).slice(0, 10);

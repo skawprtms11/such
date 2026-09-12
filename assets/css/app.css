@@ -1617,274 +1617,136 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .cl-chip__note { font-weight: 400; color: var(--gray-700); }
 .cl-chip .btn--icon.btn--sm { width: 24px; height: 24px; min-height: 24px; padding: 0; }
 
-/* ===== 업무프로세스 플로우차트 (fc) - 매뉴얼처럼 읽는다. 편집 도구는 편집 모드에서만 ===== */
-.cl-manage:not(.is-edit) .fc-tools { display: none !important; }
-.fc-tools { display: inline-flex; align-items: center; gap: 4px; }
-.fc-tools .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
-.fc-tools .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
-.fc-tools .btn--ghost { color: var(--blue); border-color: transparent; }
-.fc-tools .btn--ghost:hover { background: var(--blue-soft); }
+/* ===== 업무프로세스 (pm) - 왼쪽 탐색 트리 + 세로 흐름 매뉴얼. 편집 도구(pm-tools)는 편집 모드에서만 ===== */
+.cl-manage:not(.is-edit) .pm-tools { display: none !important; }
+/* 편집 모드에서는 「일일」 토글이 있으니 「일일 제외」 꼬리표를 숨긴다 */
+.cl-manage.is-edit .pm-skip { display: none; }
+.pm-tools { display: inline-flex; align-items: center; gap: 4px; }
+.pm-tools .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
+.pm-tools .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
+.pm-add { color: var(--blue); border-color: transparent; background: transparent; }
+.pm-add:hover { background: var(--blue-soft); }
+.pm-add.btn--primary { color: #fff; background: var(--blue); }
+.pm-add.btn--primary:hover { background: var(--blue-dark, #1d4ed8); }
 
-.fc { --fc-main: 380px; --fc-axis: 190px; --fc-gap: 40px; display: flex; flex-direction: column; padding: 10px 6px 20px; }
-.fc-row { display: grid; grid-template-columns: var(--fc-main) 1fr; column-gap: var(--fc-gap); align-items: start; }
-.fc-arrow { grid-column: 1; position: relative; height: 24px; margin-left: calc(var(--fc-axis) - 1px); border-left: 1.5px solid var(--gray-700); }
-.fc-arrow::after { content: ''; position: absolute; left: -5px; bottom: -1px; border: 4px solid transparent; border-top: 6px solid var(--gray-700); }
-.fc-arrow--no::before { content: '아니오'; position: absolute; left: 10px; top: 4px; color: var(--gray-500); font-size: 11.5px; }
-.fc-arrow--sm { height: 16px; }
+.pm { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 420px; margin: -4px 0 0; }
 
-.fc-step { grid-column: 1; border: 1.5px solid var(--gray-700); border-radius: 6px; background: #fff; }
-.fc-step__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 40px; padding: 6px 10px; }
-.fc-step__title { font-weight: 700; font-size: 13.5px; }
-.fc-step__desc { color: var(--gray-500); font-size: 12px; }
-.fc-step__sum { padding: 0 10px 8px 40px; color: var(--gray-500); font-size: 12px; }
-.fc-step__body { padding: 0 8px 8px; border-top: 1px dashed var(--gray-200); }
-.fc:not(.is-detail) .fc-step__body { display: none; }
-.fc.is-detail .fc-step__sum { display: none; }
-.fc-step.is-off { opacity: .6; }
-.fc-step--sub { border-width: 1px; border-color: var(--gray-300); }
-.fc-step--sub > .fc-step__head { min-height: 34px; }
-.fc-step--sub > .fc-step__head .fb-no { background: #fff; color: var(--blue); border: 1.5px solid var(--blue); height: 22px; min-width: 22px; }
-.fc-sub { margin: 6px 4px 4px 22px; padding-left: 12px; border-left: 2px solid var(--gray-200); }
-.fc-sub .fc-arrow { margin-left: 24px; }
-.fc-loose { border-style: dashed; }
-.fc-add { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 6px; }
-
-/* 판단 마름모 + 분기 레인
-   - 주 축은 마름모 아래로도 행 끝까지 이어진다 (fc-branch__main::after)
-   - 합류선은 레인 왼쪽 아래에서 내려와 왼쪽으로 꺾여 주 축에 닿는다 (화살촉은 축을 향한다)
-   - 다음 「아니오」 화살표가 그 아래에서 이어진다 */
-.fc-branch { position: relative; padding-bottom: 24px; align-items: stretch; }
-.fc-branch__main { position: relative; grid-column: 1; display: flex; flex-direction: column; align-items: center; }
-.fc-branch__main::after { content: ''; flex: 1; width: 0; min-height: 12px; border-left: 1.5px solid var(--gray-700); }
-.fc-diamond { position: relative; width: 132px; height: 132px; display: flex; align-items: center; justify-content: center; }
-.fc-diamond::before { content: ''; position: absolute; inset: 18px; transform: rotate(45deg); border: 1.5px solid var(--amber); background: #fff; border-radius: 4px; }
-.fc-diamond span { position: relative; text-align: center; font-size: 12px; font-weight: 700; line-height: 1.25; max-width: 96px; }
-.fc-branch__yes { position: absolute; top: 65px; left: calc(var(--fc-axis) + 66px); width: calc(var(--fc-main) - var(--fc-axis) - 66px + var(--fc-gap) - 4px); border-top: 1.5px solid var(--amber); }
-.fc-branch__yes::after { content: ''; position: absolute; right: -1px; top: -5px; border: 4px solid transparent; border-left: 6px solid var(--amber); }
-.fc-branch__yes::before { content: '예'; position: absolute; left: 14px; top: -20px; color: var(--amber); font-size: 11.5px; font-weight: 700; }
-.fc-lane { grid-column: 2; position: relative; border: 1.5px dashed var(--amber); border-radius: 10px; background: #fffaf0; padding: 8px 10px 10px; }
-.fc-lane__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--amber); font-weight: 700; font-size: 13px; }
-.fc-lane__head small { color: var(--gray-700); font-weight: 400; font-size: 12px; }
-.fc-lane .fc-step { border-color: var(--amber); }
-.fc-lane .fc-step > .fc-step__head .fb-no { background: var(--amber); }
-.fc-lane .fc-step--sub > .fc-step__head .fb-no { background: #fff; color: var(--amber); border-color: var(--amber); }
-.fc-lane .fc-arrow { border-color: var(--amber); margin-left: 23px; }
-.fc-lane .fc-arrow::after { border-top-color: var(--amber); }
-.fc-lane__merge { margin-top: 8px; color: var(--amber); font-size: 12px; font-weight: 600; }
-.fc-lane.is-off { opacity: .6; }
-/* 합류선 - 레인 왼쪽 아래 → 아래로 → 왼쪽으로 → 주 축 (화살촉이 축을 향한다) */
-.fc-lane::after { content: ''; position: absolute; left: 24px; bottom: -13px; height: 13px; border-left: 1.5px solid var(--amber); }
-.fc-branch::after { content: ''; position: absolute; left: calc(var(--fc-axis) + 6px); right: calc(100% - var(--fc-main) - var(--fc-gap) - 25px); bottom: 11px; border-bottom: 1.5px solid var(--amber); }
-.fc-branch::before { content: ''; position: absolute; left: calc(var(--fc-axis) + 1px); bottom: 7px; border: 4.5px solid transparent; border-right: 7px solid var(--amber); z-index: 1; }
-
-.fc-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 0; color: var(--gray-700); font-size: 12px; }
-.fc-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.fc-legend i { display: inline-block; width: 20px; height: 12px; border: 1.5px solid var(--gray-700); }
-.fc-legend i.dia { transform: rotate(45deg) scale(.7); border-color: var(--amber); } .fc-legend i.dash { border-style: dashed; border-color: var(--amber); }
-
-@media (max-width: 960px) {
-    .fc { --fc-main: 100%; }
-    .fc-row { grid-template-columns: 1fr; row-gap: 8px; }
-    .fc-lane { grid-column: 1; margin-left: 24px; }
-    .fc-branch__yes, .fc-branch::after, .fc-branch::before, .fc-lane::after { display: none; }
-    .fc-branch { padding-bottom: 6px; }
+/* 탐색 트리 - 업무구분(굵게) › 업무항목(들여쓰기) */
+.pm-nav { padding: 6px 12px 14px 0; border-right: 1px solid var(--gray-200); }
+.pm-nav__head { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 8px 6px; color: var(--gray-500); font-size: 12px; font-weight: 700; }
+.pm-nav__div { display: flex; align-items: center; gap: 2px; margin-top: 6px; }
+.pm-nav__divbtn {
+    flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 34px; padding: 0 8px;
+    border: none; border-radius: 8px; background: transparent; color: var(--gray-900);
+    font: inherit; font-size: 13.5px; font-weight: 800; text-align: left; cursor: pointer;
 }
-@media print {
-    body.cl-printing .sidebar, body.cl-printing .topbar, body.cl-printing .tabbar, body.cl-printing .tabs,
-    body.cl-printing .cl-gbar, body.cl-printing .cl-ghead--div, body.cl-printing .fc-tools,
-    body.cl-printing .cl-print-hide { display: none !important; }
-    body.cl-printing .main { margin: 0; } body.cl-printing .card { border: none; box-shadow: none; }
-    body.cl-printing .fc-step__body { display: block !important; } body.cl-printing .fc-step__sum { display: none !important; }
+.pm-nav__divbtn:hover { background: var(--gray-100); }
+.pm-nav__divbtn span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-nav__divbtn small { color: var(--gray-500); font-weight: 400; font-size: 12px; }
+.pm-nav__div.is-active .pm-nav__divbtn { background: var(--gray-900); color: #fff; }
+.pm-nav__div.is-active .pm-nav__divbtn small { color: #cbd5e1; }
+.pm-nav__div.is-off, .pm-nav__grp.is-off { opacity: .55; }
+.pm-nav__grps { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 0 14px; }
+.pm-nav__grp {
+    display: block; min-height: 32px; padding: 0 10px; border: none; border-left: 2px solid var(--gray-200);
+    border-radius: 0 8px 8px 0; background: transparent; color: var(--gray-700);
+    font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.pm-nav__grp:hover { background: var(--gray-100); }
+.pm-nav__grp.is-active { border-left-color: var(--blue); background: var(--blue-soft); color: var(--blue); font-weight: 700; }
+.pm-nav__add { margin: 3px 0 0 6px; }
+.pm-nav__empty { padding: 12px 8px; color: var(--gray-500); font-size: 12.5px; line-height: 1.5; }
 
-/* ===== 구조도 보드 (fb-*) - 업무프로세스 탭 ===== */
-.fb { display: flex; flex-direction: column; padding: 12px; }
+/* 오른쪽 - 머리(경로 · 설명 · 담당 · 버튼) + 흐름 */
+.pm-main { min-width: 0; padding: 6px 0 20px 18px; }
+.pm-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 42px; padding-bottom: 10px; border-bottom: 1px solid var(--gray-200); }
+.pm-head__crumb { color: var(--gray-500); font-size: 13px; }
+.pm-head__title { font-size: 16px; font-weight: 800; }
+.pm-head__desc { color: var(--gray-500); font-size: 12.5px; }
+.pm-head__actions { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.pm-who { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-700); font-size: 12px; }
+.pm-who small { margin-left: 4px; color: var(--gray-500); font-size: 11.5px; }
+.dq-row__sub { display: block; color: var(--gray-500); font-size: 11px; }
+/* 부담당자 줄 목록 (속성 모달) */
+.cl-subs { display: flex; flex-direction: column; gap: 6px; }
+.cl-subs:not(:empty) { margin-bottom: 6px; }
+.cl-subs__row { display: flex; align-items: center; gap: 6px; }
+.cl-subs__row select { flex: 1; min-width: 0; }
+.cl-subs__row .btn--icon.btn--sm { width: 30px; height: 30px; min-height: 30px; padding: 0; flex: none; }
+.cl-form .pm-add { align-self: flex-start; }
+.pm-guide { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--gray-100); color: var(--gray-700); font-size: 12px; line-height: 1.6; }
+.pm-guide .icon { vertical-align: -2px; color: var(--gray-500); }
+.pm-empty { padding: 40px 10px; color: var(--gray-500); font-size: 13px; text-align: center; }
 
-/* 한 단(row) = 왼쪽 프로세스 카드 + 오른쪽 상황 분기 칸 */
-.fb-row { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(0, 1fr); gap: 0 28px; align-items: start; }
-.fb-row > .fb-main { min-width: 0; }
-.fb-row > .fb-branch { min-width: 0; position: relative; display: flex; flex-direction: column; gap: 8px; padding-left: 14px; }
-/* 분기 점선 - 프로세스 카드 오른쪽에서 상황 카드로 */
-.fb-row > .fb-branch::before {
-    content: '';
-    position: absolute;
-    left: -28px;
-    top: 20px;
-    width: 42px;
-    border-top: 2px dashed var(--amber);
-}
-.fb-row > .fb-branch::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 20px;
-    bottom: 12px;
-    border-left: 2px dashed var(--amber);
-}
-.fb-row--sub { grid-template-columns: minmax(240px, 1fr) minmax(0, 1fr); gap: 0 20px; }
-.fb-row--sub > .fb-branch::before { left: -20px; width: 34px; }
+/* 흐름 - 왼쪽 순번 레일이 위에서 아래로 이어진다 */
+.pm-flow { padding-top: 14px; }
+.pm-step { display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: 10px; }
+.pm-step + .pm-step { margin-top: 14px; }
+.pm-step__rail { position: relative; display: flex; justify-content: center; padding-top: 8px; }
+.pm-step:not(.is-last) > .pm-step__rail::after { content: ''; position: absolute; top: 38px; bottom: -14px; border-left: 2px solid var(--gray-300); }
+.pm-step:not(.is-last) > .pm-step__rail::before { content: ''; position: absolute; bottom: -14px; left: 50%; margin-left: -4px; border: 4px solid transparent; border-top: 6px solid var(--gray-300); z-index: 1; }
+.pm-no { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; }
+.pm-step.is-off .pm-card, .pm-step.is-off .pm-no { opacity: .6; }
+.pm-card { border: 1.5px solid var(--gray-300); border-radius: 10px; background: #fff; }
+.pm-card__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 42px; padding: 7px 12px; }
+.pm-card__title { font-size: 14px; font-weight: 700; }
+.pm-card__desc { color: var(--gray-500); font-size: 12.5px; }
+.pm-note { margin: 0; padding: 0 12px 10px; color: var(--gray-500); font-size: 12px; }
 
-/* 세로 연결선 + 화살표 */
-.fb-link { position: relative; height: 26px; margin-left: 22px; border-left: 2px solid var(--gray-300); }
-.fb-link::after {
-    content: '';
-    position: absolute;
-    left: -5px;
-    bottom: -1px;
-    border: 4px solid transparent;
-    border-top: 6px solid var(--gray-300);
-}
-.fb-link--dashed { border-left-style: dashed; }
-.fb-link--sm { height: 18px; margin-left: 16px; }
-
-/* 카드 */
-.fb-card {
-    border: 1.5px solid var(--gray-300);
-    border-radius: 10px;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
-}
-.fb-card__head {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    min-height: 42px;
-    padding: 7px 10px;
-    border-bottom: 1px solid var(--gray-200);
-    background: var(--gray-100);
-    border-radius: 9px 9px 0 0;
-}
-.fb-card__title { font-weight: 700; font-size: 13.5px; }
-.fb-card__desc { color: var(--gray-500); font-size: 12px; }
-.fb-card__desc--block { margin: 6px 10px 0; }
-.fb-card__who { display: inline-flex; align-items: center; gap: 3px; color: var(--gray-700); font-size: 12px; }
-.fb-card__body { padding: 4px 6px 6px; }
-.fb-card__body > .cl-item { border-top: none; }
-.fb-card__empty { margin: 4px 8px 6px; color: var(--gray-500); font-size: 12px; }
-.fb-card__add { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 0; border-top: 1px dashed var(--gray-200); margin-top: 4px; }
-.fb-card__add .btn--ghost { color: var(--blue); border-color: transparent; }
-.fb-card__add .btn--ghost:hover { background: var(--blue-soft); }
-.fb-card.is-off { opacity: .6; }
-/* 카드 안 도구는 작게 - 좁은 칸에서 줄이 무너지지 않게 */
-.fb .btn--icon.btn--sm { width: 26px; height: 26px; min-height: 26px; min-width: 26px; padding: 0; }
-.fb .fb-card__head .btn--sm, .fb .fb-card__add .btn--sm { height: 26px; min-height: 26px; padding: 0 8px; }
-.fb-branch .fb-row--sub { grid-template-columns: 1fr; }
-/* 카드 안 하위 프로세스의 상황은 옆에 둘 자리가 없어 아래로 내린다 (왼쪽 점선으로 잇는다) */
-.fb-chain .fb-row--sub { grid-template-columns: 1fr; gap: 6px 0; }
-.fb-chain .fb-row--sub > .fb-branch { margin-left: 18px; padding-left: 12px; }
-.fb-chain .fb-row--sub > .fb-branch::before { display: none; }
-.fb-chain .fb-row--sub > .fb-branch::after { top: 0; bottom: 0; }
-/* 보드 안의 체크 줄 - 제목이 세로로 부서지지 않게 메타(주기·담당·시각)를 다음 줄로 흘린다 */
-.fb .cl-item { flex-wrap: wrap; row-gap: 2px; }
-.fb .cl-item__title { flex: 1 1 180px; min-width: 120px; word-break: keep-all; overflow-wrap: anywhere; }
-.fb .cl-item__cycle, .fb .cl-item__who { width: auto; min-width: 0; }
-
-/* 프로세스 카드 색 - 대기 · 진행(파랑) · 완료(초록) · 상황 발생(주황) */
-.fb-card--proc { border-color: var(--gray-300); }
-.fb-card--sub { box-shadow: none; }
-.fb-card--sub > .fb-card__head { min-height: 34px; padding: 4px 8px; }
-.fb-card--sub > .fb-card__head .fb-card__title { font-size: 13px; }
-.fb-card--loose { border-style: dashed; }
+/* 체크항목 줄 */
+.pm-checks { padding: 0 8px 6px; }
+.pm-check { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 34px; padding: 4px 6px; border-top: 1px solid var(--gray-100); font-size: 13px; }
+.pm-check__box { flex: none; color: var(--gray-500); }
+.pm-check__title { flex: 1 1 200px; min-width: 140px; word-break: keep-all; overflow-wrap: anywhere; }
+.pm-check__title small { display: block; color: var(--gray-500); font-size: 11.5px; }
+.pm-check__meta { color: var(--gray-500); font-size: 12px; white-space: nowrap; }
+.pm-check.is-skip .pm-check__title { color: var(--gray-500); }
+.pm-check.is-off { color: var(--gray-500); }
 
 /* 하위 프로세스 사슬 - 카드 안의 작은 흐름 */
-.fb-chain { margin: 6px 6px 4px 14px; padding-left: 12px; border-left: 2px solid var(--gray-200); }
+.pm-chain { margin: 4px 10px 8px 14px; padding-left: 10px; border-left: 2px solid var(--gray-200); }
+.pm-step--sub { grid-template-columns: 26px minmax(0, 1fr); column-gap: 8px; }
+.pm-step--sub + .pm-step--sub { margin-top: 10px; }
+.pm-step--sub > .pm-step__rail { padding-top: 7px; }
+.pm-step--sub > .pm-step__rail .pm-no { width: 22px; height: 22px; background: #fff; color: var(--blue); border: 1.5px solid var(--blue); font-size: 11.5px; }
+.pm-step--sub:not(.is-last) > .pm-step__rail::after { top: 31px; bottom: -10px; }
+.pm-step--sub:not(.is-last) > .pm-step__rail::before { bottom: -10px; }
+.pm-step--sub .pm-card { border-width: 1px; }
+.pm-step--sub .pm-card__head { min-height: 36px; padding: 5px 10px; }
+.pm-step--sub .pm-card__title { font-size: 13px; }
+.pm-step--loose .pm-no { background: #fff; color: var(--gray-500); border: 1.5px dashed var(--gray-500); }
+.pm-step--loose .pm-card { border-style: dashed; }
 
-/* 순번 원 */
-.fb-no {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 1px;
-    flex: none;
-    min-width: 24px;
-    height: 24px;
-    padding: 0 6px;
-    border-radius: 12px;
-    background: var(--blue);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 700;
-}
-.fb-card--sub > .fb-card__head .fb-no { background: #fff; color: var(--blue); border: 1.5px solid var(--blue); height: 22px; min-width: 22px; }
-.fb-no--sit { background: var(--amber-soft); color: var(--amber); }
+/* 상황 블록 - 카드 안의 주황 상자. 「X 발생 시」 → 대응 → 처리 후 다음 단계 */
+.pm-sit { margin: 6px 8px 8px; border: 1.5px dashed var(--amber); border-radius: 10px; background: #fffaf0; }
+.pm-sit.is-off { opacity: .6; }
+.pm-sit__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 36px; padding: 6px 10px; color: var(--amber); font-size: 13px; }
+.pm-sit__head strong { font-weight: 800; }
+.pm-sit__head small { color: var(--gray-700); font-size: 12px; }
+.pm-sit .pm-checks { padding: 0 6px 2px; }
+.pm-sit .pm-check { border-top-color: #fcefd6; }
+.pm-sit .pm-chain { margin: 2px 10px 6px 12px; border-left-color: #f5c27a; }
+.pm-sit .pm-step--sub > .pm-step__rail .pm-no { color: var(--amber); border-color: var(--amber); }
+.pm-sit .pm-step--sub:not(.is-last) > .pm-step__rail::after { border-left-color: #f5c27a; }
+.pm-sit .pm-step--sub:not(.is-last) > .pm-step__rail::before { border-top-color: #f5c27a; }
+.pm-sit__merge { display: flex; align-items: center; gap: 5px; padding: 4px 10px 8px; color: var(--amber); font-size: 12px; }
+.pm-sit__merge b { font-weight: 700; }
 
-/* 상황 카드 - 주황. 발생 전엔 점선 유령 */
-.fb-card--sit { border-color: var(--amber); background: #fffaf0; }
-.fb-card--sit > .fb-card__head { background: var(--amber-soft); color: var(--amber); }
+/* 빠른 추가 - 「+ 체크항목」 → 입력칸 (Enter 로 등록, 연속 입력) */
+.pm-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px 8px; }
+.pm-quick--main { margin: 14px 0 0 46px; padding: 8px 10px; border: 1.5px dashed var(--gray-300); border-radius: 10px; }
+.pm-quick__form { display: flex; align-items: center; gap: 6px; flex: 1 1 100%; }
+.pm-quick__form input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--blue); border-radius: 8px; font: inherit; font-size: 13px; }
+.pm-quick__form .btn--icon.btn--sm { width: 30px; height: 30px; min-height: 30px; padding: 0; }
 
-/* 흐름 관리 - 업무항목 탭 줄 (우측에 「업무항목 추가」) */
-.cl-gbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.cl-gtabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1; }
-.cl-gtabs__empty { color: var(--gray-500); font-size: 12.5px; }
-.cl-gtab {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 32px;
-    padding: 0 12px;
-    border: 1px solid var(--gray-300);
-    border-radius: 999px;
-    background: #fff;
-    color: var(--gray-700);
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-}
-.cl-gtab:hover { border-color: var(--blue); }
-.cl-gtab.is-active { border-color: var(--blue); background: var(--blue); color: #fff; }
-.cl-gtab.is-off { opacity: .55; }
-.cl-gbar__actions { display: flex; gap: 6px; flex: none; }
-.cl-gtabs__label { color: var(--gray-500); font-size: 12px; font-weight: 700; margin-right: 2px; }
-.cl-gbar--div { padding-bottom: 8px; border-bottom: 1px solid var(--gray-200); }
-.cl-gtab--div { height: 34px; padding: 0 16px; font-weight: 700; border-color: var(--gray-700); color: var(--gray-900); }
-.cl-gtab--div.is-active { border-color: var(--gray-900); background: var(--gray-900); color: #fff; }
-.cl-ghead--div { background: var(--gray-100); border-color: var(--gray-300); margin-bottom: 8px; }
-.cl-ghead__crumb { color: var(--gray-500); font-size: 13px; }
-.cl-kind--div { background: var(--gray-900); color: #fff; }
-.cl-ghead {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding: 8px 12px;
-    border: 1.5px solid var(--gray-300);
-    border-radius: 10px;
-    background: #fff;
-}
-.cl-ghead__title { font-size: 15px; }
-.cl-ghead__desc { color: var(--gray-500); font-size: 12.5px; }
-.cl-kind--group { background: var(--gray-700); color: #fff; }
+/* 드래그 정렬 */
+.pm-grip { display: inline-flex; align-items: center; color: var(--gray-500); cursor: grab; touch-action: none; }
+.pm-grip:active { cursor: grabbing; }
+.is-dragging { opacity: .35; }
+.is-drop-before { box-shadow: 0 -3px 0 0 var(--blue); }
+.is-drop-after { box-shadow: 0 3px 0 0 var(--blue); }
 
-/* 체크 한 줄 */
-.cl-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-height: 40px;
-    padding: 5px 12px;
-    border-top: 1px solid var(--gray-200);
-    font-size: 13px;
-}
-.cl-item:first-child { border-top: none; }
-.cl-item input[type="checkbox"] { width: 17px; height: 17px; flex: none; }
-.cl-item__title { flex: 1; cursor: pointer; }
-.cl-item__desc { display: block; color: var(--gray-500); font-size: 11.5px; }
-.cl-item__cycle {
-    flex: none;
-    min-width: 44px;
-    color: var(--gray-500);
-    font-size: 11.5px;
-    text-align: center;
-}
-.cl-item__who { flex: none; width: 72px; color: var(--gray-700); font-size: 12px; }
-.cl-item--edit { min-height: 36px; padding: 3px 8px; gap: 6px; flex-wrap: wrap; }
-.cl-item--edit .cl-item__title { cursor: default; font-size: 13px; flex: 1 1 140px; }
-.cl-item--edit .cl-item__who { width: auto; }
-.cl-item--edit .cl-item__who:empty { display: none; }
-.cl-item--edit .cl-item__cycle { min-width: 0; }
-.cl-item--edit.is-off { color: var(--gray-500); }
-.cl-item--edit.is-skip .cl-item__title { color: var(--gray-500); }
 /* 일일체크리스트 포함 토글 */
 .cl-daily {
     display: inline-flex;
@@ -1905,65 +1767,34 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .cl-daily input { width: 14px; height: 14px; margin: 0; cursor: pointer; }
 .cl-daily.is-on { border-color: var(--blue); background: var(--blue-soft); color: #1d4ed8; }
 
-/* 흐름 관리 안내 한 줄 */
-.cl-guide {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    margin: 10px 0;
-    padding: 8px 12px;
-    border-radius: 8px;
-    background: var(--gray-100);
-    color: var(--gray-700);
-    font-size: 12px;
-}
+/* 속성 모달 폼 - 두 칸 격자, 이름·설명은 한 줄 통째 */
+.cl-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cl-form .field { margin: 0; }
+.cl-form .field[hidden] { display: none; }   /* 주기에 따라 요일·일자 칸을 숨긴다 */
+.cl-form .field--full { grid-column: 1 / -1; }
+.cl-form__parent { grid-column: 1 / -1; margin: 0; color: var(--gray-500); font-size: 12px; }
+.cl-form__checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 16px; }
+.cl-form__checks .check { margin: 0; }
+.pm-mfoot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; width: 100%; }
+.pm-mfoot__order { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; color: var(--gray-500); font-size: 12px; }
 
-/* 종류 배지 - 프로세스(순번) · 체크항목(네모) · 상황(경고) */
-.cl-kind {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    font-size: 11px;
-    font-weight: 700;
-}
-.cl-kind--process { background: var(--blue); color: #fff; }
-.cl-kind--check { color: var(--gray-500); }
-.cl-kind--situation { background: var(--amber-soft); color: var(--amber); }
-
-.cl-form {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 8px;
-    margin: 4px 0 10px;
-    padding: 10px;
-    border: 1px solid var(--blue);
-    border-radius: var(--radius);
-    background: var(--blue-soft);
-}
-.cl-form__head { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.cl-form__parent { color: var(--gray-700); }
-.cl-form .field { margin: 0; flex: 1 1 150px; }
-.cl-form .check { margin: 0; }
-
-@media (max-width: 1100px) {
-    /* 좁으면 상황 분기를 카드 아래로 내린다 (점선은 왼쪽 세로로) */
-    .fb-row, .fb-row--sub { grid-template-columns: 1fr; gap: 6px 0; }
-    .fb-row > .fb-branch { margin-left: 22px; padding-left: 12px; }
-    .fb-row > .fb-branch::before { display: none; }
-    .fb-row > .fb-branch::after { top: 0; bottom: 0; }
-}
 @media (max-width: 860px) {
-    .cl-item__who { display: none; }
     .dq-grp { grid-template-columns: 1fr; }
     .dq-grp__name { border-right: none; border-bottom: 1px dashed var(--gray-200); padding: 8px 10px 4px; }
     .dq-row { grid-template-columns: 28px 1fr 34px; }
     .dq-row__who, .dq-row__at { display: none; }
-    .fb-card__desc { display: none; }
-    .cl-gbar { flex-wrap: wrap; }
+    .pm { grid-template-columns: 1fr; }
+    .pm-nav { padding: 0 0 10px; border-right: none; border-bottom: 1px solid var(--gray-200); }
+    .pm-main { padding-left: 0; }
+    .pm-check__meta { white-space: normal; }
+    .pm-quick--main { margin-left: 0; }
+    .cl-form { grid-template-columns: 1fr; }
+}
+@media print {
+    body.cl-printing .sidebar, body.cl-printing .topbar, body.cl-printing .tabbar, body.cl-printing .tabs,
+    body.cl-printing .pm-nav, body.cl-printing .pm-head__actions, body.cl-printing .pm-tools,
+    body.cl-printing .pm-quick, body.cl-printing .pm-guide { display: none !important; }
+    body.cl-printing .main { margin: 0; } body.cl-printing .card { border: none; box-shadow: none; }
+    body.cl-printing .pm { display: block; } body.cl-printing .pm-main { padding-left: 0; }
+    body.cl-printing .pm-step, body.cl-printing .pm-sit { break-inside: avoid; }
 }

@@ -47,9 +47,9 @@ INSERT into `harness_messages` at every step. Main Claude proxies each role.
 **One `Agent` tool call = one chat INSERT row.** Parallel or sequential, no exception.
 
 - Spinning up N teams in parallel → INSERT N rows **right before or simultaneously with** dispatch (one per team)
-- One pre-confirm ("다음 N팀 부르려고 합니다") → 대표님 OK → INSERT N rows → invoke N Agent calls → on results, INSERT N rows (`from='<team>' type='report'`)
+- Announce the plan ("다음 N팀 부릅니다") → INSERT N rows → invoke N Agent calls → on results, INSERT N rows (`from='<team>' type='report'`). **auto 모드에서는 대표님 OK 를 기다리지 않는다** (root CLAUDE.md 🚦)
 - No Agent call without an INSERT. If missed, file a retroactive INSERT + entry in the learning log immediately.
-- **Fixed order**: pre-confirm → INSERT → Agent call → result INSERT (mandatory except 1–2 line hotfixes / plain Q&A)
+- **Fixed order**: plan INSERT → Agent call → result INSERT (mandatory except 1–2 line hotfixes / plain Q&A)
 - Even a trivial 1-line direct fix gets one director-named INSERT (audit trail) — e.g. `[NOTE] X.tsx 오타 1줄 직접 수정`
 
 ### When to INSERT (do not skip)
@@ -82,7 +82,7 @@ sqlite3 .harness/chat.db "INSERT INTO harness_messages (id, \"from\", \"to\", ty
 
 ## 🎯 Director's responsibilities
 
-**Does**: decompose the work → propose dispatch plan → pre-confirm (see root CLAUDE.md) → dispatch → aggregate → consolidated report to the principal-report room → append to the learning log (`docs/AGENT_LEARNING_LOG.md`).
+**Does**: decompose the work → announce dispatch plan (no waiting in auto mode — see root CLAUDE.md 🚦) → dispatch → aggregate → consolidated report to the principal-report room → append to the learning log (`docs/AGENT_LEARNING_LOG.md`).
 
 **Direct edit OK**: 1–2 line hotfixes / single-file bugs / doc updates / DB migration SQL / one-off scripts.
 
