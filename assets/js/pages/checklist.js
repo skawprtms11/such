@@ -34,6 +34,7 @@ const state = {
     group: null,                       // 업무프로세스: 보고 있는 업무항목 id
     edit: false,                       // 업무프로세스: 편집 모드 (도구 표시)
     quick: null,                       // 업무프로세스: 열려 있는 빠른 추가 입력칸 {hostId, kind, label}
+    open: new Set(),                   // 업무프로세스: 상세를 펼쳐 둔 프로세스·상황 id
 };
 
 /** 업무구분이 없는 옛 업무항목을 담는 가상 업무구분 (스키마 마이그레이션 전 데이터 · mock) */
@@ -473,6 +474,11 @@ function openBtn(item, what) {
     return `<span class="pm-tools">${iconBtn('edit', `${what} 수정`, `data-open="${esc(item.id)}"`)}</span>`;
 }
 
+/** 펼침 화살표 - 카드 머리를 누르면 상세가 열린다 */
+function caretHtml(open) {
+    return `<span class="pm-caret" aria-hidden="true">${icon(open ? 'down' : 'next', 'icon icon--sm')}</span>`;
+}
+
 /** 드래그 정렬 대상 속성 - 같은 상위·같은 종류끼리만 자리를 바꾼다 */
 function dragAttr(item, parentId) {
     return `data-item="${esc(item.id)}" data-parent="${esc(parentId)}" data-kind="${esc(item.kind)}"`;
@@ -508,7 +514,10 @@ function quickBar(item, main = false) {
 }
 
 /** 체크항목 한 줄 */
-function checkRow(r, parentId) {
+/**
+ * 체크항목 한 줄. 접힌 카드에서는 이름만, 카드를 펼치면(open) 설명·주기·담당·일일 제외가 붙는다.
+ */
+function checkRow(r, parentId, open) {
     const subs = r.sub_assignees ?? [];
     const who = `${r.assignee_name ? ` · ${esc(r.assignee_name)}` : ''}${subs.length
         ? ` · 부 ${esc(subs.map((s) => s.name).join(', '))}` : ''}`;
@@ -517,9 +526,9 @@ function checkRow(r, parentId) {
   ${gripHtml()}
   ${icon('square', 'icon icon--sm pm-check__box')}
   <span class="pm-check__title">${esc(r.title)}
-    ${r.description ? `<small>${esc(r.description)}</small>` : ''}</span>
-  <span class="pm-check__meta">${esc(cycleLabel(r))}${who}</span>
-  ${r.daily ? '' : '<span class="tag tag--gray pm-skip">일일 제외</span>'}
+    ${open && r.description ? `<small>${esc(r.description)}</small>` : ''}</span>
+  ${open ? `<span class="pm-check__meta">${esc(cycleLabel(r))}${who}</span>` : ''}
+  ${open && !r.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : ''}
   ${r.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
   <span class="pm-tools">${dailyToggle(r)}</span>
   ${openBtn(r, '체크항목')}
@@ -539,25 +548,30 @@ function mergeText(next) {
  */
 function sitHtml(s, parentId, next) {
     const it = s.item;
+    const open = state.open.has(it.id);
+    const detail = [
+        it.description ? `<span>${esc(it.description)}</span>` : '',
+        whoHtml(it),
+        !s.rows.length && !s.subs.length ? '<span class="pm-note">대응 절차 없음 · 발생 내용만 기록</span>' : '',
+        `<span class="pm-sit__merge">${icon('reply', 'icon icon--sm')}${mergeText(next)}</span>`,
+    ].filter(Boolean).join('');
     return `
-<div class="pm-sit ${it.active === false ? 'is-off' : ''}" ${dragAttr(it, parentId)}>
-  <div class="pm-sit__head">
+<div class="pm-sit ${it.active === false ? 'is-off' : ''} ${open ? 'is-open' : ''}" ${dragAttr(it, parentId)}>
+  <div class="pm-sit__head" data-toggle="${esc(it.id)}">
     ${gripHtml()}
     ${icon('issues', 'icon icon--sm')}
     <strong>${esc(it.title)} 발생 시</strong>
-    ${it.description ? `<small>${esc(it.description)}</small>` : ''}
-    ${whoHtml(it)}
     ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
     <span class="toolbar__spacer"></span>
     ${openBtn(it, '상황')}
+    ${caretHtml(open)}
   </div>
-  ${s.rows.length ? `<div class="pm-checks">${s.rows.map((r) => checkRow(r, it.id)).join('')}</div>` : ''}
+  ${open ? `<div class="pm-detail pm-detail--sit">${detail}</div>` : ''}
+  ${s.rows.length ? `<div class="pm-checks">${s.rows.map((r) => checkRow(r, it.id, open)).join('')}</div>` : ''}
   ${s.subs.length ? `<div class="pm-chain">${s.subs.map((p, i) => stepHtml(p, {
         parentId: it.id, next: s.subs[i + 1] ?? null, sub: true, last: i === s.subs.length - 1,
     })).join('')}</div>` : ''}
-  ${!s.rows.length && !s.subs.length ? '<p class="pm-note">대응 절차 없음 · 발생 내용만 기록합니다</p>' : ''}
   ${state.edit ? quickBar(it) : ''}
-  <div class="pm-sit__merge">${icon('reply', 'icon icon--sm')}${mergeText(next)}</div>
 </div>`;
 }
 
@@ -568,24 +582,29 @@ function sitHtml(s, parentId, next) {
 function stepHtml(p, o) {
     const it = p.item;
     const leaf = !p.rows.length && !p.subs.length;
+    const open = state.open.has(it.id);
+    const detail = [
+        it.description ? `<span>${esc(it.description)}</span>` : '',
+        whoHtml(it),
+        leaf ? '<span class="pm-note">체크항목 없음 · 단계 자체를 체크</span>' : '',
+        leaf && !it.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : '',
+    ].filter(Boolean).join('');
     return `
-<div class="pm-step ${o.sub ? 'pm-step--sub' : ''} ${o.last ? 'is-last' : ''} ${it.active === false ? 'is-off' : ''}"
+<div class="pm-step ${o.sub ? 'pm-step--sub' : ''} ${o.last ? 'is-last' : ''} ${it.active === false ? 'is-off' : ''} ${open ? 'is-open' : ''}"
      ${dragAttr(it, o.parentId)}>
   <div class="pm-step__rail"><span class="pm-no">${p.no}</span></div>
   <div class="pm-card">
-    <div class="pm-card__head">
+    <div class="pm-card__head" data-toggle="${esc(it.id)}">
       ${gripHtml()}
       <span class="pm-card__title">${esc(it.title)}</span>
-      ${it.description ? `<span class="pm-card__desc">${esc(it.description)}</span>` : ''}
-      ${whoHtml(it)}
       ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
-      ${leaf && !it.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : ''}
       ${leaf ? `<span class="pm-tools">${dailyToggle(it)}</span>` : ''}
       <span class="toolbar__spacer"></span>
       ${openBtn(it, '프로세스')}
+      ${caretHtml(open)}
     </div>
-    ${p.rows.length ? `<div class="pm-checks">${p.rows.map((r) => checkRow(r, it.id)).join('')}</div>` : ''}
-    ${leaf ? '<p class="pm-note">체크항목 없음 · 단계 자체를 체크합니다</p>' : ''}
+    ${open && detail ? `<div class="pm-detail">${detail}</div>` : ''}
+    ${p.rows.length ? `<div class="pm-checks">${p.rows.map((r) => checkRow(r, it.id, open)).join('')}</div>` : ''}
     ${p.subs.length ? `<div class="pm-chain">${p.subs.map((s, i) => stepHtml(s, {
         parentId: it.id, next: p.subs[i + 1] ?? o.next, sub: true, last: i === p.subs.length - 1,
     })).join('')}</div>` : ''}
@@ -607,14 +626,16 @@ function flowHtml(g) {
     }));
     if (g.loose.length) {
         parts.push(`
-<div class="pm-step pm-step--loose is-last">
+<div class="pm-step pm-step--loose is-last ${state.open.has(g.item.id) ? 'is-open' : ''}">
   <div class="pm-step__rail"><span class="pm-no">${icon('square', 'icon icon--sm')}</span></div>
   <div class="pm-card">
-    <div class="pm-card__head">
+    <div class="pm-card__head" data-toggle="${esc(g.item.id)}">
       <span class="pm-card__title">단독 업무</span>
-      <span class="pm-card__desc">흐름과 상관없이 그때그때 하는 일</span>
+      <span class="toolbar__spacer"></span>
+      ${caretHtml(state.open.has(g.item.id))}
     </div>
-    <div class="pm-checks">${g.loose.map((r) => checkRow(r, g.item.id)).join('')}</div>
+    ${state.open.has(g.item.id) ? '<div class="pm-detail"><span>흐름과 상관없이 그때그때 하는 일</span></div>' : ''}
+    <div class="pm-checks">${g.loose.map((r) => checkRow(r, g.item.id, state.open.has(g.item.id))).join('')}</div>
   </div>
 </div>`);
     }
@@ -731,11 +752,27 @@ async function drawManage(body, user, users, reload) {
         state.quick = null;
         reload();
     });
-    body.querySelector('#btn-print')?.addEventListener('click', () => {
+    /** 카드 머리를 누르면 상세를 펼치고 접는다 (버튼·토글·손잡이는 제외) */
+    body.querySelectorAll('[data-toggle]').forEach((el) => {
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('button, input, label, select, .pm-grip')) return;
+            const id = el.dataset.toggle;
+            if (state.open.has(id)) state.open.delete(id);
+            else state.open.add(id);
+            reload();
+        });
+    });
+    /** 인쇄는 상세를 모두 펼친 매뉴얼로 - 끝나면 원래 펼침 상태로 돌린다 */
+    body.querySelector('#btn-print')?.addEventListener('click', async () => {
+        const prev = new Set(state.open);
+        rows.forEach((r) => state.open.add(r.id));
+        await reload();
         document.body.classList.add('cl-printing');
         const off = () => {
             document.body.classList.remove('cl-printing');
             window.removeEventListener('afterprint', off);
+            state.open = prev;
+            reload();
         };
         window.addEventListener('afterprint', off);
         window.print();

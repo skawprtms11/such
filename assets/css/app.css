@@ -1692,7 +1692,13 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-card__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 42px; padding: 7px 12px; }
 .pm-card__title { font-size: 14px; font-weight: 700; }
 .pm-card__desc { color: var(--gray-500); font-size: 12.5px; }
-.pm-note { margin: 0; padding: 0 12px 10px; color: var(--gray-500); font-size: 12px; }
+.pm-note { color: var(--gray-500); font-size: 12px; }
+/* 카드 머리를 누르면 상세(설명·담당·주기·이어지는 단계)가 열린다. 접힌 카드는 이름과 체크항목 이름만 */
+.pm-card__head, .pm-sit__head { cursor: pointer; user-select: none; }
+.pm-caret { display: inline-flex; color: var(--gray-500); }
+.pm-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 0 12px 10px; color: var(--gray-700); font-size: 12.5px; }
+.pm-detail--sit { padding: 0 10px 8px; }
+.pm-sit__merge { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; }
 
 /* 체크항목 줄 */
 .pm-checks { padding: 0 8px 6px; }
@@ -1730,7 +1736,6 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-sit .pm-step--sub > .pm-step__rail .pm-no { color: var(--amber); border-color: var(--amber); }
 .pm-sit .pm-step--sub:not(.is-last) > .pm-step__rail::after { border-left-color: #f5c27a; }
 .pm-sit .pm-step--sub:not(.is-last) > .pm-step__rail::before { border-top-color: #f5c27a; }
-.pm-sit__merge { display: flex; align-items: center; gap: 5px; padding: 4px 10px 8px; color: var(--amber); font-size: 12px; }
 .pm-sit__merge b { font-weight: 700; }
 
 /* 빠른 추가 - 「+ 체크항목」 → 입력칸 (Enter 로 등록, 연속 입력) */
