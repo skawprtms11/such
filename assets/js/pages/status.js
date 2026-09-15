@@ -11,9 +11,10 @@ import { can } from '../auth.js';
 import { code128Svg } from '../barcode.js';
 import * as db from '../db.js';
 import { visibleSteps, stepRate, currentStep, stepsFlowHtml, loadDone } from '../steps.js';
+import { WORK_STEPS } from '../config.js';
 import {
     esc, num, today, fmtDateTime, downloadCsv, toast, openModal, confirmDialog, isMobile,
-    seqTag, MOBILE_QUERY,
+    seqTag, addBadge, noSubHtml, MOBILE_QUERY,
 } from '../util.js';
 
 /** 탭 정의 */
@@ -48,6 +49,24 @@ let openedModal = null;
 function stepOpt(o, tasks, adjust) {
     return { task: Boolean(tasks[o.order_no]), adjust: adjust[o.id] };
 }
+
+/**
+ * 탭별 표 묶음 🔑
+ * 현재진행·출고완료는 대표주문번호 묶음을 1행으로 접는다.
+ * ⚠️ **출고취소 탭은 접지 않는다.** 취소는 주문 1건씩 하는 것이라 묶어 버리면
+ * 건수와 취소일시가 대표 것만 보여 취소된 주문을 놓친다.
+ */
+function tabGroups(rows, tab) {
+    if (tab === 'canceled') return rows.map((o) => ({ key: o.id, head: o, rows: [o] }));
+    return db.repGroups(rows);
+}
+
+/**
+ * 묶음 공통 단계 🔑
+ * 상차작업은 대표주문번호 묶음이 한 거래처로 함께 실리므로 주문마다 따로 그리지 않고
+ * 큰 아이콘 하나로 합쳐 보여준다. 단계 이름은 `config.js` 가 유일한 출처다.
+ */
+const LOAD_STEP = WORK_STEPS.find((s) => s.key === 'load');
 
 export async function render(root, { user }) {
     // 완료처리 권한 (주문처리현황은 그 밖에는 조회 전용이다)
@@ -217,16 +236,25 @@ ${monthBox}
         const note = root.querySelector('#note');
         note.textContent = isMobile() ? '' : NOTE[activeTab];
         note.hidden = isMobile();
-        root.querySelector('#row-count').textContent = `${num(rows.length)}건`;
-        drawSummary(root, rows, tasks, adjust);
-        drawTable(root, rows, tasks, adjust, { user, editable, reload, labels });
+        // 목록은 대표주문번호 묶음 1건이 한 행이다 (묶이지 않은 주문·취소 탭은 1건이 1행)
+        const groups = tabGroups(rows, activeTab);
+        // 🔑 요약은 주문 단위, 표는 묶음 단위라 라벨에 둘 다 적는다
+        root.querySelector('#row-count').textContent = groups.length === rows.length
+            ? `주문 ${num(rows.length)}건`
+            : `주문 ${num(rows.length)}건 / 묶음 ${num(groups.length)}행`;
+        drawSummary(root, rows, tasks, adjust, groups.length);
+        drawTable(root, rows, tasks, adjust, { user, editable, reload, labels, groups });
     }
 
-    /** CSV 다운로드 - 현재 탭에 보이는 행만 */
+    /**
+     * CSV 다운로드 - 현재 탭에 보이는 행만.
+     * 🔑 **표는 묶음 1행이지만 CSV 는 주문 1건이 1행이다.** 파렛트수·진행률도 주문별
+     * 값이라 묶음 합계와 다르다. 파일명에 `주문단위` 를 넣어 구분한다.
+     */
     async function downloadRows() {
         const [taskMap, adjustMap] = await Promise.all([db.extraTaskMap(), db.adjustMap()]);
         const label = TABS.find((t) => t.key === activeTab).label;
-        downloadCsv(`주문처리현황_${label}_${today()}.csv`,
+        downloadCsv(`주문처리현황_${label}_주문단위_${today()}.csv`,
             ['연번', '전송일자', '차수', '대표주문번호', '주문번호', '거래처명', '출고요청일',
                 '처리현황', '진행률', '파렛트수', '박스수', '완료처리'],
             rows.map((o, i) => [
@@ -347,8 +375,13 @@ async function textIndex() {
 
 /* ----------------------------------- 요약 ----------------------------------- */
 
-/** 상단 요약 - 주문건수 / 품목수 / 출고수량 / 진행률 */
-function drawSummary(root, rows, tasks = {}, adjust = {}) {
+/**
+ * 상단 요약 - 주문건수 / 품목수 / 출고수량 / 진행률.
+ * 🔑 **요약은 주문 단위다** (표는 묶음 1행). 품목수·출고수량이 주문별 값이라 묶으면
+ * 합계의 의미가 흐려진다. 대신 주문건수 칸에 표의 묶음 행 수를 함께 적는다.
+ * @param {number} [groupCount] 표에 그려질 묶음 행 수
+ */
+function drawSummary(root, rows, tasks = {}, adjust = {}, groupCount = rows.length) {
     const sum = (k) => rows.reduce((a, o) => a + Number(o[k] || 0), 0);
     const rates = rows.map((o) => stepRate(o, stepOpt(o, tasks, adjust)));
     const pct = rates.length
@@ -356,7 +389,8 @@ function drawSummary(root, rows, tasks = {}, adjust = {}) {
     root.querySelector('#summary').innerHTML = `
 <div class="stat stat--accent">
   <div class="stat__label">주문건수</div>
-  <div class="stat__value">${num(rows.length)}<small>건</small></div>
+  <div class="stat__value">${num(rows.length)}<small>건</small>${
+    groupCount === rows.length ? '' : `<small> · 묶음 ${num(groupCount)}행</small>`}</div>
 </div>
 <div class="stat">
   <div class="stat__label">품목수</div>
@@ -395,6 +429,8 @@ function drawTable(root, rows, tasks, adjust, ctx) {
         return;
     }
 
+    // 대표주문번호로 묶인 주문은 1행으로 접는다 (묶이지 않은 주문·취소 탭은 종전과 같다)
+    const groups = ctx.groups ?? tabGroups(rows, activeTab);
     tbl.innerHTML = `
 <thead><tr>
   <th class="num">연번</th><th>전송일자</th><th class="center">차수</th><th>주문번호</th>
@@ -403,21 +439,28 @@ function drawTable(root, rows, tasks, adjust, ctx) {
   <th class="center">${activeTab === 'canceled' ? '취소일시' : '완료처리'}</th>
 </tr></thead>
 <tbody>
-${rows.map((o, i) => {
+${groups.map((g, i) => {
+        const o = g.head;
         const opt = stepOpt(o, tasks, adjust);
-        const steps = visibleSteps(o, opt);
+        const merged = g.rows.length > 1;
+        const pallets = g.rows.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0);
+        const pct = merged
+            ? Math.round(g.rows.reduce((a, r) => a
+                + stepRate(r, stepOpt(r, tasks, adjust)), 0) / g.rows.length)
+            : stepRate(o, opt);
         return `
-<tr class="${o.canceled_at ? 'is-canceled' : ''}">
-  <td class="num">${rows.length - i}</td>
+<tr class="${g.rows.every((r) => r.canceled_at) ? 'is-canceled' : ''}">
+  <td class="num">${groups.length - i}</td>
   <td>${o.send_date}</td>
   <td class="center">${seqTag(o.seq)}</td>
-  <td>${esc(o.order_no)}</td>
+  <td>${noCell(g, activeTab === 'canceled')}</td>
   <td>${esc(o.customer)}</td>
-  <td>
-    <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>
-  </td>
-  <td class="num">${stepRate(o, opt)}%</td>
-  <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
+  <td>${merged
+        ? groupStepsHtml(g.rows, tasks, adjust)
+        : `<div class="steps steps--flow">${
+            stepsFlowHtml(visibleSteps(o, opt), fmtDateTime)}</div>`}</td>
+  <td class="num">${pct}%</td>
+  <td class="num">${pallets ? num(pallets) : '<span class="muted">-</span>'}</td>
   <td>${o.ship_req_date}</td>
   <td class="center">${labelCell(o, ctx.labels?.[o.id])}</td>
   <td class="center">${closeCell(o, ctx.editable)}</td>
@@ -432,6 +475,51 @@ ${rows.map((o, i) => {
             printLoadLabel(o, ctx.labels?.[el.dataset.label]);
         });
     });
+}
+
+/**
+ * 주문번호 칸 - 대표주문번호가 있으면 굵게, 그 아래 작은 글씨로 묶인 주문번호를 나열한다.
+ * 묶이지 않은 주문에는 아무것도 붙지 않는다.
+ *
+ * 🔑 취소 탭(`plain`)은 **주문 1건 = 1행**이라 그 주문번호 자체를 보여준다.
+ * 대표주문번호를 앞세우면 같은 묶음의 취소건이 모두 같은 번호로 보여 구분할 수 없다.
+ * 어느 묶음이었는지는 아래 작은 글씨로 남긴다.
+ */
+function noCell(g, plain = false) {
+    const head = g.head;
+    if (plain) {
+        return `${esc(head.order_no)}${head.rep_no
+            ? `<span class="no-sub">대표 ${esc(head.rep_no)}</span>` : ''}`;
+    }
+    const no = esc(head.rep_no || head.order_no);
+    return `${head.rep_no ? `<b>${no}</b>` : no}${addBadge(g.rows.length)}${
+        noSubHtml(g.rows.map((r) => r.order_no), head.rep_no ?? '')}`;
+}
+
+/**
+ * 묶음 처리현황 🔑
+ * 주문마다 단계 흐름을 **상차작업 직전(출고적치)까지** 그리고,
+ * 오른쪽에 묶음 공통인 상차작업 상태를 큰 단계 아이콘 하나로 둔다.
+ */
+function groupStepsHtml(list, tasks, adjust) {
+    const flows = list.map((o) => `
+<div class="steps-group__row">
+  <span class="steps-group__no">${esc(o.order_no)}</span>
+  <span class="steps steps--flow">${stepsFlowHtml(
+        visibleSteps(o, stepOpt(o, tasks, adjust)).filter((s) => s.key !== LOAD_STEP.key),
+        fmtDateTime,
+    )}</span>
+</div>`).join('');
+    // 상차는 묶음 전체가 함께 실린다 - 모두 상차완료여야 완료로 본다
+    const done = list.every((o) => loadDone(o));
+    const at = list.find((o) => o.loaded_at)?.loaded_at ?? null;
+    return `
+<div class="steps-group">
+  <div class="steps-group__list">${flows}</div>
+  <span class="steps__arrow">→</span>
+  <span class="step step--big ${done ? 'is-done' : ''}"
+        title="${done && at ? fmtDateTime(at) : '미완료'}">${LOAD_STEP.label}</span>
+</div>`;
 }
 
 /**

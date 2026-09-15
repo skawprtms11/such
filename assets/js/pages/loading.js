@@ -7,7 +7,7 @@ import { loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, rate, downloadCsv, toast, confirmDialog, openModal, fmtDateTime, isMobile,
-    addBadge, seqTag, MOBILE_QUERY,
+    addBadge, noSubHtml, seqTag, MOBILE_QUERY,
 } from '../util.js';
 
 const filter = { date: '', keyword: '' };
@@ -100,11 +100,11 @@ export async function render(root, { user }) {
     function downloadRows() {
         downloadCsv(`당일상차리스트_${filter.date}.csv`,
             ['출고일자', '대표주문번호', '주문번호', '거래처명', '출고형태',
-                '파렛트수', '검수파렛트', '상태'],
+                '파렛트수', '박스수', '검수파렛트', '상태'],
             rows.map((o) => [
                 o.ship_req_date, o.rep_no ?? '', (o.group_nos ?? [o.order_no]).join(' / '),
                 o.customer, o.vehicle_type,
-                o.group_pallets, o.group_inspected, o.load_status,
+                o.group_pallets, groupBoxes(o), o.group_inspected, o.load_status,
             ]));
     }
 
@@ -156,14 +156,20 @@ function drawSummary(root, rows) {
 
 /**
  * 목록의 주문번호 칸.
- * 상차는 묶음 단위라 **대표주문번호(없으면 대표 주문번호)** 를 보여주고,
- * 묶인 주문번호는 툴팁으로 확인한다.
+ * 상차는 묶음 단위라 **대표주문번호(없으면 대표 주문번호)** 를 굵게 보여주고,
+ * 그 아래 작은 글씨로 함께 실리는 주문번호를 나열한다.
  */
 function loadNoCell(o) {
-    const tip = (o.group_nos ?? []).join(', ');
+    const nos = o.group_nos ?? [];
     const no = esc(o.group_no ?? o.order_no);
-    return `<span title="${esc(tip)}">${o.rep_no ? `<b>${no}</b>` : no}</span>`
-        + addBadge(o.group_count, '함께 실리는 주문');
+    return `<span title="${esc(nos.join(', '))}">${o.rep_no ? `<b>${no}</b>` : no}</span>`
+        + addBadge(o.group_count, '함께 실리는 주문')
+        + noSubHtml(nos, o.rep_no ?? '');
+}
+
+/** 묶음 박스수 - 함께 실리는 주문 전체의 합계다 (`db.listLoading` 이 계산한다) */
+function groupBoxes(o) {
+    return Number(o.group_boxes ?? o.box_count ?? 0);
 }
 
 /** 상태 배지 HTML */
@@ -198,7 +204,7 @@ ${rows.map((o) => `
   <td>${esc(o.customer)}</td>
   <td class="center">${esc(o.vehicle_type)}</td>
   <td class="num">${num(o.group_pallets)}</td>
-  <td class="num">${o.box_count ? num(o.box_count) : '<span class="muted">-</span>'}</td>
+  <td class="num">${groupBoxes(o) ? num(groupBoxes(o)) : '<span class="muted">-</span>'}</td>
   <td class="center">
     <button class="btn btn--sm" data-loc="${o.id}" type="button">확인</button>
   </td>
@@ -238,7 +244,7 @@ function drawCards(root, rows, editable, user, reload) {
     <span>출고일 <b>${o.ship_req_date}</b></span>
     <span>출고형태 <b>${esc(o.vehicle_type)}</b></span>
     <span>파렛트 <b>${o.group_inspected}/${o.group_pallets}</b></span>
-    <span>박스 <b>${o.box_count ? num(o.box_count) : '-'}</b></span>
+    <span>박스 <b>${groupBoxes(o) ? num(groupBoxes(o)) : '-'}</b></span>
   </div>
   <div class="load-card__actions">
     ${o.loaded_at ? `
@@ -347,6 +353,8 @@ async function openLoadedDetail(orderId, user, reload, editable) {
     if (!o) return;
     const g = await db.getLoadGroup(orderId);
     const pallets = sortByLocation(g.pallets);
+    // 박스수는 묶음 전체의 합계다 (대표에만 총량을 적는 묶음도 그대로 더해진다)
+    const boxes = g.rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
     const row = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
     const dash = '<span class="muted">-</span>';
     locModal?.close();
@@ -354,14 +362,14 @@ async function openLoadedDetail(orderId, user, reload, editable) {
 <table class="grid"><tbody>
   ${o.rep_no ? row('대표주문번호', `<b>${esc(o.rep_no)}</b>`) : ''}
   ${g.rows.length > 1
-        ? row('묶인 주문', esc(g.rows.map((r) => r.order_no).join(', '))) : ''}
+        ? row('묶인 주문', esc(g.rows.map((r) => r.order_no).join(' · '))) : ''}
   ${row('거래처명', esc(o.customer))}
   ${row('출고일자', `<b>${o.ship_req_date}</b>`)}
   ${row('출고형태', esc(o.vehicle_type))}
   ${row('묶음', `${g.rows.length}건${g.rows.length > 1
         ? ` (함께 실리는 주문 ${g.rows.length - 1}건 포함)` : ''}`)}
   ${row('파렛트수', pallets.length ? `${num(pallets.length)} PLT` : dash)}
-  ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
+  ${row('박스수', boxes ? `${num(boxes)} 박스` : dash)}
   ${row('검수', `${pallets.filter((p) => p.scanned_at).length}/${pallets.length}`)}
   ${row('검수완료', o.inspect_done_at ? fmtDateTime(o.inspect_done_at) : dash)}
   ${row('출고적치', o.stow_done_at ? fmtDateTime(o.stow_done_at) : dash)}

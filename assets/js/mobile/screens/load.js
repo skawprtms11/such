@@ -165,11 +165,13 @@ async function renderList(root, user) {
 function loadCard(o, editable) {
     const no = esc(o.group_no ?? o.order_no);
     const total = o.group_pallets ?? 0;
+    // 박스수는 파렛트수와 같이 묶음 합계를 쓴다 (웹 당일상차리스트와 같은 값)
+    const boxes = Number(o.group_boxes ?? o.box_count ?? 0);
     const done = loadDone(o);
     const body = `
 <span class="m-card__cust">${esc(o.customer)}</span>
 <span class="m-card__meta">${esc(o.vehicle_type)}
-  · 박스 ${o.box_count ? num(o.box_count) : '-'}
+  · 박스 ${boxes ? num(boxes) : '-'}
   ${done ? `· 상차 ${esc(fmtDateTime(o.loaded_at))}` : ''}</span>`;
 
     const actions = done ? '' : `
@@ -298,6 +300,8 @@ ${g.pallets.map((p, i) => `
         const picked = g.pallets.filter((p) => p.picked_at).length;
         const stowed = g.pallets.filter((p) => p.location).length;
         const stow = stowStatus(stowed, total);
+        // 박스수는 묶음 합계다 (대표에만 총량을 적는 묶음도 그대로 더해진다)
+        const boxes = g.rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
         topEl.innerHTML = `
 <div class="m-statline">
   ${tag(o.load_status, STATUS_TONE[o.load_status] ?? 'gray')}
@@ -305,7 +309,7 @@ ${g.pallets.map((p, i) => `
   ${tag(stow, STATUS_TONE[stow] ?? 'gray')}
   <span>적치 ${num(stowed)}/${num(total)}</span>
   <span>검수 ${num(scanned)}/${num(total)}</span>
-  <span>박스 ${o.box_count ? num(o.box_count) : '-'}</span>
+  <span>박스 ${boxes ? num(boxes) : '-'}</span>
   <span class="m-statline__pick">내림 ${num(picked)}/${num(total)}</span>
 </div>
 ${done ? '<p class="m-note">상차완료된 주문이라 파렛트 내림을 바꿀 수 없습니다.</p>' : ''}

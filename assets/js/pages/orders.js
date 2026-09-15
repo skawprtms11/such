@@ -9,7 +9,7 @@ import { currentStep, loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
     esc, num, today, toDateStr, downloadCsv, toast, openModal, confirmDialog, fmtDateTime,
-    seqTag, addBadge,
+    seqTag, addBadge, noSubHtml,
 } from '../util.js';
 
 /** 조회 필터 상태 */
@@ -273,16 +273,19 @@ function groupStat(list, stats) {
 
 /**
  * 주문번호 셀 - 대표주문번호가 있으면 그것을 굵게 보여주고 `+N건` 배지를 붙인다.
- * 묶인 주문번호는 툴팁으로 확인한다.
- * 🔑 배지 수와 툴팁은 **취소되지 않은 주문만** 센다 (취소건은 상세 팝업에서 확인한다).
+ * 묶였으면 **그 아래 작은 글씨로 합쳐진 주문번호를 순서대로** 나열한다 (`g.rows` 순서).
+ * 🔑 배지 수와 목록은 **취소되지 않은 주문만** 센다 (취소건은 상세 팝업에서 확인한다).
+ * @param {string} extra 번호 뒤에 붙일 내용 (건수 배지 등) - 작은 글씨 목록보다 앞에 온다
  */
-function groupNoCell(g, head = g.head) {
+function groupNoCell(g, head = g.head, extra = '') {
     const live = g.rows.filter((o) => !o.canceled_at);
     const list = live.length ? live : g.rows;
-    const tip = list.length > 1 ? `묶인 주문: ${list.map((o) => o.order_no).join(', ')}` : '';
+    const nos = list.map((o) => o.order_no);
+    const tip = list.length > 1 ? `묶인 주문: ${nos.join(', ')}` : '';
     const no = esc(head.rep_no || head.order_no);
     return `<span class="link" data-detail="${head.id}" title="${esc(tip)}">${
-        head.rep_no ? `<b>${no}</b>` : no}</span>${addBadge(list.length)}`;
+        head.rep_no ? `<b>${no}</b>` : no}</span>${addBadge(list.length)}${extra}${
+        noSubHtml(nos, head.rep_no ?? '')}`;
 }
 
 /** 있음/없음 셀 - '있음' 만 파란 태그로 눈에 띄게 한다 */
@@ -383,7 +386,7 @@ ${groups.map((g, i) => {
   <td>${o.send_date}</td>
   <td class="center">${esc(names[o.created_by] ?? '-')}</td>
   <td class="center">${seqTag(o.seq)}</td>
-  <td>${groupNoCell(g, o)}${countBadge(stat)}</td>
+  <td>${groupNoCell(g, o, countBadge(stat))}</td>
   <td>${esc(o.customer)}</td>
   <td class="center">${ynCell(extraYn)}</td>
   <td class="center">${packingCell(packingOrder, user)}</td>
@@ -553,6 +556,11 @@ async function showDetail(id, user, reload) {
         if (activeTab === 'info' && canEdit(user, o)) {
             btns.push('<button class="btn btn--primary" id="btn-detail-edit" type="button">'
                 + '수정</button>');
+            // 주문합치기 - 취소·완료처리된 주문은 묶음을 더 바꾸지 않는다
+            if (!o.canceled_at && !o.closed_at) {
+                btns.push('<button class="btn" id="btn-merge" type="button">'
+                    + '주문합치기</button>');
+            }
         }
         // 접수는 여기서만 한다 - 작업지시를 작성해야 접수되고, 확인 컬럼이 '접수' 로 바뀐다
         // 🔑 접수·접수취소는 묶음 전체에 적용된다
@@ -573,6 +581,13 @@ ${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
         foot.querySelector('#btn-detail-edit')?.addEventListener('click', () => {
             m.close();
             openForm(o, user, reload);
+        });
+
+        foot.querySelector('#btn-merge')?.addEventListener('click', () => {
+            openMergeModal(o, user, () => {
+                draw();
+                reload();
+            });
         });
 
         // 접수 - 작업지시 입력칸을 하단에 펼친다. 작성해야 접수가 완료된다
@@ -637,6 +652,121 @@ ${btns.length ? `<div class="btn-row">${btns.join('')}</div>` : ''}`;
     await draw();
     // 팝업에서 처리한 내용이 목록에 반영되도록 닫을 때 갱신한다
     m.root.querySelector('.modal__close').addEventListener('click', reload);
+}
+
+/* -------------------------------- 주문합치기 -------------------------------- */
+
+/**
+ * 주문합치기 팝업.
+ * 같은 거래처의 다른 주문을 골라 **대표주문번호 묶음**으로 합친다.
+ * 새 묶음 개념을 만들지 않고 기존 `rep_no` 묶음에 넣는 것이라, 합친 뒤에는
+ * 접수·출고작업·검수작업·상차가 묶음 전체에 한 번에 적용된다.
+ *
+ * 허용 조건과 거부 사유는 모두 `db.js` 가 판단한다 (화면은 결과만 그린다).
+ * @param {object} o 합칠 주문 (지금 상세 팝업에서 보고 있는 주문)
+ * @param {Function} onMerged 합친 뒤 호출 (상세·목록 갱신)
+ */
+async function openMergeModal(o, user, onMerged) {
+    let reason = '';
+    let targets = [];
+    try {
+        [reason, targets] = await Promise.all([
+            db.mergeSourceReason(o.id), db.listMergeTargets(o.id),
+        ]);
+    } catch (err) {
+        toast(err.message, 'error');
+        return;
+    }
+
+    const m = openModal(`주문합치기 - ${o.order_no}`, `
+<p class="form-note" style="margin-top:0">
+  거래처 <b>${esc(o.customer)}</b> 의 <b>같은 출고요청일</b> 주문을 골라
+  <b>대표주문번호</b> 하나로 묶습니다.
+  묶인 주문은 접수·출고작업·검수작업·상차를 함께 처리합니다.
+  (검수작업이 시작된 주문은 총 파렛트수·박스수가 어긋나므로 합칠 수 없습니다.)
+</p>
+${reason ? `<p class="form-note is-warn">${esc(reason)}</p>` : `
+<label class="field">
+  <span class="field__label">주문번호 검색</span>
+  <input type="text" id="merge-kw" list="merge-nos" autocomplete="off"
+         placeholder="주문번호 또는 대표주문번호">
+</label>
+<datalist id="merge-nos"></datalist>`}
+<div class="table-wrap"><table class="grid" id="merge-tbl"></table></div>`, { wide: true });
+
+    const tbl = m.body.querySelector('#merge-tbl');
+    if (reason) {
+        tbl.innerHTML = '<tbody><tr><td class="empty">합칠 수 없는 주문입니다.</td></tr></tbody>';
+        return;
+    }
+    const kw = m.body.querySelector('#merge-kw');
+
+    // 자동완성 - 후보의 주문번호와 대표주문번호를 모두 넣는다
+    const nos = [...new Set(targets.flatMap((t) => [t.order_no, t.rep_no]).filter(Boolean))];
+    m.body.querySelector('#merge-nos').innerHTML =
+        nos.map((n) => `<option value="${esc(n)}"></option>`).join('');
+
+    /** 검색어에 걸리는 후보만 표로 그린다 (검색은 화면에서만 한다) */
+    function draw() {
+        const k = kw.value.trim().toLowerCase();
+        const list = k
+            ? targets.filter((t) => `${t.order_no} ${t.rep_no ?? ''}`.toLowerCase().includes(k))
+            : targets;
+        if (!list.length) {
+            tbl.innerHTML = `<tbody><tr><td class="empty">${targets.length
+                ? '검색 결과가 없습니다.'
+                : '합칠 수 있는 주문이 없습니다.'
+                    + ' (같은 거래처·같은 출고요청일, 검수작업 전인 주문만 고를 수 있습니다)'
+            }</td></tr></tbody>`;
+            return;
+        }
+        tbl.innerHTML = `
+<thead><tr>
+  <th>주문번호</th><th>대표주문번호</th><th class="center">차수</th>
+  <th>출고요청일</th><th class="num">파렛트수</th><th class="center">선택</th>
+</tr></thead>
+<tbody>
+${list.map((t) => `
+<tr>
+  <td>${esc(t.order_no)}${noSubHtml(t.group_nos, t.rep_no ?? '')}</td>
+  <td>${t.rep_no ? `<b>${esc(t.rep_no)}</b>${addBadge(t.group_count)}`
+        : '<span class="muted">-</span>'}</td>
+  <td class="center">${seqTag(t.seq)}</td>
+  <td>${t.ship_req_date || '미정'}</td>
+  <td class="num">${t.pallet_count ? num(t.pallet_count) : '<span class="muted">-</span>'}</td>
+  <td class="center">
+    <button class="btn btn--primary btn--sm" data-merge="${t.id}" type="button">선택</button>
+  </td>
+</tr>`).join('')}
+</tbody>`;
+
+        tbl.querySelectorAll('[data-merge]').forEach((el) => {
+            el.addEventListener('click', async () => {
+                const t = list.find((x) => x.id === el.dataset.merge);
+                if (!t) return;
+                // 합쳤을 때의 대표주문번호는 db 가 정해 준다 (화면이 다시 계산하지 않는다)
+                const ok = await confirmDialog(
+                    `${o.order_no} 을(를) ${t.order_no} 의 묶음에 합칩니다.\n\n`
+                    + `대표주문번호: ${t.merge_rep_no}\n`
+                    + '합친 뒤에는 접수·출고작업·검수작업·상차가 함께 처리됩니다.',
+                );
+                if (!ok) return;
+                try {
+                    const res = await db.mergeOrders(o.id, t.id, user);
+                    m.close();
+                    toast(`대표주문번호 ${res.rep_no} 로 ${res.rows.length}건이 묶였습니다.`,
+                        'success');
+                    onMerged();
+                } catch (err) {
+                    toast(err.message, 'error');
+                }
+            });
+        });
+    }
+
+    kw.addEventListener('input', draw);
+    draw();
+    kw.focus();
 }
 
 /* ------------------------------ 탭 1. 주문정보상세 ----------------------------- */

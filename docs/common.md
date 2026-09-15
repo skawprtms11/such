@@ -170,6 +170,9 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `listHistory(orderId)` | 변동사항 이력 (최신순) |
 | `listOpenOrderNos(f)` | 추가주문을 붙일 수 있는 주문번호 (차수용, `base_no` 기준) |
 | `listOpenRepNos(f)` | 등록 폼에서 제안할 **대표주문번호** 목록 `{rep_no, customer, count}` |
+| `mergeSourceReason(orderId)` | **주문합치기** — 이 주문을 출발점으로 쓸 수 있는지. 거부 사유 문자열(빈 문자열이면 가능) |
+| `listMergeTargets(orderId)` | **주문합치기** 후보 — [허용 조건 ①~⑧](orders.md#허용-조건-)을 모두 통과한 주문만. 후보마다 `merge_rep_no`(합쳤을 때의 대표주문번호)가 붙는다. **검색 필터는 화면이 한다** |
+| `mergeOrders(orderId, targetOrderId, user)` | **주문합치기** — 대상의 대표주문번호 묶음에 넣는다. 대상에 대표주문번호가 없으면 대상의 주문번호를 대표로 삼는다. 이력은 `edit_count` 기반 `rev` 로 남는다. `{rep_no, rows}` 반환 |
 
 ### 묶음 - 두 종류가 있다 🔑
 
@@ -195,6 +198,8 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 - 대표(head)는 ① 주문번호 = 대표주문번호 → ② 먼저 등록된 건 → ③ 낮은 차수 → ④ id 순
 - ⚠️ **차수 계산(`createOrder` · `listOpenOrderNos`)은 `base_no` 만 본다.**
   차수는 추가주문 개념이라 대표주문번호와 무관하다
+- 묶음을 **새로 만들거나 넓히는** 처리: `updateOrder({rep_no})` · **`mergeOrders`**
+  (둘 다 `assertRepOwner` 로 등록자를 맞춘다). 차수(`base_no` `seq`)는 건드리지 않는다
 - **대표주문번호 묶음** 전체에 적용되는 처리: `confirmOrderGroup` ·
   `revokeOrderConfirmGroup` · `startShipWork` · `setShipWorkDone` ·
   `setInspectDone` · `setPackingNote` · `closeOrder`
@@ -207,7 +212,7 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 
 | 함수 | 설명 |
 |---|---|
-| `listLoading(shipDate)` | 해당 출고일 + `stage>=4` 인 주문만 |
+| `listLoading(shipDate)` | 해당 출고일 + 상차 전 단계가 모두 끝난 주문만. **준비된 행을 먼저 거른 뒤** `loadGroups` 로 묶는다(묶음을 다시 펼치지 않는다). 대표 1건에 `group_no` `group_nos` `group_count` `group_pallets` **`group_boxes`**(묶음 박스수 합계) `group_inspected` 를 붙이며 **모두 준비된 멤버 기준**이다 |
 | `listPallets(orderId)` | 파렛트 바코드 목록 |
 | `scanPallet(orderId, barcode, user)` | `{ok, msg, order}` 반환. 전량 스캔 시 `검수` 전환 |
 | `resetInspection(orderId, user)` | 상차검수 전체 초기화 (**상차완료된 묶음은 거부**) |
@@ -312,6 +317,8 @@ allow(user, ORDER_POLICY.write);   // 역할이 맞거나 소속이 맞으면 tr
 | 함수 | 용도 |
 |---|---|
 | `esc(s)` | **HTML 이스케이프. 사용자 입력 출력 시 필수** |
+| `addBadge(count, label)` | 묶음 대표 행에 붙는 `+N건` 배지 |
+| `noSubHtml(nos, repNo)` | 대표주문번호 아래에 묶인 주문번호를 작은 글씨(`.no-sub`)로 나열한다. 주문정보등록·주문처리현황·상차대기·당일상차리스트·상차검수가 함께 쓴다 |
 | `num(n)` | 천단위 구분자 |
 | `today()` `toDateStr(d)` `fmtDateTime(iso)` | 날짜 포맷 |
 | `rate(done, total)` | 진행률(%) 정수 |
@@ -369,6 +376,8 @@ tbl.querySelectorAll('[data-edit]').forEach((el) => {
 | `.grid` | 표. `.num` 우측정렬, `.center` 가운데, `.wrap` 줄바꿈 허용 |
 | `.tag` `.tag--blue/green/amber/red/gray` | 상태 배지 |
 | `.steps` `.step` `.is-done` `.is-current` | 처리 단계 배지 |
+| `.step--big` `.steps-group` | 묶음 처리현황 — 주문별 흐름 + 묶음 공통 상차작업 큰 아이콘 |
+| `.no-sub` | 대표주문번호 아래 작은 글씨 주문번호 목록 |
 | `.bar` `.bar__fill` | 진행률 막대 |
 | `.btn` `.btn--primary/success/danger/ghost/sm/lg/block` | 버튼 |
 

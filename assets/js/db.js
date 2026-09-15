@@ -498,6 +498,166 @@ export async function listOpenRepNos(f = {}) {
     return [...map.values()].sort((a, b) => a.rep_no.localeCompare(b.rep_no));
 }
 
+/* ------------------------------ 주문합치기 (대표주문번호) ------------------------------ */
+
+/**
+ * 주문합치기 허용 조건 🔑 — 주문 1건만 보고 판단하는 부분 (③ ④).
+ * ③ 취소·완료처리·상차완료된 주문은 더 이상 묶음을 바꾸지 않는다.
+ * ④ 🔑 **검수작업 전에만 합친다.** 총 파렛트수·박스수는 검수완료 시 묶음 대표에만
+ *    입력하므로, 검수 뒤에 멤버가 늘면 총량이 어긋난다. 게다가 파렛트 재생성
+ *    (`rebuildPallets`)으로 이미 출력한 상차라벨이 폐기된다.
+ * @returns {string} 사유. 합칠 수 있으면 빈 문자열
+ */
+function mergeBlockReason(o) {
+    if (o.canceled_at) return '취소된 주문은 합칠 수 없습니다.';
+    if (o.closed_at) return '완료처리된 주문은 합칠 수 없습니다.';
+    if (loadDone(o)) return '상차완료된 주문은 합칠 수 없습니다.';
+    if (o.inspect_done_at) {
+        return '검수작업이 끝난 주문은 합칠 수 없습니다. '
+            + '총 파렛트수·박스수를 이미 묶음 대표에 입력했기 때문입니다.';
+    }
+    return '';
+}
+
+/**
+ * 합치기 출발점으로 쓸 수 있는 주문인지 (⑤ 포함).
+ * ⑤ 🔑 **이미 어느 묶음에도 속하지 않은 주문만** 출발점이 된다.
+ *    묶인 주문을 다른 묶음으로 옮기면 남은 멤버의 처리 범위가 조용히 바뀐다.
+ * @returns {string} 사유. 합칠 수 있으면 빈 문자열
+ */
+function mergeSourceBlockReason(o) {
+    if (o.rep_no) {
+        return `이미 대표주문번호 '${o.rep_no}' 묶음에 속한 주문입니다. `
+            + '수정 폼에서 대표주문번호를 비운 뒤 다시 합치세요.';
+    }
+    return mergeBlockReason(o);
+}
+
+/** 차수 기준번호 (옛 데이터는 `base_no` 가 없어 주문번호로 본다) */
+function baseNoOf(o) {
+    return o.base_no || o.order_no;
+}
+
+/**
+ * 두 주문을 짝지어 판단하는 조건 (① ② ⑥ ⑦ ⑧).
+ * @param {object} o 합치려는 주문 (출발점)
+ * @param {object} t 합칠 상대
+ * @param {object[]} tRows 상대가 이미 속한 묶음 전체 (⑥ 은 묶음 멤버 전부와 비교한다)
+ * @returns {string} 사유. 합칠 수 있으면 빈 문자열
+ */
+function mergePairBlockReason(o, t, tRows = [t]) {
+    if (o.id === t.id) return '같은 주문끼리는 합칠 수 없습니다.';
+    if (o.customer !== t.customer) return '거래처가 다른 주문은 합칠 수 없습니다.';
+    if (o.created_by !== t.created_by) {
+        return '등록자가 다른 주문은 합칠 수 없습니다. '
+            + '같은 담당자가 등록한 주문만 묶을 수 있습니다.';
+    }
+    if ((o.ship_req_date ?? '') !== (t.ship_req_date ?? '')) {
+        return '출고요청일이 다른 주문은 합칠 수 없습니다. '
+            + '묶인 주문은 같은 날 함께 실립니다.';
+    }
+    // ⑥ 차수 형제는 이미 상차 묶음(`base_no`)으로 함께 실린다. 대표주문번호로 또 묶으면
+    //    출고작업·검수작업까지 묶여 나중에 합류한 차수가 영구 차단된다.
+    //    상대가 이미 묶여 있으면 그 묶음 멤버 전부와 비교한다 (우회로를 막는다)
+    if (tRows.some((r) => baseNoOf(o) === baseNoOf(r))) {
+        return '같은 주문의 추가 차수끼리는 합칠 수 없습니다. '
+            + '차수는 상차 단계에서 이미 함께 묶입니다.';
+    }
+    // ⑧ 상대가 아직 묶이지 않았다면 그 주문번호가 대표가 되므로 1차수여야 한다
+    if (!t.rep_no && (t.seq ?? 1) !== 1) {
+        return '아직 묶이지 않은 추가주문(2차수 이상)은 합칠 상대가 될 수 없습니다. '
+            + '1차수 주문이나 이미 묶인 주문을 고르세요.';
+    }
+    return '';
+}
+
+/**
+ * 이 주문을 합치기 출발점으로 쓸 수 있는지 (화면의 안내 문구용).
+ * @returns {Promise<string>} 사유. 합칠 수 있으면 빈 문자열
+ */
+export async function mergeSourceReason(orderId) {
+    const o = (await load()).orders.find((x) => x.id === orderId);
+    if (!o) return '주문을 찾을 수 없습니다.';
+    return mergeSourceBlockReason(o);
+}
+
+/**
+ * 주문합치기 대상 후보 목록 🔑
+ * 허용 조건(①~⑧)을 모두 만족하는 주문만 돌려준다. 조건에 걸린 주문은 아예 담지 않는다.
+ * 새 묶음 개념을 만들지 않고 기존 대표주문번호(`rep_no`) 묶음에 넣는 것이므로,
+ * 후보마다 그 후보가 이미 속한 묶음 정보(`group_no` `group_count` `group_nos`)와
+ * **합쳤을 때의 대표주문번호(`merge_rep_no`)** 를 붙인다.
+ *
+ * ⚠️ 검색어 필터는 하지 않는다. 화면이 입력할 때마다 실시간으로 거른다.
+ * @param {string} orderId 합치려는 주문
+ * @returns {Promise<Array<object>>} 최근 등록순
+ */
+export async function listMergeTargets(orderId) {
+    const db = (await load());
+    const cur = db.orders.find((x) => x.id === orderId);
+    if (!cur || mergeSourceBlockReason(cur)) return [];
+
+    return db.orders
+        .filter((o) => !mergeBlockReason(o))
+        .map((o) => ({ row: o, rows: batchGroupOf(db, o.id)?.rows ?? [o] }))
+        // 상대가 이미 묶여 있으면 묶음 멤버 전부가 ③④ 를 만족해야 한다
+        .filter(({ row, rows }) => !mergePairBlockReason(cur, row, rows)
+            && !rows.some((r) => mergeBlockReason(r)))
+        .map(({ row, rows }) => ({
+            ...row,
+            group_no: row.rep_no || row.order_no,
+            group_count: rows.length,
+            group_nos: rows.map((r) => r.order_no),
+            // 이 후보를 고르면 정해질 대표주문번호 (화면은 이 값만 쓴다)
+            merge_rep_no: row.rep_no || row.order_no,
+        }))
+        .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+}
+
+/**
+ * 주문합치기 🔑
+ * 현재 주문(`orderId`)을 대상 주문(`targetOrderId`)의 **대표주문번호 묶음**에 넣는다.
+ * 대상에 대표주문번호가 없으면 대상의 주문번호를 대표주문번호로 삼고 대상에도 기록한다
+ * (그래야 묶음이 성립한다).
+ *
+ * 허용 조건은 `mergeSourceBlockReason` · `mergeBlockReason` · `mergePairBlockReason`
+ * 세 함수가 나눠 갖는다 (후보 목록도 같은 함수를 쓴다).
+ * ⚠️ 차수(`base_no` `seq`)는 건드리지 않는다. 차수는 추가주문 개념이라 대표주문번호와 무관하다.
+ * @returns {Promise<{rep_no:string, rows:object[]}>} 합친 뒤의 묶음
+ */
+export async function mergeOrders(orderId, targetOrderId, user) {
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === orderId);
+    const t = db.orders.find((x) => x.id === targetOrderId);
+    if (!o || !t) throw new Error('주문을 찾을 수 없습니다.');
+    const tRows = batchGroupOf(db, t.id)?.rows ?? [t];
+    const blocked = mergeSourceBlockReason(o) || mergeBlockReason(t)
+        || mergePairBlockReason(o, t, tRows)
+        // 묶음 멤버 중 하나라도 검수작업이 끝났으면 총량이 어긋난다 (④)
+        || tRows.map(mergeBlockReason).find(Boolean) || '';
+    if (blocked) throw new Error(blocked);
+
+    // 대상에 대표주문번호가 있으면 그 값, 없으면 대상의 주문번호를 대표로 삼는다
+    const repNo = t.rep_no || t.order_no;
+    assertRepOwner(db, repNo, { id: o.created_by }, o.id);
+
+    // 🔑 수정 폼에서 대표주문번호를 바꿀 때와 같이 `edit_count` 기반 rev 로 남긴다.
+    //    rev 가 0 이면 용마담당자의 수정확인 대상(`checkStats` 의 rev > 0)에서 빠진다
+    if (!t.rep_no) {
+        t.edit_count = (t.edit_count ?? 0) + 1;
+        addHistory(db, t.id, '대표주문번호', '', repNo, user,
+            `${o.order_no} 와 합침`, t.edit_count);
+        t.rep_no = repNo;
+    }
+    o.edit_count = (o.edit_count ?? 0) + 1;
+    addHistory(db, o.id, '대표주문번호', '', repNo, user,
+        `${t.order_no} 와 합침`, o.edit_count);
+    o.rep_no = repNo;
+
+    await save(db);
+    return { rep_no: repNo, rows: batchGroupOf(db, o.id)?.rows ?? [o] };
+}
+
 export async function getOrder(id) {
     return (await load()).orders.find((o) => o.id === id) ?? null;
 }
@@ -1243,6 +1403,10 @@ export async function createRestore(payload, user) {
 /**
  * 당일상차리스트 조회.
  * 상차 이외의 모든 작업(패킹리스트까지)이 완료된 주문만 대상으로 한다.
+ *
+ * 🔑 **준비된 주문(ready)만으로 묶는다.** `groupOf` 로 묶음을 다시 펼치면 아직 준비되지
+ * 않은 멤버까지 딸려 들어와 파렛트수·박스수가 어긋난다 (`listStowWaiting` 과 같은 순서).
+ * 그래서 `group_*` 값은 모두 **ready 멤버 기준**이다.
  */
 export async function listLoading(shipDate) {
     const db = (await load());
@@ -1258,23 +1422,20 @@ export async function listLoading(shipDate) {
             && readyToLoad(o, { task: tasks.has(o.order_no), adjust: adjust[o.id] }));
 
     // 대표주문번호·추가주문 차수는 한 거래처로 함께 배송되므로 묶어서 대표 1건만 보여준다
-    const byKey = new Map();
-    ready.forEach((o) => {
-        const key = groupKeyOf(o);
-        const cur = byKey.get(key);
-        if (!cur || compareHead(o, cur) < 0) byKey.set(key, o);
-    });
-    return [...byKey.values()]
-        .map((head) => {
-            const g = groupOf(db, head.id);
+    return loadGroups(ready)
+        .map((g) => {
+            const head = g.head;
+            const pallets = palletsOf(db, g.rows);
             return {
                 ...head,
                 // 목록·라벨에 보여줄 번호 (대표주문번호가 있으면 그것을 쓴다)
                 group_no: head.rep_no || head.order_no,
                 group_nos: g.rows.map((r) => r.order_no),
                 group_count: g.rows.length,
-                group_pallets: g.pallets.length,
-                group_inspected: g.pallets.filter((p) => p.scanned_at).length,
+                group_pallets: pallets.length,
+                // 박스수는 묶음 전체의 합계다 (대표에만 총량을 적는 묶음도 그대로 더해진다)
+                group_boxes: g.rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0),
+                group_inspected: pallets.filter((p) => p.scanned_at).length,
             };
         })
         .sort((a, b) => (a.group_no > b.group_no ? 1 : -1));
@@ -1290,6 +1451,8 @@ function palletsOf(db, rows) {
         .map((p, i) => ({
             ...p,
             seq: r.seq,
+            // 묶음 화면에서 어느 주문의 파렛트인지 보여주기 위해 함께 담는다
+            order_no: r.order_no,
             label: `${r.order_no}-${String(i + 1).padStart(2, '0')}`,
         })));
 }

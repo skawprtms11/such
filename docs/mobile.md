@@ -208,7 +208,7 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 
 | 기능 | 함수 | 비고 |
 |---|---|---|
-| 목록 | `db.listLoading()` | 출고일 + `readyToLoad` |
+| 목록 | `db.listLoading()` | 출고일 + `readyToLoad`. 묶음 값(`group_*`)은 **준비된 멤버 기준**이다 |
 | 묶음 | `db.getLoadGroup()` | 대표주문번호 + 추가주문 차수 전체를 한 화면에서 검수 |
 | 스캔 | `db.scanPallet()` | 대표주문번호·묶음 안 아무 번호·개별 파렛트 바코드 모두 인식. 결과 메시지는 화면에서 새로 만들지 않고 그대로 쓴다 |
 | 전량 검수 시 자동 전환 | (db 내부) | `대기 → 검수`. 카메라 자동 종료 |
@@ -217,6 +217,9 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 | 검수 초기화 | `db.resetInspection()` | `···` 메뉴. **상차완료된 묶음은 거부** |
 | 파렛트 내리기 | `db.setPalletPicked()` | 세그 `로케이션`, 로케이션 순 정렬 |
 
+- 🔑 **박스수는 묶음 합계다.** 목록 카드는 `db.listLoading()` 의 `group_boxes`,
+  상세 화면은 `getLoadGroup().rows` 의 `box_count` 합을 쓴다.
+  예전에는 대표 1건의 `box_count` 만 보여 웹 [당일상차리스트](loading.md)와 값이 달랐다
 - 상세 화면 진입 시 `db.loadProgress()` 류 진행 계산은 새 규칙이 아니라
   `getLoadGroup().pallets` 를 세는 조합이다.
 - 카메라 쿨다운 2.5초, 직접 입력 무쿨다운(블루투스 스캐너 연속 입력)은 [inspect.md](inspect.md)와 동일.
