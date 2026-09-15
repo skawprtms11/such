@@ -6,7 +6,7 @@
 import {
     CHECK_CYCLE, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
-    LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT,
+    LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
 import { readyToLoad, loadDone } from './steps.js';
@@ -1352,6 +1352,29 @@ export async function setPalletLocation(palletId, location) {
     syncStowDone(db, o);
     await save(db);
     return o;
+}
+
+/**
+ * 평치 일괄이동 - 그 주문의 **로케이션이 비어 있는 파렛트를 모두** 평치(FLOOR_LOCATION)로 기록한다.
+ * 이미 랙 로케이션이 들어간 파렛트는 건드리지 않는다 (입력한 값을 지우지 않게).
+ * 한 번에 같은 값을 넣으므로 이력에 건수를 남긴다.
+ * @returns {{order:object, count:number}} 주문과 평치로 옮긴 파렛트 수
+ */
+export async function setFloorAll(orderId, user) {
+    const db = (await load());
+    const o = db.orders.find((x) => x.id === orderId);
+    if (!o) throw new Error('주문을 찾을 수 없습니다.');
+    if (o.canceled_at) throw new Error('취소된 주문입니다.');
+    if (!o.inspect_done_at) throw new Error('검수작업이 완료된 주문만 적치할 수 있습니다.');
+    if (loadDone(o)) throw new Error('상차완료된 주문은 적치를 바꿀 수 없습니다.');
+
+    const targets = db.pallets.filter((p) => p.order_id === o.id && !p.location);
+    if (!targets.length) return { order: o, count: 0 };
+    targets.forEach((p) => { p.location = FLOOR_LOCATION; });
+    syncStowDone(db, o);
+    addHistory(db, o.id, '출고적치', '', FLOOR_LOCATION, user, `평치 일괄이동 ${targets.length}건`);
+    await save(db);
+    return { order: o, count: targets.length };
 }
 
 /** 로케이션 지우기 (잘못 입력한 경우) */

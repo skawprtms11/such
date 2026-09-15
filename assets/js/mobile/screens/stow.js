@@ -393,17 +393,21 @@ ${t.location
         }
     }
 
-    /** 도구 줄 3칸 - 평치 · 카메라 · 지우기(대상에 값이 있을 때만) */
+    /** 도구 줄 4칸 - 평치 · 일괄평치(미지정이 2건 이상일 때만) · 카메라 · 지우기(대상에 값이 있을 때만) */
     function drawTools() {
         if (!editable) return;
         const t = target();
         const camOn = Boolean(scanner?.isOn());
+        const rest = pallets.filter((p) => !p.location).length;
         const cell = (name, key, label, cls = '') => `
 <button class="m-tool ${cls}" type="button" data-tool="${key}">
   ${icon(name, 'm-icon')}<span>${esc(label)}</span></button>`;
 
         toolsEl.innerHTML = [
             cell('floor', 'floor', '평치'),
+            rest >= 2
+                ? cell('stow', 'floorall', `일괄평치 ${num(rest)}`)
+                : '<span class="m-tool is-empty"></span>',
             scanner
                 ? cell(camOn ? 'stop' : 'camera', 'cam', camOn ? '중지' : '카메라',
                     camOn ? 'is-on' : '')
@@ -637,6 +641,44 @@ ${t.location
         resetInput();
     }
 
+    /**
+     * 평치 일괄이동 - 로케이션이 비어 있는 파렛트를 모두 평치로 기록한다.
+     * 이미 넣은 랙 로케이션은 그대로 둔다. 한 번에 여러 건이 바뀌므로 확인 대화상자를 거친다.
+     */
+    async function doFloorAll() {
+        const rest = pallets.filter((p) => !p.location);
+        if (!rest.length) {
+            toast('평치로 옮길 파렛트가 없습니다.', 'error');
+            return;
+        }
+        const kept = pallets.length - rest.length;
+        const ok = await confirmDialog(`미지정 파렛트 ${rest.length}건을 모두 평치로 기록할까요?`
+            + (kept ? `
+
+이미 로케이션이 있는 ${kept}건은 그대로 둡니다.` : ''));
+        if (!ok) return;
+        submitting = true;
+        try {
+            let count = 0;
+            for (const o of owners()) {
+                const r = await db.setFloorAll(o.id, user);
+                count += r.count;
+            }
+            toast(`파렛트 ${count}건을 평치로 기록했습니다.`, 'success');
+            buzz(true);
+            const ids = rest.map((p) => p.id);
+            moved = [...moved.filter((id) => !ids.includes(id)), ...ids];
+            selectedId = null;
+            lastValue = '';
+            await refresh();
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            submitting = false;
+        }
+        resetInput();
+    }
+
     /** 적치완료 - 파렛트를 가진 주문마다 차례로 찍는다 (동시에 저장하면 서로 덮어쓴다) */
     async function doComplete() {
         try {
@@ -721,6 +763,8 @@ ${t.location
             if (btn.dataset.tool === 'floor') {
                 if (!t) toast('평치로 옮길 파렛트가 없습니다.', 'error');
                 else save(t, FLOOR_LOCATION);
+            } else if (btn.dataset.tool === 'floorall') {
+                doFloorAll();
             } else if (btn.dataset.tool === 'cam') {
                 if (scanner?.isOn()) stopCam();
                 else startCam();

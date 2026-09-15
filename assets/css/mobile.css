@@ -1233,7 +1233,7 @@ html, body {
 
 .m-stowtools {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);   /* 평치 · 일괄평치 · 카메라 · 지우기 */
     gap: 8px;
     margin-bottom: 8px;
 }
