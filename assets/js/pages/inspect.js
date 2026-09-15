@@ -11,6 +11,28 @@ import { createScanner, scanSupported } from '../scanner.js';
 import { icon } from '../icons.js';
 import { esc, num, rate, toast, confirmDialog, seqTag } from '../util.js';
 
+/**
+ * 묶인 주문별 검수 진행 요약 (`PO-1 2/3`).
+ * 각 주문의 검수내역이 대표 묶음에 함께 집계된다는 것을 헤더에서 바로 보이게 한다.
+ *
+ * 🔑 대표주문번호 묶음은 **파렛트가 대표에만 있어** 나머지 멤버가 0파렛트인 것이 정상이다.
+ * 그런 멤버를 `0/0` 회색 태그로 두면 미검수로 오인되므로 `파렛트 없음` 으로 적는다.
+ */
+function orderProgressHtml(rows, pallets) {
+    return rows.map((r) => {
+        const mine = pallets.filter((p) => p.order_id === r.id);
+        const done = mine.filter((p) => p.scanned_at).length;
+        if (!mine.length) {
+            return `<span class="tag tag--blue"
+    title="${esc(r.order_no)} · 파렛트가 대표에 함께 집계됩니다">${
+    esc(r.order_no)} 파렛트 없음</span>`;
+        }
+        const full = done >= mine.length;
+        return `<span class="tag ${full ? 'tag--green' : 'tag--gray'}"
+    title="${esc(r.order_no)} · ${r.seq}차수">${esc(r.order_no)} ${done}/${mine.length}</span>`;
+    }).join('');
+}
+
 export async function render(root, { user, params }) {
     const orderId = params[0];
     const order = await db.getOrder(orderId);
@@ -102,8 +124,9 @@ export async function render(root, { user, params }) {
   <span class="tag tag--blue">${g.rows.length}건</span></h2>
 <p>${esc(o.customer)} · ${esc(o.vehicle_type)} · 출고 ${o.ship_req_date}</p>
 ${g.rows.length > 1 ? `
-<p class="field__label">묶인 주문 ${g.rows.length}건이 함께 검수됩니다
- (${esc(g.rows.map((r) => r.order_no).join(', '))}).</p>` : ''}
+<p class="field__label">묶인 주문 ${g.rows.length}건이 함께 검수되고,
+ 각 주문의 검수내역은 대표에 그대로 집계됩니다.</p>
+<div class="scan-orders">${orderProgressHtml(g.rows, pallets)}</div>` : ''}
 <div class="scan-stats">
   <div><span>총 파렛트</span><strong>${num(pallets.length)}</strong></div>
   <div><span>검수 파렛트</span><strong>${num(done)}</strong></div>
@@ -114,10 +137,12 @@ ${g.rows.length > 1 ? `
 </div>`;
 
         // 라벨 바코드가 모두 같은 주문번호라 순번으로 보여준다 (라벨 우측 하단 연번과 같은 순서)
+        const merged = g.rows.length > 1;
         root.querySelector('#pallets').innerHTML = pallets.length ? pallets.map((p, i) => `
 <div class="pallet ${p.scanned_at ? 'is-scanned' : ''}">
   <span class="pallet__mark">${icon(p.scanned_at ? 'check' : 'square')}</span>
   ${seqTag(p.seq, '차')}
+  ${merged ? `<span class="pallet__order">${esc(p.order_no ?? '')}</span>` : ''}
   <span class="pallet__code" title="${esc(p.barcode)}">
     파렛트 ${i + 1} <small>/ ${pallets.length}</small>
   </span>

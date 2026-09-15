@@ -685,6 +685,25 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 .steps--flow { flex-wrap: wrap; gap: 3px; }
 .steps__arrow { color: var(--gray-300); font-size: 11px; }
 
+/* 묶음 공통 단계(상차작업)는 하나만 크게 보여준다 (주문처리현황) */
+.step--big { font-size: 13px; padding: 10px 14px; font-weight: 700; border-radius: 8px; }
+
+/* 묶음 주문 흐름 - 주문별 흐름 여러 줄 + 오른쪽에 묶음 공통 단계 하나 */
+.steps-group { display: flex; align-items: center; gap: 8px; }
+.steps-group__list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.steps-group__row { display: flex; align-items: center; gap: 6px; }
+.steps-group__no { font-size: 11px; color: var(--gray-500); white-space: nowrap; }
+
+/* 대표주문번호 아래에 붙는 묶인 주문번호 (5개 화면 공용) */
+.no-sub {
+    display: block;
+    margin-top: 2px;
+    color: var(--gray-500);
+    font-size: 11.5px;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
 /* 이슈등록 상태 컬럼의 절차 표시 - 문구가 잘 보이게 조금 키운다 */
 .issue-flow .step { font-size: 12px; }
 
@@ -1142,6 +1161,9 @@ table.grid tbody tr.is-important td { font-weight: 600; }
 .scan-stats span { display: block; font-size: 11px; opacity: .8; }
 .scan-stats strong { font-size: 20px; }
 
+/* 상차검수 - 묶인 주문별 검수 진행 (대표에 함께 집계된다) */
+.scan-orders { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+
 #scan-video, #loc-video {
     width: 100%;
     max-height: 320px;
@@ -1169,6 +1191,8 @@ table.grid tbody tr.is-important td { font-weight: 600; }
 
 .pallet.is-scanned { background: var(--green-soft); border-color: #9fd9c4; }
 .pallet__code { flex: 1; font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 묶음 검수에서 이 파렛트가 어느 주문의 것인지 */
+.pallet__order { font-size: 12px; color: var(--gray-500); white-space: nowrap; }
 .pallet__mark { display: flex; align-items: center; color: var(--gray-300); }
 .pallet__mark .icon { width: 19px; height: 19px; }
 .pallet.is-scanned .pallet__mark { color: var(--green); }

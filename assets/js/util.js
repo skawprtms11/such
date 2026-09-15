@@ -120,6 +120,23 @@ export function addBadge(count, label = '묶인 주문') {
 }
 
 /**
+ * 묶인 주문번호를 대표 아래 작은 글씨로 나열한다 (주문정보등록 · 주문처리현황 ·
+ * 출고주문처리 상차대기 · 당일상차리스트 · 상차검수가 함께 쓴다).
+ * 묶이지 않은 주문에는 아무것도 붙지 않는다.
+ * @param {string[]} nos 묶인 주문번호 (표시 순서대로)
+ * @param {string} [repNo] 위에 이미 보여준 대표주문번호
+ */
+export function noSubHtml(nos = [], repNo = '') {
+    const list = nos.filter(Boolean);
+    if (!list.length) return '';
+    // 멤버가 하나뿐이고 그 번호가 이미 위에 있으면 같은 값을 두 번 보여줄 이유가 없다
+    if (list.length === 1 && list[0] === repNo) return '';
+    if (list.length === 1 && !repNo) return '';
+    return `<span class="no-sub" title="묶인 주문 ${list.length}건">${
+        list.map((n) => esc(n)).join(' · ')}</span>`;
+}
+
+/**
  * 차수 배지 - 2차수 이상은 주황색으로 구분한다.
  * @param {number} seq 차수
  * @param {string} [suffix] 표기 ('차수' 또는 좁은 화면용 '차')

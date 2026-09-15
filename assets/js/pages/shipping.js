@@ -19,7 +19,7 @@ import { icon } from '../icons.js';
 import {
     esc, num, today, fmtDateTime, toast, confirmDialog,
     promptDialog, openModal, downloadCsv, isMobile,
-    monthDay, addBadge, seqTag, MOBILE_QUERY,
+    monthDay, addBadge, noSubHtml, seqTag, MOBILE_QUERY,
 } from '../util.js';
 
 /** 탭 정의 */
@@ -1464,9 +1464,10 @@ function printStockSheet(rows) {
  * 대표주문번호가 있으면 그 번호를 굵게 보여주고, 묶인 건수를 `+N건` 배지로 붙인다.
  * @param {string} label 배지 툴팁 문구 (상차 목록은 차수까지 묶이므로 다르게 적는다)
  */
-function groupNoCell(o, count = 1, label = '묶인 주문') {
+function groupNoCell(o, count = 1, label = '묶인 주문', nos = []) {
     const no = o.rep_no || o.order_no;
-    return `${o.rep_no ? `<b>${esc(no)}</b>` : esc(no)}${addBadge(count, label)}`;
+    return `${o.rep_no ? `<b>${esc(no)}</b>` : esc(no)}${addBadge(count, label)}${
+        noSubHtml(nos, o.rep_no ?? '')}`;
 }
 
 /**
@@ -1491,7 +1492,8 @@ function loadWaitTable(rows) {
 ${rows.map((o) => `
 <tr>
   <td>${o.ship_req_date}</td>
-  <td>${groupNoCell(o, o.group.rows.length, '함께 실리는 주문')}</td>
+  <td>${groupNoCell(o, o.group.rows.length, '함께 실리는 주문',
+        o.group.rows.map((r) => r.order_no))}</td>
   <td class="center"><span class="seq">${o.group.rows.length}건</span></td>
   <td>${esc(o.customer)}</td>
   <td class="num">${num(o.group.pallets.length)}</td>
