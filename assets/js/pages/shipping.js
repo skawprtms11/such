@@ -203,7 +203,7 @@ function orderSummary(o, opt, { fold = false, group = null } = {}) {
     <div class="work-head__meta">
       <span>출고요청일 <b>${o.ship_req_date}</b></span>
       <span>출고형태 <b>${esc(o.vehicle_type)}</b></span>
-      <span>파렛트 <b>${num(o.pallet_count)}</b></span>
+      <span>파렛트 <b>${num(list.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0))}</b></span>
     </div>
     ${steps.length ? `
     <div class="steps steps--flow">${stepsFlowHtml(steps, fmtDateTime)}</div>` : ''}
@@ -289,7 +289,7 @@ ${orderSummary(o, opt, { fold: true, group: list })}
         const body = workBox.querySelector('#work-body');
 
         if (mode === 'ship') drawShip(body, o, user, editable, () => draw(orderId), list);
-        else drawInspect(body, o, user, editable, () => draw(orderId), list);
+        else await drawInspect(body, o, user, editable, () => draw(orderId), list);
     }
 
     const cleanup = mountScanBox(pane.querySelector('#scan-box'), async (no) => {
@@ -372,14 +372,14 @@ ${editable ? `
  * 🔑 검수는 **묶음 전체**에 한 번에 적용되고, 총 파렛트수·박스수도 묶음 총량을 1회 입력한다.
  * 입력한 총량은 묶음 대표에 저장되고 나머지 멤버는 0파렛트(혼적)로 들어간다.
  */
-function drawInspect(body, o, user, editable, reload, list = [o]) {
+async function drawInspect(body, o, user, editable, reload, list = [o]) {
     // 추가작업은 등록 시 '있음' 선택으로 판단한다 (옛 데이터는 extra_works 배열)
     const hasExtra = list.some((r) => r.extra_yn === YN.YES || (r.extra_works ?? []).length > 0);
     const hasPacking = list.some((r) => r.packing_yn === YN.YES);
     // 0파렛트(혼적)는 추가건일 때만 허용한다.
     // 입력한 총량은 묶음 대표에 실리므로 대표 기준으로 본다 (db.setInspectDone 과 같은 조건)
     const head = list[0] ?? o;
-    const allowZero = head.seq > 1;
+    const allowZero = db.minPalletOf(head, list) === 0;
     const done = Boolean(o.inspect_done_at);
     // 패킹리스트 내용은 주문정보등록 화면과 같은 값(packing_note)을 쓴다.
     // 편집 조건도 그 화면과 맞춘다 - 상차완료 전까지는 현장에서도 고칠 수 있다
@@ -387,6 +387,17 @@ function drawInspect(body, o, user, editable, reload, list = [o]) {
     const canWritePacking = editable && !loadDone(o);
     // 검수 실측값(파렛트수·박스수)은 검수완료 뒤에도 상차완료 전까지 고칠 수 있다
     const canFix = editable && done && !loadDone(o);
+    // 🔑 총량은 **묶음 합계**로 읽는다. 등록 시 묶은 묶음은 대표에만, 검수 후 합친 묶음은
+    // 주문마다 실려 있어 합계라야 두 경우 모두 맞다
+    const pallets = list.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0);
+    const boxes = list.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
+    // 주문마다 자기 총량을 가진 묶음(검수 후 합침)은 총량을 주문별로 고친다 (판정은 db)
+    const ownCount = db.hasSplitPallets(list);
+    // 🔑 고칠 대상은 화면이 고르지 않고 db 가 알려준다. 그래야 보이는 값과 고쳐지는 값이 같다
+    const target = await db.countTarget(o.id);
+    const fixBtn = (kind, id, label) => (canFix
+        ? ` <button class="btn btn--sm" data-fix="${kind}" data-fix-id="${esc(id)}"
+            type="button">${label}</button>` : '');
 
     const notShipped = list.filter((r) => !r.ship_done_at);
     if (notShipped.length && !done) {
@@ -446,10 +457,15 @@ ${done ? '' : `
 </p>`}
 
 <table class="grid" style="margin-top:14px"><tbody>
-  <tr><th>총 파렛트수</th><td>${o.pallet_count ? `${num(o.pallet_count)} PLT` : '-'}${
-    canFix ? ' <button class="btn btn--sm" id="btn-fix-pallet" type="button">수정</button>' : ''}</td></tr>
-  <tr><th>총 박스수</th><td>${o.box_count ? `${num(o.box_count)} 박스` : '-'}${
-    canFix ? ' <button class="btn btn--sm" id="btn-fix-box" type="button">수정</button>' : ''}</td></tr>
+  <tr><th>총 파렛트수</th><td>${pallets ? `${num(pallets)} PLT` : '-'}${
+    ownCount ? '' : fixBtn('pallet', target.id, '수정')}</td></tr>
+  <tr><th>총 박스수</th><td>${boxes ? `${num(boxes)} 박스` : '-'}${
+    ownCount ? '' : fixBtn('box', target.id, '수정')}</td></tr>
+  ${ownCount ? list.map((r) => `
+  <tr><th>└ ${esc(r.order_no)}</th><td>
+    ${num(r.pallet_count ?? 0)} PLT · ${num(r.box_count ?? 0)} 박스
+    ${fixBtn('pallet', r.id, '파렛트수')}${fixBtn('box', r.id, '박스수')}
+  </td></tr>`).join('') : ''}
   <tr><th>작업자</th><td>${workerCell(o.inspect_worker)}</td></tr>
   <tr><th>검수완료</th><td>${o.inspect_done_at ? fmtDateTime(o.inspect_done_at) : '-'}</td></tr>
 </tbody></table>
@@ -461,48 +477,59 @@ ${editable ? `
         : '<button class="btn btn--success btn--lg" id="btn-done" type="button">검수완료</button>'}
 </div>` : '<p class="form-note">처리 권한이 없어 조회만 가능합니다.</p>'}`;
 
-    // 검수 실측값 수정 - 값을 물어보고 단계별 허용 규칙은 데이터 계층에 맡긴다
-    body.querySelector('#btn-fix-box')?.addEventListener('click', async () => {
-        const v = await promptDialog('총 박스수를 입력하세요.', o.box_count || '');
-        if (v === null) return;
-        try {
-            await db.setBoxCount(o.id, v, user);
-            toast('박스수를 고쳤습니다.', 'success');
-            reload();
-        } catch (err) {
-            toast(err.message, 'error');
-        }
-    });
-    body.querySelector('#btn-fix-pallet')?.addEventListener('click', async () => {
-        const v = await promptDialog(
-            '총 파렛트수를 입력하세요.\n\n기존 로케이션은 그대로 두고 끝에서만 늘리거나 줄입니다.',
-            o.pallet_count ?? '',
-        );
-        if (v === null) return;
-        try {
-            await db.setPalletCount(o.id, v, user);
-        } catch (err) {
-            if (!err.needConfirm) {
-                toast(err.message, 'error');
-                return;
-            }
-            // 로케이션이 든 파렛트가 빠진다 - 어떤 것인지 보여주고 한 번 더 묻는다
-            const ok = await confirmDialog(`${err.message}\n\n${err.removing.join('\n')}\n\n`
-                + '이 파렛트들을 지우고 파렛트수를 줄이시겠습니까?');
-            if (!ok) return;
+    // 검수 실측값 수정 - 값을 물어보고 단계별 허용 규칙은 데이터 계층에 맡긴다.
+    // 🔑 고칠 대상은 버튼에 적힌 주문이고, 버튼 옆에 보이는 값이 곧 그 주문의 값이다
+    // (묶음 총량이 대표에 실린 묶음이면 `db.countTarget` 이 고른 대표가 대상이다)
+    const fixTarget = (el) => list.find((r) => r.id === el.dataset.fixId) ?? head;
+    body.querySelectorAll('[data-fix="box"]').forEach((el) => {
+        el.addEventListener('click', async () => {
+            const t = fixTarget(el);
+            const v = await promptDialog(`총 박스수를 입력하세요. (${t.order_no})`,
+                t.box_count || '');
+            if (v === null) return;
             try {
-                await db.setPalletCount(o.id, v, user, { confirmRemove: true });
-            } catch (err2) {
-                toast(err2.message, 'error');
-                return;
+                await db.setBoxCount(t.id, v, user);
+                toast('박스수를 고쳤습니다.', 'success');
+                reload();
+            } catch (err) {
+                toast(err.message, 'error');
             }
-        }
-        // 늘어난 파렛트는 로케이션이 비어 있다 - 출고적치에서 마저 넣도록 안내한다
-        const added = Number(v) - (o.pallet_count ?? 0);
-        toast(added > 0
-            ? `파렛트수를 고쳤습니다. 새 파렛트 ${added}개는 출고적치에서 로케이션을 넣으세요.`
-            : '파렛트수를 고쳤습니다. 상차 검수 바코드 수가 함께 바뀝니다.', 'success');
-        reload();
+        });
+    });
+    body.querySelectorAll('[data-fix="pallet"]').forEach((el) => {
+        el.addEventListener('click', async () => {
+            const t = fixTarget(el);
+            const v = await promptDialog(
+                `총 파렛트수를 입력하세요. (${t.order_no})`
+                + '\n\n기존 로케이션은 그대로 두고 끝에서만 늘리거나 줄입니다.',
+                t.pallet_count ?? '',
+            );
+            if (v === null) return;
+            try {
+                await db.setPalletCount(t.id, v, user);
+            } catch (err) {
+                if (!err.needConfirm) {
+                    toast(err.message, 'error');
+                    return;
+                }
+                // 로케이션이 든 파렛트가 빠진다 - 어떤 것인지 보여주고 한 번 더 묻는다
+                const ok = await confirmDialog(`${err.message}\n\n${err.removing.join('\n')}\n\n`
+                    + '이 파렛트들을 지우고 파렛트수를 줄이시겠습니까?');
+                if (!ok) return;
+                try {
+                    await db.setPalletCount(t.id, v, user, { confirmRemove: true });
+                } catch (err2) {
+                    toast(err2.message, 'error');
+                    return;
+                }
+            }
+            // 늘어난 파렛트는 로케이션이 비어 있다 - 출고적치에서 마저 넣도록 안내한다
+            const added = Number(v) - (t.pallet_count ?? 0);
+            toast(added > 0
+                ? `파렛트수를 고쳤습니다. 새 파렛트 ${added}개는 출고적치에서 로케이션을 넣으세요.`
+                : '파렛트수를 고쳤습니다. 상차 검수 바코드 수가 함께 바뀝니다.', 'success');
+            reload();
+        });
     });
 
     // 패킹리스트 내용 작성/수정 - 입력칸을 그 자리에 펼친다
@@ -739,7 +766,13 @@ function stowTag(done, total) {
  */
 async function withStow(rows) {
     return Promise.all(rows.map(async (o) => {
-        const [group, mine] = await Promise.all([db.getLoadGroup(o.id), db.listPallets(o.id)]);
+        // 🔑 적치 진행은 **그 행이 대표하는 주문 전부**로 센다. 검수 후 합친 묶음은
+        // 멤버마다 자기 파렛트를 가지므로 대표 것만 세면 실제보다 적게 보인다
+        const [group, lists] = await Promise.all([
+            db.getLoadGroup(o.id),
+            Promise.all((o.group_rows ?? [o]).map((r) => db.listPallets(r.id))),
+        ]);
+        const mine = lists.flat();
         return {
             ...o,
             group,
@@ -1471,6 +1504,15 @@ function groupNoCell(o, count = 1, label = '묶인 주문', nos = []) {
 }
 
 /**
+ * 목록 1행(묶음)의 총량 합계 🔑
+ * 등록 시 묶은 묶음은 총량이 대표에만, 검수 후 합친 묶음은 주문마다 실려 있다.
+ * 합계로 읽으면 두 경우 모두 맞다.
+ */
+function groupSum(row, key) {
+    return (row.group_rows ?? [row]).reduce((a, r) => a + Number(r[key] ?? 0), 0);
+}
+
+/**
  * 상차대기 상태 태그.
  * 🔑 상차완료는 **단계 시각(loaded_at)과 상차 상태(load_status)가 모두 완료**일 때만이다.
  * 한쪽만 완료인 건은 아직 실리지 않은 것이므로 `상차대기` 로 본다.
@@ -1479,6 +1521,18 @@ function loadStatusTag(o) {
     return loadDone(o)
         ? '<span class="tag tag--green">상차완료</span>'
         : '<span class="tag tag--gray">상차대기</span>';
+}
+
+/**
+ * 막힌 묶음 배지 🔑
+ * 상차 이외의 단계가 남은 멤버가 있어 당일상차리스트에 실을 수 없는 묶음이다.
+ * 판정과 사유는 당일상차리스트와 **같은 계산**을 쓴다 (`db.getLoadGroup` 의 `blocked`).
+ * 이 표시가 없으면 같은 묶음이 상차대기에서는 실을 준비가 된 것처럼 보인다.
+ */
+function blockBadge(group) {
+    if (!group?.blocked) return '';
+    return `<span class="tag tag--gray" title="${esc(group.block_reason)}">`
+        + `${icon('clock')}상차준비 미완 · 당일상차 제외</span>`;
 }
 
 /** 웹 - 상차대기 목록 표 */
@@ -1500,7 +1554,7 @@ ${rows.map((o) => `
   <td class="center">${loadDone(o)
         ? '<span class="muted">-</span>'
         : `<button class="btn btn--sm" data-loc="${o.id}" type="button">로케이션 보기</button>`}</td>
-  <td class="center">${loadStatusTag(o)}</td>
+  <td class="center">${loadStatusTag(o)}${blockBadge(o.group)}</td>
 </tr>`).join('')}
 </tbody>`;
 }
@@ -1567,6 +1621,8 @@ async function renderLoadWaitTab(pane, user) {
         if (!g) return;
         const o = g.head;
         const pallets = g.pallets;
+        // 상차는 묶음 단위라 박스수·검수 진행도 묶음 합계로 본다
+        const boxes = g.rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
         picked.innerHTML = `
 ${orderSummary(o, {}, { group: g.rows })}
 ${g.rows.length > 1 ? `
@@ -1583,9 +1639,9 @@ ${g.rows.length > 1 ? `
       <tr><th>거래처명</th><td>${esc(o.customer)}</td></tr>
       <tr><th>출고요청일</th><td><b>${o.ship_req_date}</b></td></tr>
       <tr><th>출고형태</th><td>${esc(o.vehicle_type)}</td></tr>
-      <tr><th>박스수</th><td>${o.box_count
-        ? `${num(o.box_count)} 박스` : '<span class="muted">-</span>'}</td></tr>
-      <tr><th>검수</th><td>${o.inspected}/${o.pallet_count}</td></tr>
+      <tr><th>박스수</th><td>${boxes
+        ? `${num(boxes)} 박스` : '<span class="muted">-</span>'}</td></tr>
+      <tr><th>검수</th><td>${pallets.filter((p) => p.scanned_at).length}/${pallets.length}</td></tr>
     </tbody></table>
     <div class="pallet-list" style="margin-top:12px">
       ${pallets.map((p) => `
@@ -1628,7 +1684,8 @@ ${g.rows.length > 1 ? `
 <tbody>
 ${withLoc.map((o) => `
 <tr class="is-clickable" data-open="${o.id}">
-  <td><span class="link">${groupNoCell(o, o.group.rows.length, '함께 실리는 주문')}</span></td>
+  <td><span class="link">${groupNoCell(o, o.group.rows.length, '함께 실리는 주문')}</span>
+      ${blockBadge(o.group)}</td>
   <td class="wrap">${esc(o.customer)}</td>
   <td class="num">${num(o.group.pallets.length)}</td>
   <td>${o.locs.length
@@ -1890,8 +1947,10 @@ ${rows.map((o) => `
   <td class="center">${esc(o.vehicle_type)}</td>
   <td class="wrap">${esc(o.work_note) || '<span class="muted">-</span>'}</td>
   ${key === 'inspect' ? `
-  <td class="num">${o.pallet_count ? num(o.pallet_count) : '<span class="muted">-</span>'}</td>
-  <td class="num">${o.box_count ? num(o.box_count) : '<span class="muted">-</span>'}</td>` : ''}
+  <td class="num">${groupSum(o, 'pallet_count')
+        ? num(groupSum(o, 'pallet_count')) : '<span class="muted">-</span>'}</td>
+  <td class="num">${groupSum(o, 'box_count')
+        ? num(groupSum(o, 'box_count')) : '<span class="muted">-</span>'}</td>` : ''}
   <td class="center">${workerCell(workerOf(o))}</td>
   <td class="center">${key === 'ship'
         ? (o.ship_started_at

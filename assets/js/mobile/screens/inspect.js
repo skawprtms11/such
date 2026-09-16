@@ -137,6 +137,10 @@ async function renderDetail(root, user, orderId) {
     // 주문이 있는지 확인한 뒤에 기록한다
     if (editable) await db.recordWorker(orderId, 'inspect', user);
     let opt = await stepOpt(g.head);
+    // 🔑 총량을 고칠 대상은 화면이 고르지 않고 db 가 알려준다 (`countTarget`).
+    // 등록 시 묶은 묶음은 대표, 검수 후 합친 묶음은 스캔해서 연 그 주문이 대상이다.
+    // 시트의 기본값도 이 값을 쓰므로 **보이는 값과 고쳐지는 값이 언제나 같다**
+    let target = await db.countTarget(orderId);
     if (form.id !== orderId) {
         form.id = orderId;
         form.pallet = g.head.pallet_count || (g.head.seq > 1 ? '0' : '');
@@ -159,6 +163,7 @@ async function renderDetail(root, user, orderId) {
         if (!next) return;
         g = next;
         opt = await stepOpt(g.head);
+        target = await db.countTarget(orderId);
         draw();
     }
 
@@ -180,12 +185,17 @@ async function renderDetail(root, user, orderId) {
         const hasExtra = rows.some(db.hasExtraWork);
         const hasPacking = rows.some((r) => r.packing_yn === YN.YES);
         // 0파렛트(혼적)는 추가건일 때만 허용한다. 총량은 대표에 실리므로 대표 기준으로 본다
-        const allowZero = db.minPalletOf(o) === 0;
+        const allowZero = db.minPalletOf(o, rows) === 0;
         const written = Boolean((o.packing_note ?? '').trim());
         // 패킹리스트·실측값은 상차완료 전까지 현장에서도 고칠 수 있다 (웹과 같은 조건)
         const canWritePacking = editable && !loadDone(o);
         const canFix = editable && done && !loadDone(o);
         const notShipped = rows.filter((r) => !r.ship_done_at);
+        // 🔑 총량은 **묶음 합계**로 읽는다 (등록 시 묶음은 대표에만, 검수 후 합친 묶음은
+        // 주문마다 실려 있다). 고치는 대상은 `target` 이다
+        const pallets = rows.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0);
+        const boxes = rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
+        const ownCount = db.hasSplitPallets(rows);
 
         // 위험 조작(완료 취소)은 독에 두지 않고 `···` 메뉴에만 둔다
         headEl.innerHTML = orderHead(o, {
@@ -245,7 +255,7 @@ ${done ? '' : `
 <div class="m-numgrid">
   <label class="m-numfield">
     <span class="m-numfield__label">총 파렛트수 *</span>
-    <input type="number" id="in-pallet" min="${db.minPalletOf(o)}" step="1"
+    <input type="number" id="in-pallet" min="${db.minPalletOf(o, rows)}" step="1"
            inputmode="numeric" placeholder="0" value="${esc(form.pallet)}">
   </label>
   <label class="m-numfield">
@@ -262,13 +272,21 @@ ${done ? '' : `
 
 <div class="m-kv">
   <div class="m-kv__row"><span class="m-kv__k">총 파렛트수</span>
-    <span class="m-kv__v">${o.pallet_count ? `${num(o.pallet_count)} PLT` : '-'}
-      ${canFix ? '<button class="m-btn m-btn--sm" type="button" id="btn-fix-pallet">수정</button>'
+    <span class="m-kv__v">${pallets ? `${num(pallets)} PLT` : '-'}
+      ${canFix && !ownCount
+        ? '<button class="m-btn m-btn--sm" type="button" id="btn-fix-pallet">수정</button>'
         : ''}</span></div>
   <div class="m-kv__row"><span class="m-kv__k">총 박스수</span>
-    <span class="m-kv__v">${o.box_count ? `${num(o.box_count)} 박스` : '-'}
-      ${canFix ? '<button class="m-btn m-btn--sm" type="button" id="btn-fix-box">수정</button>'
+    <span class="m-kv__v">${boxes ? `${num(boxes)} 박스` : '-'}
+      ${canFix && !ownCount
+        ? '<button class="m-btn m-btn--sm" type="button" id="btn-fix-box">수정</button>'
         : ''}</span></div>
+  ${ownCount ? `
+  <div class="m-kv__row"><span class="m-kv__k">${esc(target.order_no)}</span>
+    <span class="m-kv__v">${num(target.pallet_count)} PLT · ${num(target.box_count)} 박스
+      ${canFix ? '<button class="m-btn m-btn--sm" type="button" id="btn-fix-pallet">파렛트수</button>'
+        + '<button class="m-btn m-btn--sm" type="button" id="btn-fix-box">박스수</button>'
+        : ''}</span></div>` : ''}
   <div class="m-kv__row"><span class="m-kv__k">작업자</span>
     <span class="m-kv__v">${o.inspect_worker ? esc(o.inspect_worker) : '-'}</span></div>
   <div class="m-kv__row"><span class="m-kv__k">검수완료</span>
@@ -290,8 +308,8 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
         });
         bodyEl.querySelector('#btn-packing')?.addEventListener('click',
             () => openPacking(o, written));
-        bodyEl.querySelector('#btn-fix-pallet')?.addEventListener('click', () => fixPallet(o));
-        bodyEl.querySelector('#btn-fix-box')?.addEventListener('click', () => fixBox(o));
+        bodyEl.querySelector('#btn-fix-pallet')?.addEventListener('click', fixPallet);
+        bodyEl.querySelector('#btn-fix-box')?.addEventListener('click', fixBox);
 
         syncDock();
     }
@@ -299,7 +317,7 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
     /** 필수 항목이 다 찼는지 - 최종 검증은 db.setInspectDone 이 다시 한다 */
     function ready() {
         const rows = g.rows;
-        const minPallet = db.minPalletOf(g.head);
+        const minPallet = db.minPalletOf(g.head, rows);
         const pallet = Number(form.pallet);
         const box = Number(form.box);
         if (form.pallet === '' || !Number.isInteger(pallet) || pallet < minPallet) return false;
@@ -336,7 +354,7 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
             boxCount: Number(form.box),
         };
         // 추가건을 0파렛트로 넘기면 혼적 여부를 한 번 더 묻는다
-        if (db.minPalletOf(g.head) === 0 && checks.palletCount === 0) {
+        if (db.minPalletOf(g.head, rows) === 0 && checks.palletCount === 0) {
             const ok = await confirmDialog('0파렛트로 처리됩니다.\n\n'
                 + '기존 차수 파렛트에 함께 적재(혼적)하여 파렛트수가 늘지 않는 것이 맞습니까?');
             if (!ok) return;
@@ -383,31 +401,31 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
         });
     }
 
-    /** 총 박스수 수정 - 허용 조건은 데이터 계층이 판단한다 */
-    function fixBox(o) {
+    /** 총 박스수 수정 - 대상·기본값은 `db.countTarget` 이 정한다 */
+    function fixBox() {
         openSheet = numberSheet({
-            title: '총 박스수 수정',
+            title: `총 박스수 수정 (${target.order_no})`,
             note: '검수하면서 센 실제 박스수를 입력하세요.',
-            value: o.box_count ?? '',
+            value: target.box_count || '',
             min: 1,
-            onSave: (v) => run(() => db.setBoxCount(orderId, v, user), '박스수를 고쳤습니다.'),
+            onSave: (v) => run(() => db.setBoxCount(target.id, v, user), '박스수를 고쳤습니다.'),
         });
     }
 
     /** 총 파렛트수 수정 - 로케이션이 든 파렛트가 빠지면 한 번 더 확인받는다 */
-    function fixPallet(o) {
+    function fixPallet() {
         openSheet = numberSheet({
-            title: '총 파렛트수 수정',
+            title: `총 파렛트수 수정 (${target.order_no})`,
             note: '기존 로케이션은 그대로 두고 끝에서만 늘리거나 줄입니다.',
-            value: o.pallet_count ?? '',
-            min: db.minPalletOf(o),
-            onSave: (v) => savePallet(o, v),
+            value: target.pallet_count,
+            min: db.minPalletOf(target, g.rows),
+            onSave: (v) => savePallet(v),
         });
     }
 
-    async function savePallet(o, v) {
+    async function savePallet(v) {
         try {
-            await db.setPalletCount(orderId, v, user);
+            await db.setPalletCount(target.id, v, user);
         } catch (err) {
             if (!err.needConfirm) {
                 toast(err.message, 'error');
@@ -418,14 +436,14 @@ ${editable ? '' : '<p class="m-note">처리 권한이 없어 조회만 가능합
                 + '이 파렛트들을 지우고 파렛트수를 줄이시겠습니까?');
             if (!ok) return;
             try {
-                await db.setPalletCount(orderId, v, user, { confirmRemove: true });
+                await db.setPalletCount(target.id, v, user, { confirmRemove: true });
             } catch (err2) {
                 toast(err2.message, 'error');
                 return;
             }
         }
         // 늘어난 파렛트는 로케이션이 비어 있다 - 출고적치에서 마저 넣도록 안내한다
-        const added = Number(v) - (o.pallet_count ?? 0);
+        const added = Number(v) - target.pallet_count;
         toast(added > 0
             ? `파렛트수를 고쳤습니다. 새 파렛트 ${added}개는 출고적치에서 로케이션을 넣으세요.`
             : '파렛트수를 고쳤습니다. 상차 검수 바코드 수가 함께 바뀝니다.', 'success');

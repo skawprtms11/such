@@ -512,6 +512,18 @@ html, body {
     font-size: 12px;
 }
 
+/* 오늘 실을 수 없는 묶음 - 사유를 카드 안에 적는다 */
+.m-card__block {
+    display: block;
+    margin-top: 4px;
+    color: var(--m-gray-500);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.m-card[data-blocked="1"] { background: var(--m-gray-50, #fafafa); }
+.m-card[data-blocked="1"] .m-card__title { color: var(--m-gray-500); }
+
 .m-card__actions {
     display: flex;
     gap: 8px;

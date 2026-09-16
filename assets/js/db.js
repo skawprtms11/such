@@ -9,7 +9,7 @@ import {
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
-import { readyToLoad, loadDone } from './steps.js';
+import { readyToLoad, loadDone, visibleSteps } from './steps.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
@@ -226,6 +226,65 @@ function isBatchHead(db, o) {
 /** 주문번호 나열 (오류 메시지·안내 문구에 쓴다) */
 function nosOf(rows) {
     return rows.map((r) => r.order_no).join(', ');
+}
+
+/** 그 주문이 **자기 총량**(파렛트수·박스수)을 갖고 있는지 */
+function hasOwnCount(o) {
+    return Number(o?.pallet_count ?? 0) > 0 || Number(o?.box_count ?? 0) > 0;
+}
+
+/**
+ * 묶음 종류 판정 🔑 — **주문마다 자기 파렛트·자기 라벨을 가진 묶음인가**
+ *
+ * 묶음에는 두 종류가 있고 총량이 실린 곳이 다르다. 둘 다 정상이다.
+ *   등록 시 대표주문번호로 묶음 - 검수 시 총량을 **대표에 1회** 입력 → 멤버는 0파렛트·0박스
+ *   검수 후 합침(`mergeOrders`) - **멤버마다 자기 총량**을 그대로 들고 온다
+ * 판정 기준은 **자기 총량을 가진 멤버가 2건 이상인가** 하나뿐이다.
+ * 파렛트수만 보면 혼적(0파렛트·박스만 있는) 멤버가 빠져 판정이 뒤집힌다.
+ *
+ * ⚠️ **모집단은 부르는 쪽이 정한다.** 단계마다 묶음 범위가 다르기 때문이다.
+ *   상차라벨 출력 · 총량 수정 → **대표주문번호 묶음** (`getBatchGroup` · `repGroups`)
+ *   상차검수 안내          → **상차 묶음** (`getLoadGroup` · `loadGroups`)
+ * @param {object[]} rows 묶음 멤버 (취소건은 미리 걸러서 넘긴다)
+ */
+export function hasSplitPallets(rows) {
+    return (rows ?? []).filter(hasOwnCount).length > 1;
+}
+
+/**
+ * `readyToLoad` 에 넘길 조건값을 만드는 함수를 돌려준다 🔑
+ * 당일상차리스트(`listLoading`) · 상차완료(`completeLoading`) · 합치기 조건(④-2)이
+ * **같은 기준**으로 단계 완료를 판단하도록 한곳에 모았다.
+ * @returns {(o:object) => import('./steps.js').StepOpt}
+ */
+function stepOptOf(db) {
+    const tasks = extraTaskNoSet(db);
+    const adjust = {};
+    db.restores.forEach((r) => {
+        const m = (adjust[r.order_id] ??= { has: true, done: true });
+        if (!r.checked_at) m.done = false;
+    });
+    return (o) => ({ task: tasks.has(o.order_no), adjust: adjust[o.id] });
+}
+
+/** 상차작업을 뺀 **미완료 단계 이름** 목록 (거부 사유에 적는다) */
+function stepsLeft(o, opt) {
+    return visibleSteps(o, opt)
+        .filter((s) => s.key !== 'load' && !s.done)
+        .map((s) => s.label);
+}
+
+/**
+ * 상차 묶음에서 **상차 이외의 단계가 끝나지 않은 멤버**의 사유 🔑
+ * 당일상차리스트의 막힘 표시(`listLoading` · `groupOf`)와 상차완료 거부(`completeLoading`)가
+ * 같은 계산을 쓰도록 한곳에 모았다. 화면은 이 문구를 그대로 보여준다.
+ * @returns {string} `주문번호 - 미완료단계·미완료단계` 형식. 전원 준비됐으면 빈 문자열
+ */
+function notReadyReason(rows, optOf) {
+    return rows
+        .filter((r) => !readyToLoad(r, optOf(r)))
+        .map((r) => `${r.order_no} - ${stepsLeft(r, optOf(r)).join('·')}`)
+        .join(', ');
 }
 
 /**
@@ -481,13 +540,20 @@ function assertRepOwner(db, repNo, owner, excludeId) {
 /**
  * 등록 폼에서 제안할 대표주문번호 목록.
  * **종결된 주문(완료처리·취소)은 제외한다.**
+ * 🔑 **상차검수가 시작된 묶음도 뺀다.** 라벨을 읽기 시작한 뒤에 멤버가 늘면 묶음 진행률과
+ * 실제 스캔 수가 어긋나 그 묶음 전체가 당일상차리스트에서 사라진다 (`mergeBlockReason` 과
+ * 같은 기준이다). 취소된 멤버는 묶음에서 빠지므로 판정에 넣지 않는다.
  * @returns {Promise<Array<{rep_no:string, customer:string, count:number}>>}
  */
 export async function listOpenRepNos(f = {}) {
     const db = (await load());
+    const closedReps = new Set(db.orders
+        .filter((o) => o.rep_no && !o.canceled_at && mergeBlockReason(o))
+        .map((o) => o.rep_no));
     const map = new Map();
     db.orders
         .filter((o) => o.rep_no && !o.closed_at && !o.canceled_at)
+        .filter((o) => !closedReps.has(o.rep_no))
         .filter((o) => !f.createdBy || o.created_by === f.createdBy)
         .forEach((o) => {
             const cur = map.get(o.rep_no)
@@ -498,25 +564,118 @@ export async function listOpenRepNos(f = {}) {
     return [...map.values()].sort((a, b) => a.rep_no.localeCompare(b.rep_no));
 }
 
+/**
+ * 등록·수정 폼에서 **대표주문번호를 직접 지정할 때**의 검사 🔑
+ * 합치기(`mergeOrders`)와 **같은 기준**(`mergeBlockReason`)으로 기존 묶음 멤버를 본다.
+ * 상차검수가 시작된 묶음에 주문이 하나 끼면 묶음 진행률과 실제 스캔 수가 어긋나,
+ * 데이터는 멀쩡한데 그 묶음 전체가 당일상차리스트에서 빠지고 상차완료가 영구 거부된다.
+ * @param {string|null} repNo 붙이려는 대표주문번호
+ * @param {string} [excludeId] 수정 중인 주문 자신
+ */
+function assertRepJoinable(db, repNo, excludeId) {
+    if (!repNo) return;
+    const blocked = repBlockedMember(db, repNo, excludeId);
+    if (blocked) {
+        throw new Error(`대표주문번호 '${repNo}' 묶음에는 더 넣을 수 없습니다. `
+            + `(${blocked.order_no} - ${blocked.reason})`);
+    }
+}
+
+/**
+ * 묶음에 더 넣지 못하게 만드는 멤버 1건 (없으면 null).
+ * 취소된 멤버는 묶음에서 빠지므로 보지 않는다.
+ * @returns {{order_no:string, reason:string}|null}
+ */
+function repBlockedMember(db, repNo, excludeId) {
+    const hit = db.orders
+        .filter((x) => x.rep_no === repNo && x.id !== excludeId && !x.canceled_at)
+        .map((x) => ({ order_no: x.order_no, reason: mergeBlockReason(x) }))
+        .find((x) => x.reason);
+    return hit ?? null;
+}
+
+/**
+ * 일괄등록 검증용 - **더 넣을 수 없는** 대표주문번호와 사유.
+ * `listOpenRepNos` 가 후보에서 뺀 묶음과 같은 기준이다 (판정은 `mergeBlockReason` 하나).
+ * @returns {Promise<Array<{rep_no:string, order_no:string, reason:string}>>}
+ */
+export async function listBlockedRepNos(f = {}) {
+    const db = (await load());
+    const mine = db.orders.filter((o) => !f.createdBy || o.created_by === f.createdBy);
+    return [...new Set(mine.filter((o) => o.rep_no).map((o) => o.rep_no))]
+        .map((repNo) => ({ repNo, hit: repBlockedMember(db, repNo) }))
+        .filter((x) => x.hit)
+        .map((x) => ({ rep_no: x.repNo, ...x.hit }));
+}
+
 /* ------------------------------ 주문합치기 (대표주문번호) ------------------------------ */
 
 /**
  * 주문합치기 허용 조건 🔑 — 주문 1건만 보고 판단하는 부분 (③ ④).
  * ③ 취소·완료처리·상차완료된 주문은 더 이상 묶음을 바꾸지 않는다.
- * ④ 🔑 **검수작업 전에만 합친다.** 총 파렛트수·박스수는 검수완료 시 묶음 대표에만
- *    입력하므로, 검수 뒤에 멤버가 늘면 총량이 어긋난다. 게다가 파렛트 재생성
- *    (`rebuildPallets`)으로 이미 출력한 상차라벨이 폐기된다.
+ * ④ 🔑 **상차검수 전에만 합친다.** 실무에서는 검수작업이 끝난 뒤에 합치는 경우가
+ *    더 많다. 파렛트는 각 주문이 검수한 수량 그대로 두고(재입력 없음), 상차검수에서
+ *    주문별 라벨을 각각 스캔한다 (`scanPallet`). 다만 라벨을 이미 읽기 시작한 뒤에
+ *    멤버가 늘면 묶음 진행률과 실제 스캔 수가 어긋나므로 그때부터는 막는다.
  * @returns {string} 사유. 합칠 수 있으면 빈 문자열
  */
 function mergeBlockReason(o) {
     if (o.canceled_at) return '취소된 주문은 합칠 수 없습니다.';
     if (o.closed_at) return '완료처리된 주문은 합칠 수 없습니다.';
     if (loadDone(o)) return '상차완료된 주문은 합칠 수 없습니다.';
-    if (o.inspect_done_at) {
-        return '검수작업이 끝난 주문은 합칠 수 없습니다. '
-            + '총 파렛트수·박스수를 이미 묶음 대표에 입력했기 때문입니다.';
+    if (Number(o.inspected ?? 0) > 0 || o.load_status !== LOAD_STATUS.WAIT || o.loaded_at) {
+        return '상차검수가 시작된 주문은 합칠 수 없습니다. '
+            + '상차검수를 초기화한 뒤 합치세요.';
     }
     return '';
+}
+
+/**
+ * ④-2 에서 **유무가 같아야 하는 단계** 🔑
+ * 진행 단계가 다른 주문이 한 묶음이 되면 `completeLoading` 이 묶음 전체에 `loaded_at` 을
+ * 찍어 검수·적치를 건너뛴 주문까지 상차완료·마감된다. 단계 이름은 `config.js` 가 출처다.
+ */
+const MERGE_STEP_FIELDS = ['inspect_done_at', 'stow_done_at', 'extra_done_at'];
+
+/**
+ * 넘긴 주문들이 속한 **상차 묶음 전체**를 중복 없이 펼친다 🔑
+ * 합치면 한 상차 묶음이 되는 범위는 `groupOf`(대표주문번호 ∪ 차수 기준번호)다.
+ * 대표주문번호 묶음(`batchGroupOf`)만 비교하면 상대에게 딸린 **추가주문 차수**가
+ * 비교되지 않은 채 같은 상차 묶음으로 들어온다.
+ */
+function loadRowsOf(db, rows) {
+    const map = new Map();
+    rows.forEach((r) => (groupOf(db, r.id)?.rows ?? [r])
+        .forEach((x) => map.set(x.id, x)));
+    return [...map.values()];
+}
+
+/**
+ * ④-2 판정 🔑 - 합치면 한 상차 묶음이 될 주문 **전부**의 진행 단계가 같아야 한다.
+ * 비교 기준은 `readyToLoad` 가 보는 것과 같다 (검수·적치·추가작업·조정요청 확인).
+ * @returns {string} 사유. 어긋나지 않으면 빈 문자열
+ */
+function stepGapReason(db, o, tRows) {
+    const all = loadRowsOf(db, [o, ...tRows]);
+    const gap = MERGE_STEP_FIELDS.find((field) => {
+        const yes = all.filter((r) => Boolean(r[field])).length;
+        return yes > 0 && yes < all.length;
+    });
+    if (gap) {
+        const label = WORK_STEPS.find((s) => s.at === gap)?.label ?? gap;
+        const done = all.filter((r) => r[gap]);
+        const left = all.filter((r) => !r[gap]);
+        return `${label} 진행 상태가 다른 주문끼리는 합칠 수 없습니다.`
+            + ` (완료 ${nosOf(done)} / 미완료 ${nosOf(left)})`;
+    }
+    // 추가작업 요청·조정요청 확인까지 본다 (`listLoading` · `completeLoading` 과 같은 기준)
+    const optOf = stepOptOf(db);
+    const ready = all.filter((r) => readyToLoad(r, optOf(r)));
+    if (!ready.length || ready.length === all.length) return '';
+    const left = all.filter((r) => !ready.includes(r))
+        .map((r) => `${r.order_no} - ${stepsLeft(r, optOf(r)).join('·')}`);
+    return '상차 준비 상태가 다른 주문끼리는 합칠 수 없습니다.'
+        + ` (남은 단계: ${left.join(', ')})`;
 }
 
 /**
@@ -539,13 +698,14 @@ function baseNoOf(o) {
 }
 
 /**
- * 두 주문을 짝지어 판단하는 조건 (① ② ⑥ ⑦ ⑧).
+ * 두 주문을 짝지어 판단하는 조건 (① ② ④-2 ⑥ ⑦ ⑧).
+ * @param {object} db 저장소 스냅샷 (④-2 가 상차 묶음을 펼쳐 본다)
  * @param {object} o 합치려는 주문 (출발점)
  * @param {object} t 합칠 상대
- * @param {object[]} tRows 상대가 이미 속한 묶음 전체 (⑥ 은 묶음 멤버 전부와 비교한다)
+ * @param {object[]} tRows 상대가 이미 속한 묶음 전체 (④-2 ⑥ 은 묶음 멤버 전부와 비교한다)
  * @returns {string} 사유. 합칠 수 있으면 빈 문자열
  */
-function mergePairBlockReason(o, t, tRows = [t]) {
+function mergePairBlockReason(db, o, t, tRows = [t]) {
     if (o.id === t.id) return '같은 주문끼리는 합칠 수 없습니다.';
     if (o.customer !== t.customer) return '거래처가 다른 주문은 합칠 수 없습니다.';
     if (o.created_by !== t.created_by) {
@@ -556,6 +716,11 @@ function mergePairBlockReason(o, t, tRows = [t]) {
         return '출고요청일이 다른 주문은 합칠 수 없습니다. '
             + '묶인 주문은 같은 날 함께 실립니다.';
     }
+    // ④-2 검수·적치·추가작업의 진행 상태가 같아야 한다. 비교 모집단은 **상차 묶음**이라
+    //     상대에게 딸린 추가주문 차수까지 함께 본다 (`stepGapReason`).
+    //     단계를 건너뛴 주문이 묶음 전체의 상차완료에 딸려 올라가는 것을 막는다
+    const gap = stepGapReason(db, o, tRows);
+    if (gap) return gap;
     // ⑥ 차수 형제는 이미 상차 묶음(`base_no`)으로 함께 실린다. 대표주문번호로 또 묶으면
     //    출고작업·검수작업까지 묶여 나중에 합류한 차수가 영구 차단된다.
     //    상대가 이미 묶여 있으면 그 묶음 멤버 전부와 비교한다 (우회로를 막는다)
@@ -601,13 +766,17 @@ export async function listMergeTargets(orderId) {
         .filter((o) => !mergeBlockReason(o))
         .map((o) => ({ row: o, rows: batchGroupOf(db, o.id)?.rows ?? [o] }))
         // 상대가 이미 묶여 있으면 묶음 멤버 전부가 ③④ 를 만족해야 한다
-        .filter(({ row, rows }) => !mergePairBlockReason(cur, row, rows)
+        // (④-2 단계 일치는 `mergePairBlockReason` 이 멤버 전부와 비교한다)
+        .filter(({ row, rows }) => !mergePairBlockReason(db, cur, row, rows)
             && !rows.some((r) => mergeBlockReason(r)))
         .map(({ row, rows }) => ({
             ...row,
             group_no: row.rep_no || row.order_no,
             group_count: rows.length,
             group_nos: rows.map((r) => r.order_no),
+            // 총량은 저장값이 아니라 **묶음 합계**로 읽는다 (묶음 종류가 둘이기 때문이다)
+            group_pallets: rows.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0),
+            group_boxes: rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0),
             // 이 후보를 고르면 정해질 대표주문번호 (화면은 이 값만 쓴다)
             merge_rep_no: row.rep_no || row.order_no,
         }))
@@ -623,6 +792,8 @@ export async function listMergeTargets(orderId) {
  * 허용 조건은 `mergeSourceBlockReason` · `mergeBlockReason` · `mergePairBlockReason`
  * 세 함수가 나눠 갖는다 (후보 목록도 같은 함수를 쓴다).
  * ⚠️ 차수(`base_no` `seq`)는 건드리지 않는다. 차수는 추가주문 개념이라 대표주문번호와 무관하다.
+ * ⚠️ **파렛트도 건드리지 않는다.** 각 주문이 검수한 `pallet_count` · `box_count` 와
+ *    파렛트 레코드를 그대로 유지한다. 묶음 총량은 저장값이 아니라 **묶음 합계**로 읽는다.
  * @returns {Promise<{rep_no:string, rows:object[]}>} 합친 뒤의 묶음
  */
 export async function mergeOrders(orderId, targetOrderId, user) {
@@ -632,8 +803,8 @@ export async function mergeOrders(orderId, targetOrderId, user) {
     if (!o || !t) throw new Error('주문을 찾을 수 없습니다.');
     const tRows = batchGroupOf(db, t.id)?.rows ?? [t];
     const blocked = mergeSourceBlockReason(o) || mergeBlockReason(t)
-        || mergePairBlockReason(o, t, tRows)
-        // 묶음 멤버 중 하나라도 검수작업이 끝났으면 총량이 어긋난다 (④)
+        || mergePairBlockReason(db, o, t, tRows)
+        // 묶음 멤버 중 하나라도 상차검수를 시작했으면 진행률이 어긋난다 (④)
         || tRows.map(mergeBlockReason).find(Boolean) || '';
     if (blocked) throw new Error(blocked);
 
@@ -674,6 +845,7 @@ export async function createOrder(payload, user) {
     // 대표주문번호는 선택 입력이다. 빈 값은 null 로 저장한다
     rest.rep_no = String(rest.rep_no ?? '').trim() || null;
     assertRepOwner(db, rest.rep_no, user);
+    assertRepJoinable(db, rest.rep_no);
     // 추가주문은 기준 번호(1차수 주문번호)로 묶는다. 주문번호 자체는 `a11111-1` 처럼 따로 붙는다.
     const base = addition ? (baseNo || rest.order_no) : rest.order_no;
     const same = db.orders.filter((o) => o.base_no === base);
@@ -732,7 +904,10 @@ export async function updateOrder(id, patch, user, memo = '') {
     if ('rep_no' in patch) {
         patch.rep_no = String(patch.rep_no ?? '').trim() || null;
         // 묶음의 등록자는 원래 주문의 등록자로 본다 (수정하는 사람이 아니다)
-        if (patch.rep_no !== o.rep_no) assertRepOwner(db, patch.rep_no, { id: o.created_by }, o.id);
+        if (patch.rep_no !== o.rep_no) {
+            assertRepOwner(db, patch.rep_no, { id: o.created_by }, o.id);
+            assertRepJoinable(db, patch.rep_no, o.id);
+        }
     }
     const labels = {
         send_date: '전송일자', order_no: '주문번호', rep_no: '대표주문번호', customer: '거래처명',
@@ -896,8 +1071,17 @@ export function hasExtraWork(o) {
     return o.extra_yn === YN.YES || (o.extra_works ?? []).length > 0;
 }
 
-/** 검수에서 받을 수 있는 최소 파렛트수 - 추가건은 혼적(0파렛트)을 허용한다 */
-export function minPalletOf(o) {
+/**
+ * 검수에서 받을 수 있는 최소 파렛트수.
+ * 추가건(2차수 이상)은 기존 차수에 혼적할 수 있어 0파렛트를 허용한다.
+ *
+ * 🔑 **검수 후 합친 묶음(주문마다 자기 총량)에서는 0을 허용하지 않는다.**
+ * 합친 주문은 자기 화물이 있어 0이 될 이유가 없고, 0으로 내리면 묶음 종류 판정이
+ * 뒤집혀(`hasSplitPallets`) 총량 수정 대상이 대표로 옮겨간다.
+ * @param {object[]} [rows] 그 주문이 속한 대표주문번호 묶음. 넘기지 않으면 종전 규칙
+ */
+export function minPalletOf(o, rows = null) {
+    if (rows && hasSplitPallets(rows)) return 1;
     return o.seq > 1 ? 0 : 1;
 }
 
@@ -934,6 +1118,15 @@ export async function setInspectDone(id, done, checks, user) {
     if (rows.some((r) => r.pallet_count && r.stow_done_at)) {
         throw new Error('출고적치가 완료된 주문입니다. 출고적치 탭에서 적치취소를 먼저 하세요.');
     }
+    // 🔑 **검수 후 합친 묶음은 다시 검수완료할 수 없다.**
+    // 총량을 대표에 몰아 싣고 `rebuildPallets` 가 멤버 파렛트를 지우므로, 주문마다 이미
+    // 출력한 상차라벨이 조용히 폐기되고 묶음 총량도 대표 한 건 값으로 줄어든다.
+    // 되돌리려면 수정 폼에서 대표주문번호를 비워 묶음을 푼 뒤 주문별로 검수한다
+    if (done && hasSplitPallets(rows)) {
+        throw new Error('검수 후에 합친 묶음입니다. 주문마다 파렛트수가 따로 있어 '
+            + '묶음 총량을 다시 입력할 수 없습니다. 파렛트수·박스수는 각 주문의 '
+            + '수정 버튼으로 고치고, 다시 검수하려면 수정 폼에서 대표주문번호를 비우세요.');
+    }
 
     // 요청작업·패킹리스트는 묶음 중 하나라도 있으면 확인 대상이 된다
     const packings = rows.filter((r) => r.packing_yn === YN.YES);
@@ -952,7 +1145,7 @@ export async function setInspectDone(id, done, checks, user) {
         // 추가건(2차수 이상)은 기존 차수 파렛트에 혼적할 수 있어 0파렛트를 허용한다.
         // 입력값은 대표(head)에 실리므로 대표 기준으로 본다
         // (묶음 멤버는 아래에서 자동으로 0파렛트가 된다)
-        const minPallet = minPalletOf(head);
+        const minPallet = minPalletOf(head, rows);
         if (!Number.isInteger(pallet) || pallet < minPallet) {
             throw new Error(minPallet === 0
                 ? '총 파렛트수를 0 이상의 숫자로 입력해야 검수를 완료할 수 있습니다.'
@@ -987,22 +1180,52 @@ export async function setInspectDone(id, done, checks, user) {
 }
 
 /**
+ * 총량(파렛트수·박스수)을 고칠 대상 주문 🔑 **조회 전용**
+ *
+ * 묶음 두 종류의 차이를 **이 함수 한 곳에서만** 흡수한다.
+ *   등록 시 묶은 묶음 - 총량이 대표(head)에만 있다 → **대표**를 고친다
+ *   검수 후 합친 묶음 - 주문마다 자기 총량이 있다 → **그 주문 자신**을 고친다
+ *
+ * 화면은 이 결과의 값을 **기본값으로 보여주고 이 `id` 로 저장**한다.
+ * 그래야 보이는 값과 고쳐지는 값이 언제나 같다 (`setPalletCount` · `setBoxCount` 는
+ * 넘긴 주문을 그대로 대상으로 삼는다).
+ * @returns {Promise<{id:string, order_no:string, seq:number,
+ *                     pallet_count:number, box_count:number}>}
+ */
+export async function countTarget(orderId) {
+    const db = (await load());
+    const g = batchGroupOf(db, orderId);
+    if (!g) throw new Error('주문을 찾을 수 없습니다.');
+    const mine = g.rows.find((r) => r.id === orderId) ?? g.head;
+    const t = hasSplitPallets(g.rows) ? mine : g.head;
+    return {
+        id: t.id,
+        order_no: t.order_no,
+        seq: Number(t.seq ?? 1),                  // 혼적(0파렛트) 허용 판정에 쓴다
+        pallet_count: Number(t.pallet_count ?? 0),
+        box_count: Number(t.box_count ?? 0),
+    };
+}
+
+/**
  * 총 박스수 수정 - 검수완료 뒤에도 고칠 수 있다.
  * 박스수는 표시·라벨·CSV 에만 쓰이고 다른 단계에 영향이 없다. 상차완료 전까지 허용한다.
- * 대표주문번호 묶음이면 총량을 싣는 대표(head)의 값을 고친다.
+ * ⚠️ **넘긴 주문을 그대로 고친다.** 어느 주문을 고칠지는 화면이 `countTarget` 으로 정한다.
  */
 export async function setBoxCount(id, count, user) {
     const db = (await load());
-    const { head } = groupFor(db, id);
-    if (!head.inspect_done_at) throw new Error('검수완료된 주문만 박스수를 고칠 수 있습니다.');
-    if (loadDone(head)) throw new Error('상차완료된 주문은 박스수를 고칠 수 없습니다.');
+    const target = db.orders.find((x) => x.id === id);
+    if (!target) throw new Error('주문을 찾을 수 없습니다.');
+    if (target.canceled_at) throw new Error('취소된 주문입니다.');
+    if (!target.inspect_done_at) throw new Error('검수완료된 주문만 박스수를 고칠 수 있습니다.');
+    if (loadDone(target)) throw new Error('상차완료된 주문은 박스수를 고칠 수 없습니다.');
     const box = Number(count);
     if (!Number.isInteger(box) || box < 1) throw new Error('총 박스수는 1 이상의 숫자로 입력하세요.');
-    if (head.box_count === box) return head;
-    addHistory(db, head.id, '박스수', head.box_count, box, user);
-    head.box_count = box;
+    if (target.box_count === box) return target;
+    addHistory(db, target.id, '박스수', target.box_count, box, user);
+    target.box_count = box;
     await save(db);
-    return head;
+    return target;
 }
 
 /**
@@ -1013,25 +1236,30 @@ export async function setBoxCount(id, count, user) {
  *   그 외               → **기존 로케이션은 지키고 끝에서만** 늘리거나 줄인다
  * 줄일 때 사라질 파렛트에 로케이션이 있으면 `needConfirm` 오류를 던지고,
  * 화면이 확인을 받은 뒤 `{ confirmRemove: true }` 로 다시 부른다.
+ *
+ * ⚠️ **넘긴 주문을 그대로 고친다.** 어느 주문을 고칠지는 화면이 `countTarget` 으로 정한다.
  * @param {{confirmRemove?:boolean}} opt
  */
 export async function setPalletCount(id, count, user, opt = {}) {
     const db = (await load());
-    const { head } = groupFor(db, id);
-    if (!head.inspect_done_at) throw new Error('검수완료된 주문만 파렛트수를 고칠 수 있습니다.');
-    if (loadDone(head)) throw new Error('상차완료된 주문은 파렛트수를 고칠 수 없습니다.');
-    const mine = db.pallets.filter((x) => x.order_id === head.id)
+    const target = db.orders.find((x) => x.id === id);
+    if (!target) throw new Error('주문을 찾을 수 없습니다.');
+    if (target.canceled_at) throw new Error('취소된 주문입니다.');
+    if (!target.inspect_done_at) throw new Error('검수완료된 주문만 파렛트수를 고칠 수 있습니다.');
+    if (loadDone(target)) throw new Error('상차완료된 주문은 파렛트수를 고칠 수 없습니다.');
+    const mine = db.pallets.filter((x) => x.order_id === target.id)
         .sort((a, b) => a.barcode.localeCompare(b.barcode));
     if (mine.some((x) => x.scanned_at)) {
         throw new Error('상차검수가 진행된 주문입니다. 상차검수를 초기화한 뒤 파렛트수를 고치세요.');
     }
     const pallet = Number(count);
-    const minPallet = minPalletOf(head);      // 추가건은 혼적(0파렛트)을 허용한다
+    // 합친 묶음은 0을 허용하지 않는다 (0이 되면 묶음 종류 판정이 뒤집힌다)
+    const minPallet = minPalletOf(target, batchGroupOf(db, target.id)?.rows);
     if (!Number.isInteger(pallet) || pallet < minPallet) {
         throw new Error(`총 파렛트수는 ${minPallet} 이상의 숫자로 입력하세요.`);
     }
-    const before = head.pallet_count;
-    if (before === pallet && mine.length === pallet) return head;
+    const before = target.pallet_count;
+    if (before === pallet && mine.length === pallet) return target;
 
     if (pallet < mine.length) {
         // 끝에서부터 뺀다. 로케이션이 들어간 파렛트가 빠지면 사용자 확인을 거친다
@@ -1048,19 +1276,19 @@ export async function setPalletCount(id, count, user, opt = {}) {
         db.pallets = db.pallets.filter((x) => !drop.has(x.id));
     } else if (pallet > mine.length) {
         // 끝에 이어 붙인다 (기존 바코드·로케이션은 그대로)
-        const extra = makePallets({ ...head, pallet_count: pallet }).slice(mine.length);
+        const extra = makePallets({ ...target, pallet_count: pallet }).slice(mine.length);
         db.pallets.push(...extra);
     }
 
-    addHistory(db, head.id, '파렛트수', before, pallet, user);
-    head.pallet_count = pallet;
-    head.inspected = 0;
-    head.load_status = LOAD_STATUS.WAIT;
+    addHistory(db, target.id, '파렛트수', before, pallet, user);
+    target.pallet_count = pallet;
+    target.inspected = 0;
+    target.load_status = LOAD_STATUS.WAIT;
     // 0파렛트가 되면 적치할 것이 없으니 적치를 끝낸 것으로, 아니면 전량 입력 여부로 다시 판단한다
-    if (pallet === 0) head.stow_done_at = head.stow_done_at ?? new Date().toISOString();
-    else syncStowDone(db, head);
+    if (pallet === 0) target.stow_done_at = target.stow_done_at ?? new Date().toISOString();
+    else syncStowDone(db, target);
     await save(db);
-    return head;
+    return target;
 }
 
 /**
@@ -1404,30 +1632,32 @@ export async function createRestore(payload, user) {
  * 당일상차리스트 조회.
  * 상차 이외의 모든 작업(패킹리스트까지)이 완료된 주문만 대상으로 한다.
  *
- * 🔑 **준비된 주문(ready)만으로 묶는다.** `groupOf` 로 묶음을 다시 펼치면 아직 준비되지
- * 않은 멤버까지 딸려 들어와 파렛트수·박스수가 어긋난다 (`listStowWaiting` 과 같은 순서).
- * 그래서 `group_*` 값은 모두 **ready 멤버 기준**이다.
+ * 🔑 **묶음 전체가 준비돼야 실을 수 있다.** 상차 묶음은 한 거래처로 함께 실리는
+ * 한 덩어리라, 한 멤버라도 준비가 안 됐으면 그 묶음은 오늘 실을 수 없다.
+ * 준비된 멤버만 추려 묶으면 목록의 진행(`3/3`)과 실제 스캔 대상(`/8`)이 어긋나고,
+ * `completeLoading` 이 묶음 전체를 다시 확인하므로 완료도 되지 않는다.
+ * 그래서 목록·상차검수·상차완료가 **모두 같은 모집단(`loadGroups`)** 을 쓴다.
+ *
+ * ⚠️ 준비되지 않은 묶음을 **목록에서 지우지 않는다.** 추가주문 차수가 늦게 들어오면
+ * 이미 준비를 마친 1차수까지 사유 없이 사라져 현장이 원인을 볼 수 없었다.
+ * `blocked` `block_reason` 을 붙여 함께 돌려주고, 화면이 회색으로 구분해 보여준다.
  */
 export async function listLoading(shipDate) {
     const db = (await load());
-    const tasks = extraTaskNoSet(db);
-    const adjust = {};
-    db.restores.forEach((r) => {
-        const m = (adjust[r.order_id] ??= { has: true, done: true });
-        if (!r.checked_at) m.done = false;
-    });
-    const ready = db.orders
-        .filter((o) => o.ship_req_date === shipDate
-            && !o.canceled_at
-            && readyToLoad(o, { task: tasks.has(o.order_no), adjust: adjust[o.id] }));
+    const optOf = stepOptOf(db);
+    const pool = db.orders.filter((o) => o.ship_req_date === shipDate && !o.canceled_at);
 
     // 대표주문번호·추가주문 차수는 한 거래처로 함께 배송되므로 묶어서 대표 1건만 보여준다
-    return loadGroups(ready)
+    return loadGroups(pool)
         .map((g) => {
             const head = g.head;
             const pallets = palletsOf(db, g.rows);
+            const reason = notReadyReason(g.rows, optOf);
             return {
                 ...head,
+                // 막힌 묶음 - 상차검수·상차완료를 막고 사유를 보여준다 (합계에서도 뺀다)
+                blocked: Boolean(reason),
+                block_reason: reason,
                 // 목록·라벨에 보여줄 번호 (대표주문번호가 있으면 그것을 쓴다)
                 group_no: head.rep_no || head.order_no,
                 group_nos: g.rows.map((r) => r.order_no),
@@ -1462,10 +1692,13 @@ function palletsOf(db, rows) {
  * 대표주문번호로 묶인 주문과 추가주문 차수는 한 거래처로 함께 배송되므로
  * **상차만은** 묶어서 본다 (적치 파렛트 합산 · 상차검수 · 상차완료).
  *
- * @returns {{head:object, rows:object[], pallets:object[]}}
+ * @returns {{head:object, rows:object[], pallets:object[],
+ *   blocked:boolean, block_reason:string}}
  *   head    - 묶음 대표 (`compareHead` 규칙 - 차수 묶음만 있으면 1차수)
  *   rows    - 취소되지 않은 묶음 전체 (대표부터 등록순)
  *   pallets - 묶음 전체의 파렛트 (주문 순 → 파렛트 번호 순, seq/label 이 붙는다)
+ *   blocked - 상차 이외의 단계가 남은 멤버가 있어 오늘 실을 수 없는 묶음
+ *   block_reason - 그 사유 (`completeLoading` 의 거부 문구와 같은 계산)
  */
 function groupOf(db, orderId) {
     const o = db.orders.find((x) => x.id === orderId);
@@ -1474,7 +1707,14 @@ function groupOf(db, orderId) {
     const rows = db.orders
         .filter((x) => groupKeyOf(x) === key && !x.canceled_at)
         .sort(compareHead);
-    return { head: rows[0] ?? o, rows, pallets: palletsOf(db, rows) };
+    const reason = notReadyReason(rows, stepOptOf(db));
+    return {
+        head: rows[0] ?? o,
+        rows,
+        pallets: palletsOf(db, rows),
+        blocked: Boolean(reason),
+        block_reason: reason,
+    };
 }
 
 /** 상차 단위 조회 (화면용) */
@@ -1624,7 +1864,47 @@ export async function setPalletPicked(palletId, done) {
 }
 
 /**
- * 파렛트 바코드 스캔 처리 (상차 검수)
+ * 상차검수 통과 판정 🔑 (`scanPallet` · `cancelLoading` 이 함께 쓴다)
+ *
+ * 파렛트를 가진 주문은 **전량 스캔**돼야 검수완료다.
+ * 0파렛트 멤버(혼적 추가건 · 등록 시 묶음의 멤버)는 스캔할 라벨이 없으므로
+ * **검수작업(`inspect_done_at`)이 끝났을 때만** 검수완료로 본다.
+ * ⚠️ `inspected >= pallet_count` 만 보면 `0 >= 0` 이 참이라, 검수작업도 끝나지 않은
+ * 0파렛트 멤버가 **남의 라벨 스캔만으로** 상차검수를 통과해 상차완료·마감까지 올라간다.
+ */
+function scanDone(o) {
+    return Number(o.pallet_count ?? 0) > 0
+        ? Number(o.inspected ?? 0) >= Number(o.pallet_count)
+        : Boolean(o.inspect_done_at);
+}
+
+/** 아직 스캔되지 않은 파렛트를 주문별로 요약한다 (`PO-2 2장, PO-3 1장`) */
+function leftByOrder(rows, pallets) {
+    return rows
+        .map((r) => {
+            const left = pallets.filter((p) => p.order_id === r.id && !p.scanned_at).length;
+            return left ? `${r.order_no} ${left}장` : '';
+        })
+        .filter(Boolean)
+        .join(', ');
+}
+
+/**
+ * 파렛트 바코드 스캔 처리 (상차 검수) 🔑
+ *
+ * 상차라벨의 바코드는 주문번호다. 파렛트마다 같은 라벨이 붙으므로 주문번호를 스캔할
+ * 때마다 아직 검수되지 않은 파렛트를 하나씩 채운다. 채우는 **범위**는 스캔한 코드가
+ * 무엇이냐로 갈린다.
+ *
+ * | 스캔한 코드 | 채우는 범위 |
+ * |---|---|
+ * | 멤버의 `order_no` (그 주문이 자기 파렛트를 가짐) | **그 주문의** 미검수 파렛트 1개 |
+ * | 대표주문번호 `rep_no` · 파렛트가 없는 멤버의 번호 | 묶음 전체의 미검수 파렛트 1개 |
+ * | 파렛트 개별 바코드 `{주문번호}-P01` | 그 파렛트 |
+ *
+ * 🔑 검수 후 합친 묶음은 **주문마다 자기 라벨이 이미 출력돼 있다.** 묶음 전체에서
+ * 아무거나 채우면 A 라벨만 계속 읽어도 B 파렛트가 채워져 실물과 어긋난다.
+ * 등록 시 묶은 묶음(총량이 대표에만 있고 멤버는 0파렛트)은 종전 동작 그대로다.
  * @returns {{ok:boolean, msg:string, order?:object}}
  */
 export async function scanPallet(orderId, barcode, user) {
@@ -1644,26 +1924,33 @@ export async function scanPallet(orderId, barcode, user) {
         };
     }
 
-    // 상차라벨의 바코드는 주문번호다. 파렛트마다 같은 라벨이 붙으므로
-    // 주문번호를 스캔할 때마다 아직 검수되지 않은 파렛트를 하나씩 채운다.
-    // (예전 방식인 파렛트 개별 바코드 {주문번호}-P01 도 그대로 인식한다)
-    //
-    // 🔑 추가주문은 라벨이 자기 번호(`a11111-1`)로 인쇄되고 1차수와 함께 실린다.
-    // 대표 번호든 추가차수 번호든 **같은 묶음이면 모두 인식한다.**
-    // 대표주문번호로 찍은 라벨도 인식한다
-    const groupNos = new Set(group.rows
-        .flatMap((r) => [r.order_no, r.rep_no])
-        .filter(Boolean)
-        .map((v) => String(v).trim().toUpperCase()));
-    const isOrderCode = groupNos.has(code);
+    const up = (v) => String(v).trim().toUpperCase();
+    // 스캔한 코드가 어느 멤버의 주문번호인지 (대표주문번호와 같은 번호면 그 멤버가 잡힌다)
+    const member = group.rows.find((r) => up(r.order_no) === code);
+    const ours = member ? mine.filter((p) => p.order_id === member.id) : [];
+    // 파렛트가 없는 멤버(등록 시 묶음의 혼적 건)와 대표주문번호는 묶음 전체에서 채운다
+    const scope = ours.length ? ours : mine;
+    // 🔑 주문별 안내는 **다른 주문의 파렛트도 있을 때만** 붙인다.
+    // 등록 시 묶은 묶음은 대표가 파렛트를 전부 갖고 있어(`ours.length === mine.length`)
+    // 대표번호를 스캔해도 묶음 전체를 읽는 것과 같다 - 종전 문구를 그대로 쓴다
+    const perOrder = ours.length > 0 && ours.length !== mine.length;
+    const repNos = new Set(group.rows.map((r) => r.rep_no).filter(Boolean).map(up));
+    const isOrderCode = Boolean(member) || repNos.has(code);
     const target = isOrderCode
-        ? mine.find((p) => !p.scanned_at)
+        ? scope.find((p) => !p.scanned_at)
         : mine.find((p) => p.barcode.toUpperCase() === code);
 
     if (!target) {
-        return isOrderCode
-            ? { ok: false, msg: `이미 전량 검수되었습니다. (${mine.length}/${mine.length})` }
-            : { ok: false, msg: '해당 주문의 바코드가 아닙니다.' };
+        if (!isOrderCode) return { ok: false, msg: '해당 주문의 바코드가 아닙니다.' };
+        const left = leftByOrder(group.rows, mine);
+        return {
+            ok: false,
+            msg: perOrder
+                ? `${member.order_no} 주문은 전량 검수되었습니다.`
+                    + ` (${ours.length}/${ours.length})`
+                    + (left ? ` 남은 주문: ${left}` : '')
+                : `이미 전량 검수되었습니다. (${mine.length}/${mine.length})`,
+        };
     }
     if (target.scanned_at) return { ok: false, msg: '이미 검수된 파렛트입니다.' };
 
@@ -1671,14 +1958,18 @@ export async function scanPallet(orderId, barcode, user) {
     // 차수별 검수 수를 각각 갱신하고, 그 차수가 다 차면 검수 상태로 올린다
     group.rows.forEach((r) => {
         r.inspected = db.pallets.filter((p) => p.order_id === r.id && p.scanned_at).length;
-        if (r.inspected >= r.pallet_count && r.load_status === LOAD_STATUS.WAIT) {
+        if (scanDone(r) && r.load_status === LOAD_STATUS.WAIT) {
             r.load_status = LOAD_STATUS.INSPECTED;
             addHistory(db, r.id, '검수', '대기', '검수완료', user);
         }
     });
     const done = mine.filter((p) => p.scanned_at).length;
+    // 묶음 전체 진행과 그 주문의 진행을 함께 알려 준다 (무엇을 더 읽어야 하는지 보이게)
+    const my = perOrder
+        ? ` · ${member.order_no} ${ours.filter((p) => p.scanned_at).length}/${ours.length}`
+        : '';
     await save(db);
-    return { ok: true, msg: `검수 완료 (${done}/${mine.length})`, order: o };
+    return { ok: true, msg: `검수 완료 (${done}/${mine.length})${my}`, order: o };
 }
 
 /**
@@ -1707,7 +1998,15 @@ export async function resetInspection(orderId, user) {
     return group.head;
 }
 
-/** 상차완료 처리 */
+/**
+ * 상차완료 처리 🔑
+ * `loaded_at` 은 **상차 묶음 전체**에 찍히므로, 찍기 전에 멤버마다
+ * ① 상차검수 통과(`load_status`) ② **상차 이외의 모든 단계 완료**(`readyToLoad`)를
+ * 다시 확인한다. 판정은 당일상차리스트와 같은 함수를 쓴다 (`steps.js` 의 `readyToLoad`).
+ *
+ * ⚠️ 상차검수만 보면 검수·적치를 건너뛴 주문이 묶음에 딸려 상차완료·마감까지 올라간다.
+ * 목록에서 보이지 않던 멤버도 `groupOf` 로 다시 펼쳐지므로 여기서 한 번 더 막는다.
+ */
 export async function completeLoading(orderId, user) {
     const db = (await load());
     const group = groupOf(db, orderId);
@@ -1715,6 +2014,10 @@ export async function completeLoading(orderId, user) {
     // 추가주문까지 함께 실리므로 차수 전체가 검수되어야 상차완료할 수 있다
     if (group.rows.some((r) => r.load_status !== LOAD_STATUS.INSPECTED)) {
         throw new Error('검수가 완료된 건만 상차완료 처리할 수 있습니다.');
+    }
+    const detail = notReadyReason(group.rows, stepOptOf(db));
+    if (detail) {
+        throw new Error(`상차 이외의 단계가 끝나지 않은 주문이 있습니다. (${detail})`);
     }
     const at = new Date().toISOString();
     group.rows.forEach((r) => {
@@ -1748,10 +2051,9 @@ export async function cancelLoading(orderId, user) {
         // 상차만 되돌린다. 상차검수는 실제 스캔한 수를 보고 상태를 정한다
         // (전량 검수돼 있으면 '검수', 아니면 '대기' — 값을 고정하면 어긋난 건이 남는다)
         // 🔑 0파렛트 멤버(혼적·대표주문번호 묶음)는 스캔할 파렛트가 없으므로
-        // `scanPallet` 과 같은 기준으로 본다. 그러지 않으면 '대기' 로 남아 재상차가 막힌다
-        r.load_status = scanned > 0 && r.inspected >= r.pallet_count
-            ? LOAD_STATUS.INSPECTED
-            : LOAD_STATUS.WAIT;
+        // `scanPallet` 과 **같은 판정 함수**(`scanDone`)를 쓴다.
+        // 그러지 않으면 '대기' 로 남아 재상차가 막힌다
+        r.load_status = scanned > 0 && scanDone(r) ? LOAD_STATUS.INSPECTED : LOAD_STATUS.WAIT;
         addHistory(db, r.id, '상차작업', '완료', '취소', user);
     });
     await save(db);
@@ -3103,6 +3405,17 @@ export async function listStowWaiting(f = {}) {
     const live = db.orders
         .filter((o) => o.stow_done_at && !loadDone(o) && !o.canceled_at)
         .filter((o) => !f.createdBy || o.created_by === f.createdBy);
+    const optOf = stepOptOf(db);
     return loadGroups(live)
-        .map((g) => ({ head: g.head, rows: g.rows, pallets: palletsOf(db, g.rows) }));
+        .map((g) => {
+            // 당일상차리스트와 같은 판정이다 - 화면끼리 같은 묶음이 다르게 보이지 않게 한다
+            const reason = notReadyReason(g.rows, optOf);
+            return {
+                head: g.head,
+                rows: g.rows,
+                pallets: palletsOf(db, g.rows),
+                blocked: Boolean(reason),
+                block_reason: reason,
+            };
+        });
 }

@@ -33,6 +33,7 @@ function orderProgressHtml(rows, pallets) {
     }).join('');
 }
 
+
 export async function render(root, { user, params }) {
     const orderId = params[0];
     const order = await db.getOrder(orderId);
@@ -126,6 +127,8 @@ export async function render(root, { user, params }) {
 ${g.rows.length > 1 ? `
 <p class="field__label">묶인 주문 ${g.rows.length}건이 함께 검수되고,
  각 주문의 검수내역은 대표에 그대로 집계됩니다.</p>
+${db.hasSplitPallets(g.rows) ? `
+<p class="field__label"><b>주문마다 출력된 상차라벨을 각각 그 수량만큼 스캔하세요.</b></p>` : ''}
 <div class="scan-orders">${orderProgressHtml(g.rows, pallets)}</div>` : ''}
 <div class="scan-stats">
   <div><span>총 파렛트</span><strong>${num(pallets.length)}</strong></div>

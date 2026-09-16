@@ -3,6 +3,7 @@ import {
     LOAD_STATUS, stowStatus, STOW_STATUS, formatLocation, compareLocation,
 } from '../config.js';
 import { can } from '../auth.js';
+import { icon } from '../icons.js';
 import { loadDone } from '../steps.js';
 import * as db from '../db.js';
 import {
@@ -79,10 +80,15 @@ export async function render(root, { user }) {
                 (o) => `${o.group_no} ${o.order_no} ${o.customer}`.toLowerCase().includes(kw),
             );
         }
-        drawSummary(root, rows);
+        // 🔑 막힌 묶음은 오늘 실을 수 없으므로 합계에 섞지 않는다 (목록에는 남겨 사유를 보여준다)
+        const live = rows.filter((o) => !o.blocked);
+        const blocked = rows.length - live.length;
+        drawSummary(root, live);
         drawTable(root, rows, editable, user, reload);
         drawCards(root, rows, editable, user, reload);
-        root.querySelector('#row-count').textContent = `${num(rows.length)}건`;
+        root.querySelector('#row-count').textContent = blocked
+            ? `${num(live.length)}건 · 제외 ${num(blocked)}건`
+            : `${num(live.length)}건`;
     }
 
     const setDate = (d) => {
@@ -104,7 +110,8 @@ export async function render(root, { user }) {
             rows.map((o) => [
                 o.ship_req_date, o.rep_no ?? '', (o.group_nos ?? [o.order_no]).join(' / '),
                 o.customer, o.vehicle_type,
-                o.group_pallets, groupBoxes(o), o.group_inspected, o.load_status,
+                o.group_pallets, groupBoxes(o), o.group_inspected,
+                o.blocked ? `당일상차 제외 (${o.block_reason})` : o.load_status,
             ]));
     }
 
@@ -179,6 +186,21 @@ function statusTag(s) {
     return `<span class="tag ${cls}">${s}</span>`;
 }
 
+/**
+ * 막힌 묶음 배지 🔑
+ * 상차 이외의 단계가 남은 멤버가 있어 오늘 실을 수 없는 묶음이다.
+ * 사유는 `db.listLoading` 이 상차완료 거부와 같은 계산으로 만들어 준다.
+ */
+function blockedTag() {
+    return `<span class="tag tag--gray">${icon('clock')}당일상차 제외</span>`;
+}
+
+/** 막힌 묶음의 상태 칸 - 배지와 사유를 함께 보여준다 */
+function blockedCell(o) {
+    return `${blockedTag()}
+    <span class="field__label">${esc(o.block_reason)}</span>`;
+}
+
 /** PC 표 형태 */
 function drawTable(root, rows, editable, user, reload) {
     const tbl = root.querySelector('#tbl');
@@ -198,7 +220,7 @@ function drawTable(root, rows, editable, user, reload) {
 </tr></thead>
 <tbody>
 ${rows.map((o) => `
-<tr>
+<tr class="${o.blocked ? 'is-blocked' : ''}">
   <td>${o.ship_req_date}</td>
   <td>${loadNoCell(o)}</td>
   <td>${esc(o.customer)}</td>
@@ -208,14 +230,14 @@ ${rows.map((o) => `
   <td class="center">
     <button class="btn btn--sm" data-loc="${o.id}" type="button">확인</button>
   </td>
-  <td class="center">
+  <td class="center">${o.blocked ? '<span class="muted">-</span>' : `
     <button class="btn btn--sm" data-inspect="${o.id}" type="button">
       검수 ${o.group_inspected}/${o.group_pallets}
-    </button>
+    </button>`}
   </td>
-  <td class="center">${statusTag(o.load_status)}</td>
+  <td class="center">${o.blocked ? blockedCell(o) : statusTag(o.load_status)}</td>
   <td class="center">
-    ${o.loaded_at
+    ${o.blocked ? '-' : o.loaded_at
         ? `<button class="btn btn--sm" data-loaded="${o.id}" type="button">상차완료</button>`
         : o.load_status === LOAD_STATUS.INSPECTED && editable
             ? `<button class="btn btn--success btn--sm" data-load="${o.id}" type="button">상차완료</button>`
@@ -234,10 +256,10 @@ function drawCards(root, rows, editable, user, reload) {
         return;
     }
     box.innerHTML = rows.map((o) => `
-<div class="load-card">
+<div class="load-card ${o.blocked ? 'is-blocked' : ''}">
   <div class="load-card__top">
     <span class="load-card__no">${loadNoCell(o)}</span>
-    ${statusTag(o.load_status)}
+    ${o.blocked ? blockedTag() : statusTag(o.load_status)}
   </div>
   <div class="load-card__cust">${esc(o.customer)}</div>
   <div class="load-card__meta">
@@ -246,8 +268,10 @@ function drawCards(root, rows, editable, user, reload) {
     <span>파렛트 <b>${o.group_inspected}/${o.group_pallets}</b></span>
     <span>박스 <b>${groupBoxes(o) ? num(groupBoxes(o)) : '-'}</b></span>
   </div>
+  ${o.blocked ? `<p class="load-card__block">${esc(o.block_reason)}</p>` : ''}
   <div class="load-card__actions">
-    ${o.loaded_at ? `
+    ${o.blocked ? `
+    <button class="btn" data-loc="${o.id}" type="button">적치로케이션</button>` : o.loaded_at ? `
     <button class="load-card__done" data-loaded="${o.id}" type="button">상차완료</button>` : `
     <button class="btn" data-loc="${o.id}" type="button">적치로케이션</button>
     <button class="btn" data-inspect="${o.id}" type="button">상차검수</button>
