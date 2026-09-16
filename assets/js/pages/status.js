@@ -222,8 +222,8 @@ ${monthBox}
             keyword: s.keyword,
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         });
-        const [tasks, adjust, labels] = await Promise.all([
-            db.extraTaskMap(), db.adjustMap(), labelGroups(user),
+        const [tasks, adjust, byId] = await Promise.all([
+            db.extraTaskMap(), db.adjustMap(), repGroupMap(user),
         ]);
         const text = s.detail && (s.detail.title || s.detail.content) ? await textIndex() : null;
 
@@ -243,7 +243,7 @@ ${monthBox}
             ? `주문 ${num(rows.length)}건`
             : `주문 ${num(rows.length)}건 / 묶음 ${num(groups.length)}행`;
         drawSummary(root, rows, tasks, adjust, groups.length);
-        drawTable(root, rows, tasks, adjust, { user, editable, reload, labels, groups });
+        drawTable(root, rows, tasks, adjust, { user, editable, reload, byId, groups });
     }
 
     /**
@@ -462,7 +462,7 @@ ${groups.map((g, i) => {
   <td class="num">${pct}%</td>
   <td class="num">${pallets ? num(pallets) : '<span class="muted">-</span>'}</td>
   <td>${o.ship_req_date}</td>
-  <td class="center">${labelCell(o, ctx.labels?.[o.id])}</td>
+  <td class="center">${labelCell(o, ctx.byId?.[o.id])}</td>
   <td class="center">${closeCell(o, ctx.editable)}</td>
 </tr>`;
     }).join('')}
@@ -471,8 +471,12 @@ ${groups.map((g, i) => {
     bindCloseButtons(tbl, ctx);
     tbl.querySelectorAll('[data-label]').forEach((el) => {
         el.addEventListener('click', () => {
-            const o = rows.find((x) => x.id === el.dataset.label);
-            printLoadLabel(o, ctx.labels?.[el.dataset.label]);
+            const g = ctx.byId?.[el.dataset.label];
+            // 검수 후 합친 묶음은 멤버 행이 따로 없어 대표 행에서 멤버 라벨도 출력한다.
+            // 멤버가 조회 조건에 걸려 목록에서 빠져 있을 수 있어 묶음에서도 찾는다
+            const o = rows.find((x) => x.id === el.dataset.label)
+                ?? g?.rows?.find((x) => x.id === el.dataset.label);
+            printLoadLabel(o, g);
         });
     });
 }
@@ -605,6 +609,10 @@ function openDetail(o, opt, ctx) {
     const steps = visibleSteps(o, opt);
     const row = (label, value) => `<tr><th>${label}</th><td>${value}</td></tr>`;
     const dash = '<span class="muted">-</span>';
+    // 🔑 총량은 **묶음 합계**로 읽는다. 대표 저장값만 쓰면 목록(합계)과 상세가 갈린다
+    const g = ctx.byId?.[o.id];
+    const pallets = groupPallets(g) || Number(o.pallet_count ?? 0);
+    const boxes = groupBoxes(g) || Number(o.box_count ?? 0);
     openedModal?.close();
     openedModal = openModal(`${o.order_no} · ${o.seq}차수`, `
 <table class="grid"><tbody>
@@ -622,8 +630,8 @@ function openDetail(o, opt, ctx) {
   ${row('요청작업', (o.extra_works ?? []).length
         ? o.extra_works.map((w) => `<span class="tag tag--blue">${esc(w)}</span>`).join(' ')
         : dash)}
-  ${row('파렛트수', o.pallet_count ? `${num(o.pallet_count)} PLT` : dash)}
-  ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
+  ${row('파렛트수', pallets ? `${num(pallets)} PLT` : dash)}
+  ${row('박스수', boxes ? `${num(boxes)} 박스` : dash)}
   ${row('요청사항', o.request_note ? esc(o.request_note) : dash)}
   ${row('비고', o.remark ? esc(o.remark) : dash)}
 </tbody></table>
@@ -645,37 +653,75 @@ function openDetail(o, opt, ctx) {
 /* --------------------------------- 상차라벨 --------------------------------- */
 
 /**
- * 상차라벨용 묶음 정보 { 주문ID: {key, head, rows} }.
- * 라벨은 **상차 묶음 단위**로 찍는다 (대표주문번호 · 추가주문 차수 · 묶음 총 파렛트수).
+ * 묶음 정보 { 주문ID: {key, head, rows} } 🔑
+ *
+ * 모집단은 **대표주문번호 묶음**(`db.repGroups`)이다. 표가 그 단위로 1행을 그리므로
+ * 라벨 판정도 같은 모집단이어야 한다. 상차 묶음(`db.loadGroups`)으로 만들면
+ * 추가주문 차수가 섞여 들어와, 차수 행과 대표 행 양쪽에 같은 출력 버튼이 생기고
+ * 대표번호 라벨 경로가 사라진다 (차수는 원래부터 차수마다 1행·자기 라벨이다).
+ *
  * 묶인 주문이 조회 조건에서 빠질 수 있어 목록이 아니라 전체 주문으로 만든다.
  */
-async function labelGroups(user) {
+async function repGroupMap(user) {
     const all = await db.listOrders({
         createdBy: can(user, 'viewAll') ? undefined : user.id,
     });
     const map = {};
-    db.loadGroups(all.filter((o) => !o.canceled_at)).forEach((g) => {
+    db.repGroups(all.filter((o) => !o.canceled_at)).forEach((g) => {
         g.rows.forEach((o) => { map[o.id] = g; });
     });
     return map;
 }
 
-/** 라벨에 찍을 총 파렛트수 - 대표주문번호로 묶였으면 묶음 총량이다 */
+/**
+ * 주문마다 자기 라벨을 가진 묶음인지 🔑 (= **검수 후 합친 묶음**)
+ * 판정은 `db.hasSplitPallets` 한 곳에서만 한다. 여기서는 **대표주문번호 묶음**을 넘긴다.
+ */
+function ownLabels(g) {
+    return db.hasSplitPallets(g?.rows);
+}
+
+/** 묶음 총 파렛트수 (등록 시 묶음은 대표 값만 실려 있어 합계가 곧 총량이다) */
+function groupPallets(g) {
+    return (g?.rows ?? []).reduce((a, r) => a + Number(r.pallet_count ?? 0), 0);
+}
+
+/** 묶음 총 박스수 */
+function groupBoxes(g) {
+    return (g?.rows ?? []).reduce((a, r) => a + Number(r.box_count ?? 0), 0);
+}
+
+/**
+ * 라벨에 찍을 총 파렛트수.
+ * 주문마다 자기 라벨을 찍는 묶음(검수 후 합침·추가주문 차수)은 **그 주문의 수량**,
+ * 대표번호 라벨 1종을 찍는 묶음은 **묶음 합계**다.
+ */
 function labelTotal(o, g) {
-    return o.rep_no ? (g?.head?.pallet_count ?? 0) : o.pallet_count;
+    if (!o.rep_no || ownLabels(g)) return Number(o.pallet_count ?? 0);
+    return groupPallets(g);
 }
 
 /**
  * 상차라벨 출력 셀.
  * 검수작업에서 파렛트수를 입력한 뒤에만 출력할 수 있다 (라벨에 총 파렛트수가 들어간다).
- * 🔑 대표주문번호로 묶인 주문은 **대표 행에서만** 출력한다.
- *    멤버 행마다 버튼을 두면 같은 라벨을 묶음 건수만큼 인쇄하게 된다.
+ * 🔑 출력 경로는 묶음 종류에 따라 둘로 갈린다.
+ *   등록 시 묶은 묶음    - 대표번호 라벨 1종. **대표 행에서만** 출력한다
+ *                          (멤버 행마다 버튼을 두면 같은 라벨을 묶음 건수만큼 찍게 된다)
+ *   검수 후 합친 묶음    - 주문마다 자기 번호·자기 파렛트수로 출력한다
  */
 function labelCell(o, g) {
-    if (o.rep_no && g?.head && g.head.id !== o.id) {
+    // 추가주문 차수는 원래부터 차수마다 1행·자기 라벨이다 (종전 그대로)
+    if (!o.rep_no) return labelButton(o, g);
+    if (ownLabels(g)) return splitLabelCell(g);
+    if (g?.head && g.head.id !== o.id) {
         return `<span class="muted" title="묶음 대표에서 한 번만 출력합니다">대표 ${
             esc(o.rep_no)} 에서 출력</span>`;
     }
+    return labelButton(o, g);
+}
+
+/** 주문 1건의 라벨 출력 버튼 (파렛트수가 정해지기 전에는 `-`) */
+function labelButton(o, g, withNo = false) {
     const total = labelTotal(o, g);
     // 추가건이 혼적(0파렛트)이면 파렛트가 없어도 라벨 1장분(앞뒤 2장)을 뽑는다
     const mixed = !total && o.seq > 1;
@@ -684,7 +730,17 @@ function labelCell(o, g) {
     }
     const sheets = labelPages(o, g).length;
     return `<button class="btn btn--sm" data-label="${o.id}" type="button"
-        title="총 ${sheets}장 (${mixed ? '혼적' : `${total}파렛트`} × 앞뒤 2장)">출력</button>`;
+        title="총 ${sheets}장 (${mixed ? '혼적' : `${total}파렛트`} × 앞뒤 2장)">${
+    withNo ? `${esc(o.order_no)} 출력` : '출력'}</button>`;
+}
+
+/**
+ * 검수 후 합친 묶음의 출력 셀 - 주문마다 버튼을 세로로 쌓는다.
+ * 목록은 묶음 1행이라 멤버 행이 따로 없으므로 대표 행에 모아 둔다.
+ */
+function splitLabelCell(g) {
+    return `<div class="label-cell">${
+        g.rows.map((r) => labelButton(r, g, true)).join('')}</div>`;
 }
 
 /**
@@ -761,10 +817,11 @@ function fitPt(text, boxW, boxH, maxPt) {
  * 파렛트수도 묶음 총량이라 묶음의 어느 주문에서 눌러도 같은 라벨이 나온다.
  */
 function labelHtml(o, g) {
-    const head = g?.head ?? o;
-    const src = o.rep_no ? head : o;                       // 라벨에 찍을 주문
-    const no = o.rep_no || o.order_no;                     // 바코드 · 주문번호 칸
-    const members = o.rep_no ? (g?.rows ?? [o]).map((r) => r.order_no) : [];
+    // 검수 후 합친 묶음은 주문마다 자기 라벨이라 그 주문 기준으로 찍는다
+    const rep = Boolean(o.rep_no) && !ownLabels(g);
+    const src = rep ? (g?.head ?? o) : o;                  // 라벨에 찍을 주문
+    const no = rep ? o.rep_no : o.order_no;                // 바코드 · 주문번호 칸
+    const members = rep ? (g?.rows ?? [o]).map((r) => r.order_no) : [];
     const total = labelTotal(o, g);
     const barcode = code128Svg(no, { height: 120, moduleWidth: 3, showText: false });
     // 항목명 · 값 · 값의 최대 글자 크기(pt)

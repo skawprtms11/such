@@ -127,7 +127,7 @@ export async function render(root, { user }) {
         const row = e.target.closest('.m-card[data-id]');
         if (!row) return;
         const o = rows.find((x) => x.id === row.dataset.id);
-        if (o) openDetail(o, stepOptOf(o));
+        if (o) openDetail(o, stepOptOf(o));   // 묶음 총량은 시트 안에서 다시 읽는다
     });
 
     await reload();
@@ -160,12 +160,17 @@ function statusCard(o, opt) {
 }
 
 /** 상세 시트 - 좁은 목록에서 뺀 항목까지 모두 보여준다 (조회 전용) */
-function openDetail(o, opt) {
+async function openDetail(o, opt) {
     const steps = visibleSteps(o, opt);
     const dash = '<span class="m-muted">-</span>';
     const row = (k, v) => `
 <div class="m-kv__row"><span class="m-kv__k">${esc(k)}</span>
   <span class="m-kv__v">${v}</span></div>`;
+    // 🔑 총량은 **묶음 합계**로 읽는다 (대표에만 실린 묶음·주문마다 실린 묶음이 둘 다 있다)
+    const rows = (await db.getBatchGroup(o.id))?.rows ?? [o];
+    const sum = (k) => rows.reduce((a, r) => a + Number(r[k] ?? 0), 0);
+    const pallets = sum('pallet_count');
+    const boxes = sum('box_count');
 
     return sheet(`${o.order_no} · ${o.seq}차수`, `
 ${stepBar(steps)}
@@ -178,8 +183,8 @@ ${stepBar(steps)}
   ${row('팀명', o.team_name ? esc(o.team_name) : dash)}
   ${row('출고요청일', `<b>${esc(o.ship_req_date ?? '미정')}</b>`)}
   ${row('출고형태', esc(o.vehicle_type))}
-  ${row('파렛트수', o.pallet_count ? `${num(o.pallet_count)} PLT` : dash)}
-  ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
+  ${row('파렛트수', pallets ? `${num(pallets)} PLT` : dash)}
+  ${row('박스수', boxes ? `${num(boxes)} 박스` : dash)}
   ${row('요청사항', o.request_note ? esc(o.request_note) : dash)}
   ${row('비고', o.remark ? esc(o.remark) : dash)}
 </div>

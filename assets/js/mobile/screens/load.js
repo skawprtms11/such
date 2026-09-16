@@ -100,13 +100,17 @@ async function renderList(root, user) {
     }
 
     function draw(rows) {
-        const count = (s) => rows.filter((o) => o.load_status === s).length;
-        const doneCount = rows.filter((o) => loadDone(o)).length;
+        // 🔑 막힌 묶음은 오늘 실을 수 없으므로 합계에서 뺀다 (목록에는 사유와 함께 남긴다)
+        const live = rows.filter((o) => !o.blocked);
+        const blocked = rows.length - live.length;
+        const count = (s) => live.filter((o) => o.load_status === s).length;
+        const doneCount = live.filter((o) => loadDone(o)).length;
         root.querySelector('#sum').innerHTML = rows.length ? `
 <span>대기 <b>${num(count(LOAD_STATUS.WAIT))}</b></span>
 <span>검수 <b>${num(count(LOAD_STATUS.INSPECTED))}</b></span>
 <span>완료 <b>${num(doneCount)}</b></span>
-<span class="m-sum__rate">진행 <b>${rate(doneCount, rows.length)}%</b></span>` : '';
+${blocked ? `<span>제외 <b>${num(blocked)}</b></span>` : ''}
+<span class="m-sum__rate">진행 <b>${rate(doneCount, live.length)}%</b></span>` : '';
 
         listEl.innerHTML = rows.length
             ? rows.map((o) => loadCard(o, editable)).join('')
@@ -147,7 +151,9 @@ async function renderList(root, user) {
             return;
         }
         const row = e.target.closest('.m-card[data-id]');
-        if (row) location.hash = `#/load/${row.dataset.id}`;
+        if (row && row.dataset.blocked !== '1') {
+            location.hash = `#/load/${row.dataset.id}`;
+        }
     });
 
     await reload();
@@ -174,20 +180,26 @@ function loadCard(o, editable) {
   · 박스 ${boxes ? num(boxes) : '-'}
   ${done ? `· 상차 ${esc(fmtDateTime(o.loaded_at))}` : ''}</span>`;
 
-    const actions = done ? '' : `
+    // 🔑 막힌 묶음은 상차검수·상차완료를 막는다. 로케이션 확인만 남긴다
+    const actions = o.blocked
+        ? `<button class="m-btn" type="button" data-loc="${esc(o.id)}">로케이션</button>`
+        : done ? '' : `
 <button class="m-btn" type="button" data-loc="${esc(o.id)}">로케이션</button>
 ${o.load_status === LOAD_STATUS.INSPECTED && editable
         ? `<button class="m-btn m-btn--go" type="button" data-load="${esc(o.id)}">상차완료</button>`
         : `<button class="m-btn m-btn--primary" type="button"
              data-scan="${esc(o.id)}">상차검수</button>`}`;
 
-    return card(o.rep_no ? `<b>${no}</b>` : no, body, {
+    return card(o.rep_no ? `<b>${no}</b>` : no, o.blocked
+        ? `${body}<span class="m-card__block">${esc(o.block_reason)}</span>` : body, {
         badges: `${o.rep_no ? tag('대표', 'amber') : ''}${plusBadge(o.group_count)}`,
-        status: tag(o.load_status, STATUS_TONE[o.load_status] ?? 'gray'),
+        status: o.blocked
+            ? tag('당일상차 제외', 'gray')
+            : tag(o.load_status, STATUS_TONE[o.load_status] ?? 'gray'),
         bar: { done: o.group_inspected ?? 0, total, label: `${o.group_inspected ?? 0}/${total} PLT` },
         actions,
-        attrs: { id: o.id },
-        tap: true,
+        attrs: { id: o.id, blocked: o.blocked ? '1' : '' },
+        tap: !o.blocked,
     });
 }
 
@@ -262,6 +274,10 @@ async function renderDetail(root, user, orderId, mode) {
             note: g.rows.length > 1
                 ? `묶인 주문 ${g.rows.length}건이 함께 검수·상차됩니다`
                     + ` (${esc(g.rows.map((r) => r.order_no).join(', '))}).`
+                    // 주문마다 자기 파렛트를 가진 묶음은 라벨도 주문마다 따로 출력돼 있다
+                    // 판정은 db 한 곳에서 한다 (모집단은 상차 묶음)
+                    + (db.hasSplitPallets(g.rows)
+                        ? ' 주문마다 출력된 상차라벨을 각각 그 수량만큼 스캔하세요.' : '')
                 : '',
             more: editable,
         });

@@ -97,8 +97,11 @@ function waitCard(g) {
         ? `${esc(locs[0])}${locs.length > 1 ? ` 외 ${locs.length - 1}` : ''}`
         : '로케이션 미지정'}</span>`;
 
-    return card(esc(o.rep_no || o.order_no), body, {
-        badges: `${o.rep_no ? tag('대표', 'amber') : ''}${plusBadge(g.rows.length)}`,
+    return card(esc(o.rep_no || o.order_no), g.blocked
+        ? `${body}<span class="m-card__block">${esc(g.block_reason)}</span>` : body, {
+        // 🔑 당일상차리스트와 같은 판정이다. 배지가 없으면 실을 준비가 된 것처럼 보인다
+        badges: `${o.rep_no ? tag('대표', 'amber') : ''}${plusBadge(g.rows.length)}`
+            + `${g.blocked ? tag('당일상차 제외', 'gray') : ''}`,
         status: tag(stowStatus(done, total), TONE[stowStatus(done, total)] ?? 'gray'),
         attrs: { id: o.id },
         tap: true,
@@ -108,6 +111,8 @@ function waitCard(g) {
 /** 적치 로케이션 시트 - 파렛트별로 어디에 있는지 확인만 한다 */
 function openLocations(g) {
     const o = g.head;
+    // 박스수는 묶음 합계다 (대표에만 총량을 적는 묶음도 그대로 더해진다)
+    const boxes = g.rows.reduce((a, r) => a + Number(r.box_count ?? 0), 0);
     const row = (k, v) => `
 <div class="m-kv__row"><span class="m-kv__k">${esc(k)}</span>
   <span class="m-kv__v">${v}</span></div>`;
@@ -122,7 +127,7 @@ ${g.rows.length > 1
   ${row('거래처명', esc(o.customer))}
   ${row('출고요청일', `<b>${esc(o.ship_req_date ?? '미정')}</b>`)}
   ${row('출고형태', esc(o.vehicle_type))}
-  ${row('박스수', o.box_count ? `${num(o.box_count)} 박스` : dash)}
+  ${row('박스수', boxes ? `${num(boxes)} 박스` : dash)}
   ${row('파렛트', `${num(g.pallets.length)} PLT`)}
 </div>
 <p class="m-listtitle">파렛트</p>

@@ -683,7 +683,10 @@ async function openMergeModal(o, user, onMerged) {
   거래처 <b>${esc(o.customer)}</b> 의 <b>같은 출고요청일</b> 주문을 골라
   <b>대표주문번호</b> 하나로 묶습니다.
   묶인 주문은 접수·출고작업·검수작업·상차를 함께 처리합니다.
-  (검수작업이 시작된 주문은 총 파렛트수·박스수가 어긋나므로 합칠 수 없습니다.)
+  <br><b>검수작업이 끝난 뒤에도 합칠 수 있습니다.</b>
+  파렛트수는 각 주문이 검수한 수량 그대로 유지되고(다시 입력하지 않습니다),
+  상차검수는 <b>주문마다 출력된 상차라벨을 각각 그 수량만큼</b> 스캔합니다.
+  (상차검수가 시작된 주문은 진행률이 어긋나므로 합칠 수 없습니다.)
 </p>
 ${reason ? `<p class="form-note is-warn">${esc(reason)}</p>` : `
 <label class="field">
@@ -716,7 +719,8 @@ ${reason ? `<p class="form-note is-warn">${esc(reason)}</p>` : `
             tbl.innerHTML = `<tbody><tr><td class="empty">${targets.length
                 ? '검색 결과가 없습니다.'
                 : '합칠 수 있는 주문이 없습니다.'
-                    + ' (같은 거래처·같은 출고요청일, 검수작업 전인 주문만 고를 수 있습니다)'
+                    + ' (같은 거래처·같은 출고요청일, 검수·적치 진행이 같고'
+                    + ' 상차검수 전인 주문만 고를 수 있습니다)'
             }</td></tr></tbody>`;
             return;
         }
@@ -733,7 +737,8 @@ ${list.map((t) => `
         : '<span class="muted">-</span>'}</td>
   <td class="center">${seqTag(t.seq)}</td>
   <td>${t.ship_req_date || '미정'}</td>
-  <td class="num">${t.pallet_count ? num(t.pallet_count) : '<span class="muted">-</span>'}</td>
+  <td class="num">${t.group_pallets
+        ? num(t.group_pallets) : '<span class="muted">-</span>'}</td>
   <td class="center">
     <button class="btn btn--primary btn--sm" data-merge="${t.id}" type="button">선택</button>
   </td>
@@ -748,7 +753,10 @@ ${list.map((t) => `
                 const ok = await confirmDialog(
                     `${o.order_no} 을(를) ${t.order_no} 의 묶음에 합칩니다.\n\n`
                     + `대표주문번호: ${t.merge_rep_no}\n`
-                    + '합친 뒤에는 접수·출고작업·검수작업·상차가 함께 처리됩니다.',
+                    + '합친 뒤에는 접수·출고작업·검수작업·상차가 함께 처리됩니다.\n\n'
+                    + '검수완료된 주문이라면 파렛트수는 각 주문의 검수 수량이 그대로'
+                    + ' 유지되고, 상차검수는 주문마다 출력된 상차라벨을 각각'
+                    + ' 그 수량만큼 스캔해야 합니다.',
                 );
                 if (!ok) return;
                 try {
@@ -800,6 +808,20 @@ function groupTableHtml(list, pickedId) {
   </tbody></table>
   <p class="form-note">행을 누르면 아래 상세·조정요청·수정이력이 그 주문 기준으로 바뀝니다.</p>
 </div>`;
+}
+
+/**
+ * 파렛트수 표시 🔑
+ * 상세 탭은 **그 주문 기준**이라 자기 값을 보여주고, 묶여 있으면 묶음 합계를 덧붙인다.
+ * 총량이 대표에만 실린 묶음(등록 시 묶음)과 주문마다 실린 묶음(검수 후 합침)이
+ * 섞여 있어, 합계라야 두 경우 모두 실제 물량과 맞는다.
+ */
+function palletText(o, list) {
+    const own = Number(o.pallet_count ?? 0);
+    const live = list.filter((r) => !r.canceled_at);
+    const total = live.reduce((a, r) => a + Number(r.pallet_count ?? 0), 0);
+    if (live.length < 2) return `${num(own)}파렛트`;
+    return `${num(own)}파렛트 (묶음 ${num(total)}파렛트)`;
 }
 
 /**
@@ -858,7 +880,7 @@ ${row('접수확인', o.confirmed_at
         : '미확인')}
 ${row('품목수', `${num(o.item_count)}개`)}
 ${row('출고수량', `${num(o.qty)}ea`)}
-${row('파렛트수', `${num(o.pallet_count)}파렛트`)}
+${row('파렛트수', palletText(o, list))}
 ${row('처리현황', currentStep(o, stepOpt))}
 ${row('상태', stateOf(o))}
 ${row('추가작업', o.extra_yn === YN.YES && (o.extra_works ?? []).length
@@ -1678,6 +1700,10 @@ ${rows.map((r, ri) => `
         const openReps = new Map((await db.listOpenRepNos({
             createdBy: can(user, 'viewAll') ? undefined : user.id,
         })).map((x) => [x.rep_no, x]));
+        // 상차검수가 시작된 묶음에는 더 넣을 수 없다 (등록·수정 폼과 같은 기준)
+        const stuckReps = new Map((await db.listBlockedRepNos({
+            createdBy: can(user, 'viewAll') ? undefined : user.id,
+        })).map((x) => [x.rep_no, x]));
         const fileReps = new Map();
 
         rows.forEach((r, ri) => {
@@ -1706,6 +1732,11 @@ ${rows.map((r, ri) => `
                 const before = fileReps.get(o.rep_no);
                 if (before && before.customer !== o.customer) {
                     bad.push(`대표주문번호 '${o.rep_no}' 의 거래처명이 ${before.row}행과 다릅니다`);
+                }
+                const stuck = stuckReps.get(o.rep_no);
+                if (stuck) {
+                    bad.push(`대표주문번호 '${o.rep_no}' 묶음에는 더 넣을 수 없습니다`
+                        + ` (${stuck.order_no} - ${stuck.reason})`);
                 }
                 const open = openReps.get(o.rep_no);
                 if (open && open.created_by !== user.id) {

@@ -212,7 +212,9 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 
 | 함수 | 설명 |
 |---|---|
-| `listLoading(shipDate)` | 해당 출고일 + 상차 전 단계가 모두 끝난 주문만. **준비된 행을 먼저 거른 뒤** `loadGroups` 로 묶는다(묶음을 다시 펼치지 않는다). 대표 1건에 `group_no` `group_nos` `group_count` `group_pallets` **`group_boxes`**(묶음 박스수 합계) `group_inspected` 를 붙이며 **모두 준비된 멤버 기준**이다 |
+| `listLoading(shipDate)` | 해당 출고일의 주문을 `loadGroups` 로 **먼저 묶고**, 묶음 전체가 `readyToLoad` 인지 본다. 대표 1건에 `group_no` `group_nos` `group_count` `group_pallets` **`group_boxes`**(묶음 박스수 합계) `group_inspected` 를 붙이며 **묶음 전체 기준**이다. 🔑 준비되지 않은 묶음도 **목록에서 지우지 않고** `blocked: true` 와 `block_reason`(`주문번호 - 미완료단계`)을 붙여 함께 돌려준다 — 화면은 회색 행으로 구분하고 상차검수·상차완료를 막는다 |
+| `getLoadGroup(orderId)` / `listStowWaiting(f)` | 같은 판정을 담아 돌려준다 (`blocked` `block_reason`). 상차대기 화면이 당일상차리스트와 다르게 보이지 않게 하는 장치다 |
+| `listBlockedRepNos(f)` | 상차검수가 시작돼 **더 넣을 수 없는** 대표주문번호 목록 (일괄등록 검증용). `listOpenRepNos` 가 후보에서 뺀 것과 같은 기준(`mergeBlockReason`) |
 | `listPallets(orderId)` | 파렛트 바코드 목록 |
 | `scanPallet(orderId, barcode, user)` | `{ok, msg, order}` 반환. 전량 스캔 시 `검수` 전환 |
 | `resetInspection(orderId, user)` | 상차검수 전체 초기화 (**상차완료된 묶음은 거부**) |
