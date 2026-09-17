@@ -1752,9 +1752,10 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-edge.is-join { stroke: var(--blue); stroke-dasharray: none; }
 .pm-edge__head { fill: var(--gray-300); stroke: none; }
 .pm-edge__head.is-join { fill: var(--blue); }
-.pm-card__head .pm-no { flex: none; }
+.pm-card__head { padding-top: 9px; }              /* 좌상단 배지와 글자가 겹치지 않게 */
+.pm-card__head .pm-who { flex: none; margin-left: 2px; padding: 1px 6px; border-radius: 10px; background: var(--gray-100); font-size: 11.5px; }
 /* 갈래 줄의 점 번호(4.1) - 한 줄기의 원(①)과 달리 파란 알약으로 그린다 */
-.pm-no--fork { width: auto; min-width: 26px; height: 22px; padding: 0 7px; border-radius: 11px; border: 1.5px dashed var(--blue); background: #fff; color: var(--blue); font-size: 12px; letter-spacing: -.2px; }
+.pm-no--fork { padding: 0 6px; border: 1.5px dashed var(--blue); background: #fff; color: var(--blue); font-size: 12px; letter-spacing: -.2px; }
 .pm-loose { max-width: 520px; margin: 16px 0 0; }
 .pm-loose .pm-card { border-style: dashed; }
 
@@ -1801,9 +1802,10 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-step__rail { position: relative; display: flex; justify-content: center; padding-top: 8px; }
 .pm-step:not(.is-last) > .pm-step__rail::after { content: ''; position: absolute; top: 38px; bottom: -14px; border-left: 2px solid var(--gray-300); }
 .pm-step:not(.is-last) > .pm-step__rail::before { content: ''; position: absolute; bottom: -14px; left: 50%; margin-left: -4px; border: 4px solid transparent; border-top: 6px solid var(--gray-300); z-index: 1; }
-.pm-no { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; }
+/* 번호 배지 - 카드 왼쪽 위 모서리에 걸치는 사각 배지 (업무 흐름도 관례) */
+.pm-no { position: absolute; top: -8px; left: -7px; z-index: 1; display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 22px; padding: 0 5px; border-radius: 4px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 700; }
 .pm-step.is-off .pm-card, .pm-step.is-off .pm-no { opacity: .6; }
-.pm-card { border: 1.5px solid var(--gray-300); border-radius: 10px; background: #fff; }
+.pm-card { position: relative; border: 1.5px solid var(--gray-300); border-radius: 10px; background: #fff; }
 .pm-card__head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 42px; padding: 7px 12px; }
 .pm-card__title { font-size: 14px; font-weight: 700; }
 .pm-card__desc { color: var(--gray-500); font-size: 12.5px; }

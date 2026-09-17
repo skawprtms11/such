@@ -261,9 +261,12 @@ function nodeHtml(p, o) {
     const it = p.item;
     const leaf = !p.rows.length && !p.subs.length;
     const open = o.state.open.has(it.id);
+    // 🔑 담당은 **직접 지정한 노드**에만 붙는다(비우면 상위를 따르므로 whoHtml 이 빈 값).
+    // 그래서 접힌 카드에 그대로 내보내면 **담당이 바뀌는 지점에만** 칩이 생기고,
+    // 칩이 없는 카드는 「위 담당이 이어진다」로 읽힌다 - 스윔레인이 하는 일과 같은 정보다.
+    const who = whoHtml(it);
     const detail = [
         it.description ? `<span>${esc(it.description)}</span>` : '',
-        whoHtml(it),
         leaf ? '<span class="pm-note">체크항목 없음 · 단계 자체를 체크</span>' : '',
         leaf && !it.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : '',
         p.subs.length && p.fork ? '<span class="pm-note">하위는 갈래입니다 (조건에 따라 하나를 탑니다)</span>' : '',
@@ -277,6 +280,7 @@ function nodeHtml(p, o) {
       ${gripHtml()}
       ${noHtml(p.no, p.branch)}
       <span class="pm-card__title">${esc(it.title)}</span>
+      ${who}
       ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
       ${leaf ? `<span class="pm-tools">${dailyToggle(it)}</span>` : ''}
       <span class="toolbar__spacer"></span>
