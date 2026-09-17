@@ -1,4 +1,4 @@
-# 당일상차리스트
+# 상차리스트
 
 > 코드 `assets/js/pages/loading.js` · 라우트 `#/loading` · [공통 규약](common.md) · [CLAUDE.md](../CLAUDE.md)
 > 검수 화면은 [inspect.md](inspect.md) 참고
@@ -194,7 +194,7 @@ db.loadGroups(사용중인주문)
 ```js
 // ① 묶음 전원이 상차검수를 통과했는지
 if (group.rows.some((r) => r.load_status !== LOAD_STATUS.INSPECTED)) throw ...
-// ② 🔑 상차 이외의 단계가 모두 끝났는지 — 당일상차리스트와 같은 판정 함수를 쓴다
+// ② 🔑 상차 이외의 단계가 모두 끝났는지 — 상차리스트와 같은 판정 함수를 쓴다
 const notReady = group.rows.filter((r) => !readyToLoad(r, optOf(r)));
 if (notReady.length) throw new Error(`상차 이외의 단계가 끝나지 않은 주문이 있습니다. (…)`);
 o.load_status = LOAD_STATUS.DONE;
@@ -214,7 +214,7 @@ o.loaded_at = new Date().toISOString();   // 처리현황의 상차작업 단계
 
 ## CSV 다운로드
 
-파일명 `당일상차리스트_YYYY-MM-DD.csv` (조회 중인 출고일자)
+파일명 `상차리스트_YYYY-MM-DD.csv` (조회 중인 출고일자)
 
 ```
 출고일자, 대표주문번호, 주문번호, 거래처명, 출고형태, 파렛트수, 박스수, 검수파렛트, 상태

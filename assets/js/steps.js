@@ -1,6 +1,6 @@
 /**
  * 출고 처리 단계 계산.
- * 주문처리현황·출고주문처리·당일상차리스트가 같은 규칙을 쓰도록 한곳에 모았다.
+ * 주문처리현황·출고주문처리·상차리스트가 같은 규칙을 쓰도록 한곳에 모았다.
  * 단계 완료 여부는 주문의 시각 필드(예: ship_done_at)에 값이 있는지로 판단한다.
  */
 import { WORK_STEPS, YN, LOAD_STATUS } from './config.js';
@@ -95,7 +95,7 @@ ${i ? '<span class="steps__arrow">→</span>' : ''}
         .join('');
 }
 
-/** 상차작업을 제외한 모든 단계가 끝났는지 (당일상차리스트 진입 조건) */
+/** 상차작업을 제외한 모든 단계가 끝났는지 (상차리스트 진입 조건) */
 export function readyToLoad(order, opt = {}) {
     return visibleSteps(order, opt)
         .filter((s) => s.key !== 'load')

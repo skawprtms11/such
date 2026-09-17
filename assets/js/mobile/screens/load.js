@@ -2,7 +2,7 @@
  * 상차작업 (모바일 앱).
  *
  * 목록 → 상차검수 → 상차완료 → 로케이션(파렛트 내리기)을 **한 화면 흐름**으로 처리한다.
- * 웹의 당일상차리스트(#/loading) + 검수(#/inspect/:id) 를 하나로 합친 것이며,
+ * 웹의 상차리스트(#/loading) + 검수(#/inspect/:id) 를 하나로 합친 것이며,
  * 업무 규칙은 새로 쓰지 않고 db.js 함수를 그대로 부른다.
  *
  *   #/load          목록
@@ -171,7 +171,7 @@ ${blocked ? `<span>제외 <b>${num(blocked)}</b></span>` : ''}
 function loadCard(o, editable) {
     const no = esc(o.group_no ?? o.order_no);
     const total = o.group_pallets ?? 0;
-    // 박스수는 파렛트수와 같이 묶음 합계를 쓴다 (웹 당일상차리스트와 같은 값)
+    // 박스수는 파렛트수와 같이 묶음 합계를 쓴다 (웹 상차리스트와 같은 값)
     const boxes = Number(o.group_boxes ?? o.box_count ?? 0);
     const done = loadDone(o);
     const body = `

@@ -16,7 +16,7 @@
 | 주문정보등록 | [docs/orders.md](docs/orders.md) | `assets/js/pages/orders.js` | `#/orders` | — (앱에 없음) |
 | 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` | `#/status` (상단바 메뉴) |
 | 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` | `#/ship` `#/inspect` `#/stow` `#/adjust` (탭 4개로 분리) |
-| 당일상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
+| 상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |
@@ -69,6 +69,7 @@ npm run dev:https  HTTPS 개발 서버 (휴대폰 카메라 스캔 테스트용)
 npm run build      프로덕션 빌드 → dist/
 npm run preview    빌드 결과물 확인 (http://localhost:4173)
 npm run lint       코드 검사  /  npm run lint:fix  자동 수정
+npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 트리 · docs/checklist.md)
 ```
 
 ⚠️ **카메라는 HTTPS 또는 localhost 에서만 동작한다.**
@@ -125,10 +126,12 @@ thefurerap/
 │     ├─ supabase.js      Supabase 클라이언트 (싱글턴)
 │     ├─ icons.js        단색 라인 SVG 아이콘 (currentColor 기반)
 │     ├─ steps.js        출고 처리 단계 계산 (여러 화면이 공유)
+│     ├─ checkflow.js    업무프로세스 도식의 좌표 계산 (순수 함수 · 웹/앱 공용)
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     ├─ pages/           웹 화면 모듈
+│     │  └─ checklist/    업무체크리스트 화면 분할 (common·daily·process·flowview·form)
 │     └─ mobile/          모바일 앱 화면 층 (docs/mobile.md) — pages/ 와 서로 import 하지 않는다
 │        ├─ app.js        앱 셸 · 해시 라우터 · 하단 탭 · 상단바 메뉴(≡)
 │        ├─ ui.js         앱 공통 컴포넌트 (dock·scanBar·sheet·bigCounter 등)
@@ -163,7 +166,7 @@ thefurerap/
 | 출고적치 | `stow_done_at` | 출고주문처리 (출고적치 탭 - 전량 입력 후 `적치완료` 버튼) |
 | | | ↳ 되돌리려면 `적치취소` (검수취소보다 먼저 해야 한다) |
 | 조정작업 | *(계산값)* | 조정요청을 모두 확인 처리할 때 |
-| 상차작업 | `loaded_at` | 당일상차리스트 |
+| 상차작업 | `loaded_at` | 상차리스트 |
 
 - **요청작업**은 주문 등록 시 추가작업이 `있음`(`extra_yn`)인 경우에만 표시된다
   (옛 데이터는 `extra_works` 배열 유무로 판단)
@@ -172,7 +175,7 @@ thefurerap/
 - **패킹리스트**는 주문 등록 시 패킹리스트가 `있음`(`packing_yn`)인 경우에만 표시된다
 - 정의는 `config.js` 의 `WORK_STEPS`, 계산은 `assets/js/steps.js` 가 담당한다
   (`visibleSteps` `readyToLoad` `stepRate` `currentStep`)
-- **당일상차리스트에는 상차작업을 제외한 모든 단계가 끝난 주문만 나온다** (`readyToLoad`)
+- **상차리스트에는 상차작업을 제외한 모든 단계가 끝난 주문만 나온다** (`readyToLoad`)
 - 상차작업까지 끝나면 용마담당자가 **완료처리**(`closed_at`)로 주문을 마감한다.
   단계가 아니라 마감 표시이며, 주문처리현황의 탭을 가르는 기준이다
   ([docs/status.md](docs/status.md) 참고)
@@ -223,7 +226,7 @@ thefurerap/
 - 일괄등록은 신규주문으로만 들어간다
 
 **상차는 차수를 묶어서 처리한다 🔑** — 추가주문은 1차수와 함께 한 거래처로 배송되므로,
-상차대기·당일상차리스트·상차검수는 **같은 `base_no` 의 모든 차수를 하나로 본다**
+상차대기·상차리스트·상차검수는 **같은 `base_no` 의 모든 차수를 하나로 본다**
 (`db.getLoadGroup()`). 목록에는 대표(가장 낮은 차수)만 나오고 옆에 `+2건` 배지가 붙는다.
 상차검수·상차완료도 그룹 전체에 적용된다.
 ⚠️ **묶이는 것은 상차뿐이다.** 접수·출고작업·검수작업은 차수마다 따로 처리한다
@@ -276,7 +279,7 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | 단계 | 일괄 적용 범위 | 묶음 키 |
 |---|---|---|
 | 접수 · 접수취소 · 출고작업 시작/완료/취소 · 검수완료/취소 · 패킹리스트 · 완료처리 | **대표주문번호 묶음만** | `rep_no` (없으면 주문 1건) |
-| 상차대기 · 당일상차리스트 · 상차검수 · 상차완료/취소 · 상차라벨 | 대표주문번호 **+ 추가주문 차수** | `db.groupKeyOf` |
+| 상차대기 · 상차리스트 · 상차검수 · 상차완료/취소 · 상차라벨 | 대표주문번호 **+ 추가주문 차수** | `db.groupKeyOf` |
 
 - **대표주문번호가 없는 주문(단독 · 추가주문 차수)은 종전처럼 1건씩 처리한다.**
   추가주문은 1차수와 진행이 다를 수 있어(1차수 검수 후 추가 등록) 묶어서 처리할 수 없다
@@ -305,7 +308,7 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
   ⚠️ 판정 모집단은 **`db.repGroups`** 다 (표가 그 단위로 1행이다). 상차 묶음으로 판정하면
   추가주문 차수가 섞여 대표 행과 차수 행 양쪽에 같은 버튼이 생긴다
   ([docs/status.md](docs/status.md))
-- **당일상차리스트는 상차 묶음 전체가 준비돼야 목록에 올린다.** 한 멤버라도 준비가
+- **상차리스트는 상차 묶음 전체가 준비돼야 목록에 올린다.** 한 멤버라도 준비가
   안 됐으면 그 묶음은 오늘 실을 수 없다. 목록·상차검수·상차완료가 모두 같은 모집단
   (`db.loadGroups`)을 써야 진행률과 스캔 대상이 어긋나지 않는다
 
@@ -326,7 +329,7 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | `manageChecklist` 업무프로세스 편집 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `manageUsers` 사용자 권한 변경 | ✅ | ❌ | ❌ | ❌ | ❌ |
 
-**현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·당일상차리스트는 전부 처리하고,
+**현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·상차리스트는 전부 처리하고,
 주문처리현황·이슈등록·공지사항은 조회만 한다 (공지 **댓글은 쓸 수 있다**).
 업무체크리스트는 **본인이 담당(상속 포함)인 항목만** 체크한다 (업무프로세스 편집은 못 한다).
 이슈 처리는 단계별로 주체가 다르다 —
@@ -395,7 +398,7 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 | `notices` | 공지사항 | `title` `content` `important`(중요공지 - 목록 상단 고정) `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제 - soft delete) |
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
-| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
+| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(하위 프로세스 연결 - seq 순차 ①②③ / fork 갈래 / join 갈래→합류) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
 | `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
