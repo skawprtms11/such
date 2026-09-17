@@ -491,6 +491,65 @@ export function menuSheet(items, title = '작업') {
 /* ---------------------------------- 스캔 바 ---------------------------------- */
 
 /**
+ * 카메라 프리뷰 상자 - 조준 밴드 + (지원 기기만) 플래시 버튼.
+ *
+ * 🔑 상자를 **먼저 보이게 한 뒤** 카메라를 켠다. 숨겨진(display:none) 비디오는
+ * iOS 에서 프레임이 들어오지 않아 "카메라는 켜졌는데 하나도 안 읽히는" 상태가 된다.
+ * 플래시는 기기가 지원할 때만 버튼이 나타난다 (대개 안드로이드 후면 카메라).
+ *
+ * @param {Element} host 프리뷰를 그릴 자리
+ * @returns {{el:Element, video:HTMLVideoElement, bind:Function, show:Function,
+ *            hide:Function, sync:Function, destroy:Function}}
+ */
+export function scanPreview(host) {
+    const el = document.createElement('div');
+    el.className = 'm-scanbox';
+    el.hidden = true;
+    el.innerHTML = `
+<video class="m-scanbox__video" playsinline muted></video>
+<span class="m-scanbox__aim"></span>
+<button class="m-scanbox__torch" type="button" hidden aria-label="플래시">
+  ${icon('torch', 'm-icon')}</button>`;
+    host.appendChild(el);
+
+    const torchBtn = el.querySelector('.m-scanbox__torch');
+    let scanner = null;
+
+    /** 플래시 버튼 표시를 지금 상태에 맞춘다 */
+    function sync() {
+        const usable = Boolean(scanner?.isOn() && scanner.hasTorch?.());
+        torchBtn.hidden = !usable;
+        torchBtn.classList.toggle('is-on', Boolean(scanner?.isTorchOn?.()));
+    }
+
+    torchBtn.addEventListener('click', async () => {
+        await scanner?.toggleTorch?.();
+        sync();
+    });
+
+    return {
+        el,
+        video: el.querySelector('video'),
+        /** 이 프리뷰를 쓰는 스캐너를 알려준다 */
+        bind(sc) {
+            scanner = sc;
+        },
+        show() {
+            el.hidden = false;
+            sync();
+        },
+        hide() {
+            el.hidden = true;
+            sync();
+        },
+        sync,
+        destroy() {
+            el.remove();
+        },
+    };
+}
+
+/**
  * 바코드 스캔 바 - 카메라 프리뷰 + 결과 줄 + (화면이 넘겨준) 하단 독.
  *
  * 카메라를 못 쓰는 기기(iOS 등 · http 접속)에서는 카메라 버튼을 감추고 안내를 띄운다.
@@ -518,21 +577,16 @@ export function scanBar(host, {
     onSubmit,
     onCamera,
 } = {}) {
-    const box = document.createElement('div');
-    box.className = 'm-scanbox';
-    box.hidden = true;
-    box.innerHTML = `
-<video class="m-scanbox__video" playsinline muted></video>
-<span class="m-scanbox__aim"></span>`;
-    host.appendChild(box);
+    const box = scanPreview(host);
 
     // 결과 줄은 프리뷰 아래·독 위에 둔다 (토스트는 놓치기 쉬워 마지막 결과를 남긴다)
     const line = resultLine(host);
 
     const useCam = camera && scanSupported();
     const scanner = useCam
-        ? createScanner(box.querySelector('video'), (code) => handle(code))
+        ? createScanner(box.video, (code) => handle(code))
         : null;
+    box.bind(scanner);
 
     // 처리 중에 다음 코드가 들어오면 순서가 뒤엉킨다 (블루투스 스캐너는 매우 빠르다)
     let busy = false;
@@ -607,12 +661,15 @@ export function scanBar(host, {
 
     async function start() {
         if (!scanner) return;
+        // 프리뷰를 먼저 보이게 한 뒤 카메라를 켠다 (숨겨진 비디오는 iOS 에서 프레임이 안 온다)
+        box.show();
         try {
             await scanner.start();
-            box.hidden = false;
         } catch (err) {
+            box.hide();
             toast(err.message, 'error');
         }
+        box.sync();
         d.set(spec());
         onCamera?.(Boolean(scanner.isOn()));
     }
@@ -620,7 +677,7 @@ export function scanBar(host, {
     function stop() {
         const was = Boolean(scanner?.isOn());
         scanner?.stop();
-        box.hidden = true;
+        box.hide();
         d.set(spec());
         if (was) onCamera?.(false);
     }
@@ -645,7 +702,7 @@ export function scanBar(host, {
             closeTyping();
             stop();
             line.destroy();
-            box.remove();
+            box.destroy();
         },
     };
 }

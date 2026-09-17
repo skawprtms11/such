@@ -704,14 +704,48 @@ html, body {
     object-fit: cover;
 }
 
-/* 조준선 - 라벨을 가로로 맞추도록 가운데 한 줄만 둔다 */
+/* 조준 밴드 - 이 안쪽만 디코더에 넘긴다(scanner.js 의 TUNE.roi). 가운데 선에 라벨을 맞춘다 */
 .m-scanbox__aim {
     position: absolute;
-    left: 8%;
-    right: 8%;
+    left: 4%;
+    right: 4%;
+    top: 27.5%;
+    height: 45%;
+    border: 1px dashed rgba(255, 255, 255, .6);
+    border-radius: 8px;
+}
+
+.m-scanbox__aim::after {
+    content: '';
+    position: absolute;
+    left: 4%;
+    right: 4%;
     top: 50%;
     height: 2px;
     background: rgba(255, 64, 64, .85);
+}
+
+/* 플래시 - 기기가 지원할 때만 나타난다 (어두운 창고에서 인식률을 크게 좌우한다) */
+.m-scanbox__torch {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(16, 32, 48, .55);
+    color: #fff;
+}
+
+.m-scanbox__torch[hidden] { display: none; }
+
+.m-scanbox__torch.is-on {
+    background: #ffd54a;
+    color: #2b2000;
 }
 
 /* -------------------------------- 바텀시트 -------------------------------- */

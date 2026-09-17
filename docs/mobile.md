@@ -222,7 +222,8 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
   예전에는 대표 1건의 `box_count` 만 보여 웹 [상차리스트](loading.md)와 값이 달랐다
 - 상세 화면 진입 시 `db.loadProgress()` 류 진행 계산은 새 규칙이 아니라
   `getLoadGroup().pallets` 를 세는 조합이다.
-- 카메라 쿨다운 2.5초, 직접 입력 무쿨다운(블루투스 스캐너 연속 입력)은 [inspect.md](inspect.md)와 동일.
+- 카메라 중복 방지(같은 라벨을 계속 비추면 2.5초, 다음 1건은 1.5초 이상 비어 있을 때)와
+  직접 입력 무쿨다운(블루투스 스캐너 연속 입력)은 [inspect.md](inspect.md)와 동일.
 - 날짜 이동은 웹처럼 `◀ 오늘 ▶` 버튼을 앱에도 둔다(장갑 낀 손으로 date picker 는 어렵다).
 
 
@@ -269,6 +270,7 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 | 함수 | 역할 |
 |---|---|
 | `scanBar` / `mountScan` | 주문번호·바코드 스캔 바 (카메라 + 직접입력) |
+| `scanPreview` | 카메라 프리뷰 상자 (조준 밴드 · 플래시 버튼 · 보인 뒤 카메라 켜기) |
 | `orderHead` / `bindOrderHead` | 주문 요약 헤더 (대표 배지·묶인 주문·접기) |
 | `stepBar` | 단계 흐름 칩 (`visibleSteps()` 결과를 앱 폭에 맞게 표시) |
 | `dock` | 하단 고정 액션 독 (입력형/버튼형/2버튼형) |
