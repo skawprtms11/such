@@ -5,7 +5,7 @@
  *
  * 목적은 **오늘 내가 빠뜨리면 안 되는 것**을 훑고 체크하는 것이다. 흐름 구조는 줄 아래 작은
  * 캡션(①프로세스 › ⚠상황)으로만 남긴다. 업무 흐름을 보려면 #/process(보기 전용) 로 간다.
- * 🔑 주기·담당자 상속·상황 발생·어제 미체크 판정은 화면이 하지 않는다 - db.dailyTable() ·
+ * 🔑 주기·담당자 상속·상황 발생·어제 미체크 판정은 화면이 하지 않는다 - db.checklistTable() ·
  * db.canCheckItem() 이 준 결과만 그린다. 웹과 같은 함수라 판정이 갈라지지 않는다.
  */
 import * as db from '../../db.js';
@@ -13,14 +13,21 @@ import { icon } from '../../icons.js';
 import { CHECK_KIND, cycleLabel } from '../../config.js';
 import { esc, num, today, addDays, fmtDateTime, toast } from '../../util.js';
 import {
-    emptyState, tag, bigCounter, sheet, pollGuard, closeAllSheets,
+    emptyState, tag, bigCounter, segment, sheet, pollGuard, closeAllSheets,
 } from '../ui.js';
 
-/** 조회 조건 - 다른 화면에 다녀와도 유지한다. openDone 은 완료 줄을 펼쳐 둔 업무항목 id */
-const state = { date: today(), openDone: new Set() };
+/**
+ * 조회 조건 - 다른 화면에 다녀와도 유지한다. openDone 은 완료 줄을 펼쳐 둔 업무항목 id.
+ * scope 는 웹과 같다 - `daily` 그 날짜에 할 것만 / `all` 확인내용 전부(대상 아닌 줄은 조회만).
+ */
+const state = { date: today(), openDone: new Set(), scope: 'daily' };
 
-/** ①②③ 원문자 - 프로세스 순번 캡션용 (20 넘으면 숫자 그대로) */
+/**
+ * ①②③ 원문자 - 프로세스 순번 캡션용 (20 넘으면 숫자 그대로).
+ * 갈래 줄의 점 번호(`4.1`)는 원문자로 못 바꾸므로 원문 그대로 둔다 (웹 common.js 와 같은 규칙).
+ */
 function circled(n) {
+    if (!/^\d+$/.test(String(n))) return String(n);
     return n >= 1 && n <= 20 ? String.fromCodePoint(0x2460 + n - 1) : String(n);
 }
 
@@ -34,6 +41,7 @@ export async function render(root, { user }) {
           aria-label="다음 날짜">${icon('next', 'm-icon')}</button>
   <button class="m-btn m-btn--sm" type="button" id="btn-today">오늘</button>
 </div>
+<div id="scope"></div>
 <div id="counter"></div>
 <div id="missed"></div>
 <div id="list"></div>`;
@@ -48,8 +56,8 @@ export async function render(root, { user }) {
     async function reload() {
         // 앱은 본인 담당(상속 포함) + 공통 항목만 본다 (담당자 필터는 웹에만 있다)
         const f = { assignee: user.id };
-        const table = await db.dailyTable(state.date, f);
-        rows = await db.dueItems(state.date, f);
+        const table = await db.checklistTable(state.date, { ...f, scope: state.scope });
+        rows = table.groups.flatMap((g) => g.sections.flatMap((sec) => sec.rows));
         const sum = await db.checklistSummary(state.date, f);
         sits = collectSituations(table);
 
@@ -69,11 +77,14 @@ export async function render(root, { user }) {
         });
 
         listEl.innerHTML = table.divisions.length
-            ? table.divisions.map((d) => `
+            ? `${state.scope === 'all'
+                ? `<p class="m-chk__meta" style="padding:4px 2px">${esc(state.date)} 의 대상이 아닌 줄은 조회만 됩니다.</p>`
+                : ''}${table.divisions.map((d) => `
 <h3 class="m-dl-div">${esc(d.name)}
   ${tag(`${num(d.done)} / ${num(d.total)}`, d.total && d.done === d.total ? 'green' : 'gray')}</h3>
-${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')
-            : emptyState('이 날짜에 해야 할 항목이 없습니다.');
+${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')}`
+            : emptyState(state.scope === 'all'
+                ? '등록된 확인내용이 없습니다.' : '이 날짜에 해야 할 항목이 없습니다.');
     }
 
     /** 체크 처리 - 실패하면 이유를 그대로 알린다 */
@@ -119,7 +130,7 @@ ${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')
         const row = e.target.closest('[data-item]');
         if (!row) return;
         const item = rows.find((r) => r.id === row.dataset.item);
-        if (!item || !db.canCheckItem(user, item)) return;
+        if (!item || item.due === false || !db.canCheckItem(user, item)) return;
         toggle(item.id, !item.check, item.check?.memo ?? '');
     });
 
@@ -139,10 +150,19 @@ ${d.groups.map((g) => groupHtml(g, user)).join('')}`).join('')
         state.date = dateEl.value || today();
         reload();
     });
+    // 일일 | 전체 - 웹과 같은 세그먼트. 전체는 확인내용 카탈로그라 대상 아닌 줄은 눌리지 않는다
+    const scopeSeg = segment(root.querySelector('#scope'), [
+        { key: 'daily', label: '일일' },
+        { key: 'all', label: '전체' },
+    ], state.scope, (key) => {
+        state.scope = key;
+        reload();
+    });
 
     await reload();
     const unwatch = db.subscribe(pollGuard(root, reload), 8000);
     return () => {
+        scopeSeg.destroy();
         closeAllSheets();
         unwatch();
     };
@@ -184,17 +204,22 @@ function groupHtml(g, user) {
 ${parts.join('')}`;
 }
 
-/** 프로세스 캡션 - `① 하차 파렛트수 확인 › ⚠ 입고수량오류 › ① 수량 차이 기록` */
+/**
+ * 프로세스 캡션 - `① 하차 파렛트수 확인 › ⚠ 입고수량오류 › ① 수량 차이 기록`.
+ * 갈래(fork) 아래 프로세스는 번호가 없어(`no` 가 null) 갈래 이름만 읽는다.
+ */
 function pathCaption(sec) {
     if (!sec.path.length) return '단독 업무';
-    return sec.path.map((n) => (n.sit
-        ? `<span class="is-sit">${icon('issues', 'm-icon')}${esc(n.title)}</span>`
-        : `${circled(n.no)} ${esc(n.title)}`)).join(' › ');
+    return sec.path.map((n) => {
+        if (n.sit) return `<span class="is-sit">${icon('issues', 'm-icon')}${esc(n.title)}</span>`;
+        return n.no == null ? esc(n.title) : `${circled(n.no)} ${esc(n.title)}`;
+    }).join(' › ');
 }
 
 /** 체크 줄 - 줄 전체가 터치 영역 (48px 이상, 장갑 낀 손) */
 function itemRow(r, sec, user) {
-    const locked = !db.canCheckItem(user, r);
+    // 그 날짜의 대상이 아닌 줄(전체 뷰)은 조회만 한다 - 주기 밖 체크는 집계를 어긋나게 한다
+    const locked = r.due === false || !db.canCheckItem(user, r);
     const done = !!r.check;
     const isStep = r.kind === CHECK_KIND.PROCESS;
     const subs = r.assignee_eff_subs ?? [];
@@ -207,7 +232,8 @@ function itemRow(r, sec, user) {
   <span class="m-chk__box">${icon(done ? 'check' : 'square', 'm-icon')}</span>
   <span class="m-chk__text">
     <span class="m-chk__title">${isStep ? '단계 완료 · ' : ''}${esc(r.title)}
-      ${r.late && !done ? '<span class="m-chk__late">어제 미체크</span>' : ''}</span>
+      ${r.late && !done ? '<span class="m-chk__late">어제 미체크</span>' : ''}
+      ${r.due === false ? '<span class="m-chk__off">대상 아님</span>' : ''}</span>
     <span class="m-chk__path ${sec.sit ? 'is-sit' : ''}">${pathCaption(sec)}</span>
     <span class="m-chk__meta">${meta}${doneNote(r)}</span>
   </span>

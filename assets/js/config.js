@@ -76,7 +76,7 @@ export const PERMISSION = {
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
         manageNotice: false, manageChecklist: false,
     },
-    // 현장작업자 - 출고주문처리·당일상차리스트만 처리하고 나머지는 조회만 한다
+    // 현장작업자 - 출고주문처리·상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
@@ -159,7 +159,7 @@ export const YN_LIST = Object.values(YN);
  *   검수작업 → 출고주문처리 > 검수작업 탭
  *   조정작업 → 주문정보등록 이력 팝업에서 조정요청을 모두 확인 처리할 때
  *   추가작업 → 출고주문처리 > 추가작업 탭
- *   상차작업 → 당일상차리스트의 상차완료
+ *   상차작업 → 상차리스트의 상차완료
  */
 export const WORK_STEPS = [
     { key: 'order', label: '주문처리', at: 'confirmed_at' },
@@ -441,6 +441,41 @@ export const CHECK_KIND_CHILDREN = {
 };
 
 /**
+ * 하위 프로세스를 잇는 방식 - 저장값 (checklist_items.child_flow) 🔑
+ * **부모 노드에 붙는다.** "내 하위 프로세스들을 순차로 볼지 갈래로 볼지" 를 정한다.
+ *   seq  : 순차 - ①②③ 번호를 매겨 한 줄기로 잇는다 (기본값 · 지금까지의 모양)
+ *   fork : 갈래 - 번호 없이 갈래 이름으로 나란히 벌린다 (조건에 따라 한 갈래만 탄다)
+ *   join : 갈래 + 합류 - 벌린 갈래들이 **자기 다음 형제** 한 단계로 다시 모인다
+ * 하위 프로세스를 둘 수 있는 업무항목·프로세스에만 뜻이 있다 (체크항목·상황은 현행 그대로).
+ */
+export const CHECK_FLOW = {
+    SEQ: 'seq',
+    FORK: 'fork',
+    JOIN: 'join',
+};
+
+/** 연결 방식 표시 문구 */
+export const CHECK_FLOWS = {
+    [CHECK_FLOW.SEQ]: '순차 ①②③',
+    [CHECK_FLOW.FORK]: '갈래 (조건 분기)',
+    [CHECK_FLOW.JOIN]: '갈래 → 합류 (다시 한 단계로)',
+};
+
+/**
+ * 하위 프로세스를 갈래로 벌리는 부모인가 (갈래면 번호 대신 갈래 이름을 쓴다).
+ * 🔑 **합류(join)도 벌리는 것은 갈래와 같다.** 다른 것은 그린 뒤 다시 모으느냐뿐이라
+ * 번호 규칙(`no: null`)·채번은 `seq` 가 아닌 모든 값에 그대로 걸린다.
+ */
+export function isFork(item) {
+    return !!item?.child_flow && item.child_flow !== CHECK_FLOW.SEQ;
+}
+
+/** 갈래를 다음 형제 한 단계로 다시 모으는 부모인가 (도식 렌더에서만 갈라진다) */
+export function isJoin(item) {
+    return item?.child_flow === CHECK_FLOW.JOIN;
+}
+
+/**
  * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 **보고 있는 업무구분 아래에** 같은 이름의
  * 업무항목을 만들고 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 그 업무구분에 같은 이름이
  * 이미 있으면 거부한다.
@@ -512,7 +547,7 @@ export const MENUS = [
     { key: 'orders', path: '#/orders', label: '주문정보등록', icon: 'orders', mobile: false },
     { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
     { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
-    { key: 'loading', path: '#/loading', label: '당일상차리스트', icon: 'loading', mobile: true },
+    { key: 'loading', path: '#/loading', label: '상차리스트', icon: 'loading', mobile: true },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     {
         key: 'users',
