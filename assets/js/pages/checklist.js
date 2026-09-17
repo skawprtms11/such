@@ -15,7 +15,7 @@ import { can } from '../auth.js';
 import * as db from '../db.js';
 import { esc, today } from '../util.js';
 import { drawToday } from './checklist/daily.js';
-import { drawManage } from './checklist/process.js';
+import { disposeManage, drawManage } from './checklist/process.js';
 
 /** 화면 상태 - 다른 화면에 다녀와도 유지한다 */
 const state = {
@@ -98,6 +98,7 @@ export async function render(root, { user }) {
     const unwatch = db.subscribe(guarded);
     return () => {
         document.body.classList.remove('cl-printing');
+        disposeManage();
         unwatch();
     };
 }

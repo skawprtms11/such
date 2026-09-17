@@ -12,7 +12,8 @@
  * 좌표 계산은 순수 함수(assets/js/checkflow.js)가 한다. 카드 높이는 접힘·체크항목 수에 따라
  * 달라지므로 **먼저 붙여서 재고**(1-pass) 그 값으로 자리를 잡는다(2-pass).
  *
- * 🔑 하위 프로세스는 카드 안이 아니라 **오른쪽 레인의 다른 노드**로 나온다.
+ * 🔑 하위 프로세스는 카드 안이 아니라 **아래에 놓인 다른 노드**로 나온다 - 순차 하위는 같은
+ * 열에서 들여쓰고, 갈래는 오른쪽으로 벌린다 (읽는 규칙: 아래로 = 다음 단계).
  * 상황(주황 블록)은 예외 처리라 지금처럼 카드 안에 그대로 둔다.
  *
  * 🔑 **합류(join)** 는 갈래를 벌린 뒤 **자기 다음 형제**로 다시 모으는 것이다. 모일 곳은
@@ -21,7 +22,7 @@
 import { CHECK_KIND, cycleLabel, isFork, isJoin } from '../../config.js';
 import { icon } from '../../icons.js';
 import { esc } from '../../util.js';
-import { FLOW_SIZE, forkBase, layoutFlow, rowNos } from '../../checkflow.js';
+import { flowCols, forkBase, laneWidth, layoutFlow, rowNos } from '../../checkflow.js';
 import { openBtn, quickBar, stepCaption, whoHtml } from './common.js';
 
 /** 도식 노드가 되는 하위인가 (체크항목·상황은 카드 안에 들어간다) */
@@ -343,35 +344,48 @@ export function looseHtml(gvm, state) {
 }
 
 /**
- * 2-pass 배치 🔑 - 카드 높이를 재서(1-pass 는 이미 DOM 에 붙은 상태) 좌표를 잡고 선을 그린다.
+ * 2-pass 배치 🔑 - 레인 폭을 정해 내려주고 → 카드 높이를 재고 → 좌표를 잡고 선을 그린다.
+ *
+ * 🔑 **순서가 중요하다.** 열 수(`flowCols`)는 측정값 없이 셀 수 있으므로 **재기 전에** 레인
+ * 폭을 정해 `--pm-lane` 으로 내려 준다. 순서를 어기면 카드가 다른 폭으로 줄바꿈된 높이를
+ * 쓰게 되어 선이 카드에서 떨어진다.
  * @param {HTMLElement} host 도식이 들어 있는 엘리먼트 (.pm-canvas 를 품는다)
  * @param {object} gvm groupVM 결과
+ * @param {{width?:number}} [o] width - 가용폭을 직접 줄 때 (인쇄는 A4 폭을 넣는다)
  */
-export function layoutCanvas(host, gvm) {
+export function layoutCanvas(host, gvm, o = {}) {
     const stage = host.querySelector('.pm-stage');
     if (!stage) return;
-    // 레인 폭은 좌표 계산(checkflow.js)이 유일한 출처다. 높이를 재기 전에 내려 줘야
-    // 카드 줄바꿈이 실제 폭으로 계산된다
-    stage.style.setProperty('--pm-lane', `${FLOW_SIZE.lane}px`);
-    const measured = new Map();
-    stage.querySelectorAll('.pm-node').forEach((el) => {
-        measured.set(el.dataset.node, el.offsetHeight);
-    });
     const toNode = (p) => ({
         id: p.item.id,
-        height: measured.get(p.item.id) ?? 0,
+        height: 0,
         fork: !!p.fork,
         join: !!p.join,
         children: p.subs.map(toNode),
     });
-    const { boxes, edges, width, height } = layoutFlow(gvm.processes.map(toNode),
-        { rootFork: gvm.fork });
+    const roots = gvm.processes.map(toNode);
+    const avail = o.width ?? host.querySelector('.pm-canvas')?.clientWidth ?? 0;
+    const lane = laneWidth(avail, flowCols(roots, gvm.fork));
+    stage.style.setProperty('--pm-lane', `${lane}px`);
+
+    const measured = new Map();
+    stage.querySelectorAll('.pm-node').forEach((el) => {
+        measured.set(el.dataset.node, el.offsetHeight);
+    });
+    const fill = (n) => {
+        n.height = measured.get(n.id) ?? 0;
+        n.children.forEach(fill);
+    };
+    roots.forEach(fill);
+    const { boxes, edges, width, height } = layoutFlow(roots, { rootFork: gvm.fork, lane });
 
     boxes.forEach((b) => {
         const el = stage.querySelector(`.pm-node[data-node="${CSS.escape(b.id)}"]`);
         if (!el) return;
         el.style.left = `${b.x}px`;
         el.style.top = `${b.y}px`;
+        // 순차 하위는 들여쓰기 + 왼쪽 레일로 「같은 줄기의 하위」임을 알린다
+        el.classList.toggle('is-indent', b.indent > 0);
     });
     stage.style.width = `${width}px`;
     stage.style.height = `${height}px`;

@@ -1735,12 +1735,15 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-guide .icon { vertical-align: -2px; color: var(--gray-500); }
 .pm-empty { padding: 40px 10px; color: var(--gray-500); font-size: 13px; text-align: center; }
 
-/* 가운데 도식 - 카드는 HTML 그대로, 잇는 선만 SVG. 좌표는 checkflow.js 가 계산한다 */
+/* 가운데 도식 - 카드는 HTML 그대로, 잇는 선만 SVG. 좌표는 checkflow.js 가 계산한다.
+   읽는 규칙은 세로다: 아래로 = 다음 단계 · 오른쪽으로 벌어짐 = 갈래 · 들여쓰기 = 순차 하위 */
 .pm-canvas { padding: 14px 0 6px; overflow-x: auto; }
 .pm-stage { position: relative; min-height: 60px; }
 .pm-stage.is-measuring .pm-node { visibility: hidden; }   /* 1-pass: 높이만 재는 동안 숨긴다 */
 .pm-node { position: absolute; top: 0; left: 0; width: var(--pm-lane, 260px); }
 .pm-node.is-off .pm-card { opacity: .6; }
+/* 순차 하위 - 같은 열에서 들여쓴 카드. 왼쪽 레일로 「같은 줄기의 하위」임을 알린다 */
+.pm-node.is-indent > .pm-card { border-left: 3px solid var(--gray-300); border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
 .pm-node.is-picked > .pm-card { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
 .pm-edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 .pm-edge { fill: none; stroke: var(--gray-300); stroke-width: 2; }

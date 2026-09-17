@@ -19,6 +19,41 @@ import {
 import { canvasHtml, groupVM, layoutCanvas, looseHtml } from './flowview.js';
 import { openForm } from './form.js';
 
+/** 인쇄용 가용폭 (px) - A4 세로에서 여백을 뺀 대략치. 열이 1~2개면 여유롭게 들어간다 */
+const PRINT_W = 680;
+
+/** 지금 그려져 있는 도식 - 창 리사이즈·인쇄가 카드를 다시 그리지 않고 좌표만 다시 잡는다 */
+let shown = null;
+
+/** 화면을 떠날 때 창 리사이즈 구독을 끊는다 (checklist.js 의 정리 함수가 부른다) */
+export function disposeManage() {
+    shown?.off();
+    shown = null;
+}
+
+/**
+ * 도식 재배치 구독 🔑 - 창 리사이즈는 **디바운스로 한 번만** 한다.
+ * 서랍 여닫기·세그먼트 전환·드래그 정렬은 화면을 통째로 다시 그리므로 여기서 따로 걸지 않는다.
+ */
+function watchCanvas(body, gvm) {
+    disposeManage();
+    if (!gvm) return;
+    let timer = null;
+    const onResize = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => layoutCanvas(body, gvm), 150);
+    };
+    window.addEventListener('resize', onResize);
+    shown = {
+        body,
+        gvm,
+        off: () => {
+            clearTimeout(timer);
+            window.removeEventListener('resize', onResize);
+        },
+    };
+}
+
 export async function drawManage(ctx) {
     const { state, body, user, users, reload } = ctx;
     const divisions = await db.listChecklistDivisions();
@@ -103,7 +138,8 @@ export async function drawManage(ctx) {
     </header>
     ${state.edit && group ? `
     <p class="pm-guide">
-      왼쪽에서 오른쪽으로가 업무 순서입니다. 카드의 ${icon('menu', 'icon icon--sm')} 를 끌어 순서를 바꾸고,
+      위에서 아래로가 업무 순서입니다 (오른쪽으로 벌어지면 갈래, 들여쓰기는 순차 하위).
+      카드의 ${icon('menu', 'icon icon--sm')} 를 끌어 순서를 바꾸고,
       ${icon('edit', 'icon icon--sm')} 로 이름·담당자·주기·${icon('branch', 'icon icon--sm')} 갈래 여부를 고칩니다.
       「+ 체크항목」 「+ 상황」 은 이름을 적고 Enter 만 누르면 바로 들어갑니다.
     </p>` : ''}
@@ -115,6 +151,7 @@ export async function drawManage(ctx) {
 </div>`;
 
     if (gvm) layoutCanvas(body, gvm);
+    watchCanvas(body, gvm);
 
     body.querySelectorAll('[data-nav-div]').forEach((el) => {
         el.addEventListener('click', () => {
@@ -167,6 +204,8 @@ export async function drawManage(ctx) {
         const prev = new Set(state.open);
         rows.forEach((r) => state.open.add(r.id));
         await reload();
+        // 인쇄는 화면 폭이 아니라 A4 폭에 맞춰 다시 배치한다 (열이 화면보다 좁아진다)
+        if (shown) layoutCanvas(shown.body, shown.gvm, { width: PRINT_W });
         document.body.classList.add('cl-printing');
         const off = () => {
             document.body.classList.remove('cl-printing');
@@ -233,7 +272,9 @@ export async function drawManage(ctx) {
     });
 
     bindSide(body, state, user, reload);
-    bindGrip(body, state);
+    bindGrip(body, state, () => {
+        if (gvm) layoutCanvas(body, gvm);
+    });
     bindQuick(body, state, user, reload);
     if (state.edit) bindDrag(body, user, reload);
 
@@ -437,8 +478,10 @@ const SIDE_W = { min: 240, max: 640, nav: 230, flow: 420, step: 16 };
  * 우측 구역 왼쪽 경계를 끌어 너비를 바꾼다 (← → 키로도 조절).
  * 정한 값은 state.sideW 에 남아 다른 화면에 다녀와도 유지된다.
  * 포인터는 손잡이에 가둬(setPointerCapture) window 리스너를 남기지 않는다.
+ * @param {()=>void} done 너비가 정해진 뒤(끌기 종료·키 조작) 도식을 다시 배치한다.
+ *   끄는 동안 매 프레임 다시 재지 않는다 - 카드 높이를 다시 재는 일이라 무겁다
  */
-function bindGrip(body, state) {
+function bindGrip(body, state, done) {
     const pm = body.querySelector('.pm');
     const grip = body.querySelector('.pm-side__grip');
     const side = body.querySelector('.pm-side');
@@ -471,6 +514,7 @@ function bindGrip(body, state) {
     const end = (e) => {
         if (grip.hasPointerCapture(e.pointerId)) grip.releasePointerCapture(e.pointerId);
         pm.classList.remove('is-resizing');
+        done();
     };
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);
@@ -478,6 +522,7 @@ function bindGrip(body, state) {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
         e.preventDefault();
         apply(side.offsetWidth + (e.key === 'ArrowLeft' ? SIDE_W.step : -SIDE_W.step));
+        done();
     });
 }
 
