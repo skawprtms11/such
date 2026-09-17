@@ -10,7 +10,8 @@
         "preview": "vite preview",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
-        "dev:https": "HTTPS=true vite"
+        "dev:https": "HTTPS=true vite",
+        "check:flow": "node tools/checkflow-check.js"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.112.4",

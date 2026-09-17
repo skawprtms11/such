@@ -80,12 +80,30 @@ export function forkBase(no) {
  * `--pm-lane` CSS 변수로 내려 주므로 CSS 에 폭을 따로 적지 않는다. 폭은 가용폭에 맞춰
  * `laneMin`~`laneMax` 사이에서 정한다 (`laneWidth`).
  *   gapY   카드 사이 세로 간격 (갈래·합류 버스가 이 틈 가운데를 지난다)
- *   gapX   레인 사이 간격
+ *   gapX   레인 사이 간격 (🔑 `indent * 2 + clear` 이상이어야 한다 - `colGap` 참고)
  *   indent 순차 하위의 들여쓰기 (2단계에서 캡 - `indent * 2`)
+ *   clear  들여쓴 카드와 옆 열 카드 사이에 남겨 둘 최소 여백
  */
 export const FLOW_SIZE = {
-    lane: 240, laneMin: 200, laneMax: 260, gapX: 40, gapY: 56, indent: 24, pad: 10,
+    lane: 240, laneMin: 200, laneMax: 260, gapX: 56, gapY: 56, indent: 24, clear: 8, pad: 10,
 };
+
+/**
+ * 열 사이 간격 🔑 - **들여쓰기 상한보다 반드시 넓다.**
+ *
+ * 카드 폭은 들여쓰기와 무관하게 레인 폭 그대로라 2단 들여쓴 카드는 열 오른쪽으로
+ * `indent * 2` 만큼 삐져나온다. `gapX` 가 그보다 좁으면 옆 열 카드와 겹친다
+ * (실제로 `gapX 40` · 들여쓰기 상한 `48` 이라 8px 겹쳤다 - 「V2 열 독점」 위반).
+ * 두 값을 따로 두면 한쪽만 고쳐 같은 버그가 되살아나므로 **간격을 여기서 한 번 더 올려**
+ * 코드로 보장한다. 레인 폭 계산(`laneWidth`)과 좌표 계산(`layoutFlow`)이 같은 값을 쓴다.
+ *
+ * @param {number} [gapX] 원하는 간격
+ * @param {number} [step] 들여쓰기 한 단계
+ * @returns {number} `max(gapX, step * 2 + clear)`
+ */
+export function colGap(gapX = FLOW_SIZE.gapX, step = FLOW_SIZE.indent) {
+    return Math.max(Number(gapX) || 0, (Number(step) || 0) * 2 + FLOW_SIZE.clear);
+}
 
 /** 좌표를 정수로 맞춘다 (SVG 경로 문자열이 길어지지 않게) */
 function r(n) {
@@ -119,10 +137,13 @@ export function flowCols(roots, rootFork = false) {
  * (그때는 가로 스크롤). 갈래 수에 따라 레인 폭을 다르게 주지는 않는다.
  * @param {number} avail 도식이 쓸 수 있는 폭 (.pm-canvas 의 clientWidth · 인쇄는 A4 폭)
  * @param {number} count 열 수 (flowCols 결과)
+ * @param {{gapX?:number, indent?:number}} [opts] `layoutFlow` 에 넘길 값과 **같은 것을 넘긴다**
+ *   (폭 계산과 좌표 계산이 다른 간격을 쓰면 선이 카드에서 떨어진다)
  */
-export function laneWidth(avail, count) {
+export function laneWidth(avail, count, opts = {}) {
     const n = Math.max(1, count);
-    const room = Math.floor(((Number(avail) || 0) - FLOW_SIZE.gapX * (n - 1)) / n);
+    const gap = colGap(opts.gapX ?? FLOW_SIZE.gapX, opts.indent ?? FLOW_SIZE.indent);
+    const room = Math.floor(((Number(avail) || 0) - gap * (n - 1)) / n);
     return Math.min(FLOW_SIZE.laneMax, Math.max(FLOW_SIZE.laneMin, room));
 }
 
@@ -170,12 +191,13 @@ export function tails(node) {
  */
 export function layoutFlow(roots, opts = {}) {
     const lane = opts.lane ?? FLOW_SIZE.lane;
-    const gapX = opts.gapX ?? FLOW_SIZE.gapX;
     const gapY = opts.gapY ?? FLOW_SIZE.gapY;
     const step = opts.indent ?? FLOW_SIZE.indent;
     const maxIndent = step * 2;          // 들여쓰기는 2단계에서 멈춘다 (오른쪽으로 새지 않게)
+    const gapX = colGap(opts.gapX ?? FLOW_SIZE.gapX, step);   // 반드시 maxIndent 보다 넓다
     const boxes = [];
     const at = new Map();
+    const colAt = new Map();      // 카드가 놓인 열 번호 (blockNextEdge 가 같은 열의 카드를 찾는다)
 
     const kidsOf = (node) => node.children ?? [];
     /** 실제로 모을 갈래가 있는 합류 부모인가 (하위가 없으면 합류가 아니다) */
@@ -183,8 +205,13 @@ export function layoutFlow(roots, opts = {}) {
     const colX = (i) => i * (lane + gapX);
     /**
      * 순차 줄의 **끝 카드** 🔑 - 다음 형제는 여기서 이어 간다. 카드 사이를 가로지르지 않게
-     * 하위 줄의 마지막 카드에서 출발하는 것이다. 갈래(fork·join) 부모는 끝이 여럿이라 없다
-     * (합류면 `joinEdges`, 아니면 부모 카드에서 곧장 내려간다).
+     * 하위 줄의 마지막 카드에서 출발하는 것이다.
+     *
+     * 갈래(fork·join)가 끼면 끝이 여럿이라 `null` 이다 - 갈래 부모 자신뿐 아니라
+     * **마지막 하위가 갈래인 순차 부모**도 그렇다. 🔑 `null` 일 때 **부모 카드에서 곧장
+     * 내려서는 안 된다** - 그 사이에 있는 갈래 카드들을 관통한다 (SVG 가 카드 뒤에 깔려
+     * 화면에서는 「부모 → 갈래 첫 카드 → 다음 형제」 로 잘못 읽힌다).
+     * 합류면 `joinEdges`, 아니면 `blockNextEdge` 로 **서브트리 전체 아래에서** 잇는다.
      */
     const spineTail = (node) => {
         const kids = kidsOf(node);
@@ -214,6 +241,7 @@ export function layoutFlow(roots, opts = {}) {
         const h = Math.max(Number(node.height) || 0, 24);
         const box = { id: node.id, x: r(colX(col) + indent), y: r(y), w: lane, h: r(h), indent };
         at.set(node.id, box);
+        colAt.set(node.id, col);
         boxes.push(box);
         const kids = kidsOf(node);
         if (!kids.length) return;
@@ -288,6 +316,38 @@ export function layoutFlow(roots, opts = {}) {
         });
     };
 
+    /**
+     * 서브트리에서 **자기 열의 가장 아래 카드** 🔑 - `blockNextEdge` 의 출발 카드.
+     *
+     * 서브트리 바닥(`bottomOf`)은 갈래로 벌어진 **다른 열**의 카드일 수 있어, 그 y 에는
+     * 부모 열에 아무것도 없다 - 거기서 출발하면 선이 허공에서 시작한다. 갈래 첫 하위는
+     * 언제나 부모와 같은 열(`place` 의 `c = col`)이라 이 열에는 카드가 반드시 있고,
+     * 그 중 가장 아래 카드의 **바닥 경계**에서 출발하면 아래로는 같은 열에 카드가 없다.
+     */
+    const colTail = (node) => {
+        const col = colAt.get(node.id);
+        let best = at.get(node.id);
+        const walk = (n) => {
+            const b = at.get(n.id);
+            if (colAt.get(n.id) === col && b.y + b.h > best.y + best.h) best = b;
+            kidsOf(n).forEach(walk);
+        };
+        walk(node);
+        return best;
+    };
+
+    /**
+     * 갈래 블록 → 다음 형제 🔑 (**비합류** 갈래 뒤에 쓴다).
+     * 합류가 말단들을 버스로 모아 화살촉 하나로 꽂는 것과 달리, 여기서는 **다음 형제로 잇는
+     * 선 하나**뿐이다 - 갈래가 다시 모이지 않으므로 말단을 끌어오지 않는다.
+     * 🔑 출발은 **같은 열의 가장 아래 카드 바닥**(`colTail`)이다. 다음 형제는
+     * `bottomOf + gapY` 에 놓이고 출발 카드 아래로는 이 열에 카드가 없으므로,
+     * 선은 카드에 붙어 시작하면서 어떤 카드도 지나지 않는다.
+     */
+    const blockNextEdge = (node, next) => {
+        edges.push({ ...elbowPath(colTail(node), at.get(next.id)), fork: false });
+    };
+
     /** 형제 사슬 - 아래로 잇는다. 합류 형제 뒤는 갈래 말단들을 모아 잇는다 */
     const chain = (list) => {
         list.slice(1).forEach((node, i) => {
@@ -296,7 +356,11 @@ export function layoutFlow(roots, opts = {}) {
                 joinEdges(prev, node);
                 return;
             }
-            const from = spineTail(prev) ?? prev;
+            const from = spineTail(prev);
+            if (!from) {
+                blockNextEdge(prev, node);
+                return;
+            }
             edges.push({ ...elbowPath(at.get(from.id), at.get(node.id)), fork: false });
         });
     };
