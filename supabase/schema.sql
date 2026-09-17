@@ -351,6 +351,8 @@ create table if not exists public.checklist_items (
     parent_id       text        references public.checklist_items (id),
     kind            text        not null default 'check'      -- config.js 의 CHECK_KIND
                                 check (kind in ('division', 'group', 'process', 'situation', 'check')),
+    child_flow      text        not null default 'seq'        -- 하위 프로세스 연결 방식 (CHECK_FLOW)
+                                check (child_flow in ('seq', 'fork', 'join')),
     title           text        not null,
     description     text        not null default '',
     cycle           text        not null default 'daily'
@@ -380,6 +382,13 @@ alter table public.checklist_items add constraint checklist_items_kind_check
 update public.checklist_items i set kind = 'process'
  where i.kind = 'check'
    and exists (select 1 from public.checklist_items c where c.parent_id = i.id);
+
+-- 하위 프로세스 연결 방식(순차/갈래/합류). 기본값이 'seq' 라 기존 데이터는 지금과 똑같이 그려진다
+-- 'join' 은 갈래를 벌린 뒤 다음 형제 한 단계로 다시 모으는 값이다 (나중에 추가)
+alter table public.checklist_items add column if not exists child_flow text not null default 'seq';
+alter table public.checklist_items drop constraint if exists checklist_items_child_flow_check;
+alter table public.checklist_items add constraint checklist_items_child_flow_check
+    check (child_flow in ('seq', 'fork', 'join'));
 
 -- 일일체크리스트 포함 여부. 컬럼이 없던 시절의 항목은 모두 포함으로 본다 (화면에서 끌 수 있다)
 alter table public.checklist_items add column if not exists daily boolean not null default false;

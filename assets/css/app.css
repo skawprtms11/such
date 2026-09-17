@@ -749,7 +749,7 @@ table.grid .wrap { white-space: normal; min-width: 160px; }
 .icon--sm { width: 16px; height: 16px; }
 
 /* 공지사항 */
-/* 당일상차리스트 - 오늘 실을 수 없는 묶음 (사유를 상태 칸에 적는다) */
+/* 상차리스트 - 오늘 실을 수 없는 묶음 (사유를 상태 칸에 적는다) */
 table.grid tbody tr.is-blocked { background: var(--gray-50, #fafafa); }
 table.grid tbody tr.is-blocked td { color: var(--gray-500); }
 table.grid tbody tr.is-blocked .load-card__no,
@@ -1509,7 +1509,7 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
     .role { font-size: 10px; padding: 2px 6px; }
 }
 
-/* 모바일 카드형 리스트 (당일상차리스트 전용) */
+/* 모바일 카드형 리스트 (상차리스트 전용) */
 .load-list { display: grid; gap: 10px; }
 
 .load-card {
@@ -1643,6 +1643,12 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .dq-row.is-done .dq-row__title { color: var(--gray-500); text-decoration: line-through; }
 .dq-row.is-locked { color: var(--gray-500); } .dq-row.is-locked .dq-row__main { cursor: default; }
 .dq-row.is-sit { background: #fffdf7; }
+/* 전체 뷰에서 그 날짜의 대상이 아닌 줄 - 조회 전용 */
+.dq-row.is-off { background: var(--gray-100); }
+.dq-row.is-off .dq-row__title > span:first-of-type { color: var(--gray-500); }
+.dq-off { display: inline-block; padding: 0 6px; border: 1px solid var(--gray-300); border-radius: 999px; color: var(--gray-500); font-size: 11px; line-height: 16px; }
+.cl-scope { display: flex; align-items: center; gap: 5px; margin: 10px 0 0; padding: 7px 12px; border-radius: 8px; background: var(--gray-100); color: var(--gray-700); font-size: 12px; }
+.cl-scope .icon { color: var(--gray-500); }
 .dq-late { display: inline-block; padding: 0 6px; border: 1px solid var(--red); border-radius: 999px; color: var(--red); font-size: 11px; font-weight: 600; line-height: 16px; }
 .dq-row .btn--icon.is-on { color: var(--blue); }
 .dq-sits { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px 8px 48px; border-bottom: 1px solid var(--gray-200); }
@@ -1675,7 +1681,11 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-add.btn--primary { color: #fff; background: var(--blue); }
 .pm-add.btn--primary:hover { background: var(--blue-dark, #1d4ed8); }
 
-.pm { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 420px; margin: -4px 0 0; }
+/* 세 칸 - 좌 트리(230) · 중 도식(가변) · 우 체크리스트 표(320). 좁아지면 우측부터 접는다 */
+.pm { position: relative; display: grid; grid-template-columns: 230px minmax(0, 1fr) var(--pm-side-w, 320px); min-height: 420px; margin: -4px 0 0; }
+.pm.is-resizing { cursor: col-resize; user-select: none; }   /* 끄는 동안 글자가 잡히지 않게 */
+.pm-head__actions .seg { display: none; }   /* 구성|흐름|체크리스트 - 1024px 이하에서만 */
+.pm-sidebtn { display: none; }              /* 우측 서랍 여닫기 - 1024~1280px 에서만 */
 
 /* 탐색 트리 - 업무구분(굵게) › 업무항목(들여쓰기) */
 .pm-nav { padding: 6px 12px 14px 0; border-right: 1px solid var(--gray-200); }
@@ -1725,8 +1735,67 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-guide .icon { vertical-align: -2px; color: var(--gray-500); }
 .pm-empty { padding: 40px 10px; color: var(--gray-500); font-size: 13px; text-align: center; }
 
-/* 흐름 - 왼쪽 순번 레일이 위에서 아래로 이어진다 */
-.pm-flow { padding-top: 14px; }
+/* 가운데 도식 - 카드는 HTML 그대로, 잇는 선만 SVG. 좌표는 checkflow.js 가 계산한다.
+   읽는 규칙은 세로다: 아래로 = 다음 단계 · 오른쪽으로 벌어짐 = 갈래 · 들여쓰기 = 순차 하위 */
+.pm-canvas { padding: 14px 0 6px; overflow-x: auto; }
+.pm-stage { position: relative; min-height: 60px; }
+.pm-stage.is-measuring .pm-node { visibility: hidden; }   /* 1-pass: 높이만 재는 동안 숨긴다 */
+.pm-node { position: absolute; top: 0; left: 0; width: var(--pm-lane, 260px); }
+.pm-node.is-off .pm-card { opacity: .6; }
+/* 순차 하위 - 같은 열에서 들여쓴 카드. 왼쪽 레일로 「같은 줄기의 하위」임을 알린다 */
+.pm-node.is-indent > .pm-card { border-left: 3px solid var(--gray-300); border-top-left-radius: 4px; border-bottom-left-radius: 4px; }
+.pm-node.is-picked > .pm-card { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.pm-edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+.pm-edge { fill: none; stroke: var(--gray-300); stroke-width: 2; }
+.pm-edge.is-fork { stroke: var(--blue); stroke-dasharray: 5 4; }
+/* 합류(join) 레일 - 갈래 말단들이 모이는 선. 벌어지는 갈래(점선)와 달리 실선이다 */
+.pm-edge.is-join { stroke: var(--blue); stroke-dasharray: none; }
+.pm-edge__head { fill: var(--gray-300); stroke: none; }
+.pm-edge__head.is-join { fill: var(--blue); }
+.pm-card__head .pm-no { flex: none; }
+/* 갈래 줄의 점 번호(4.1) - 한 줄기의 원(①)과 달리 파란 알약으로 그린다 */
+.pm-no--fork { width: auto; min-width: 26px; height: 22px; padding: 0 7px; border-radius: 11px; border: 1.5px dashed var(--blue); background: #fff; color: var(--blue); font-size: 12px; letter-spacing: -.2px; }
+.pm-loose { max-width: 520px; margin: 16px 0 0; }
+.pm-loose .pm-card { border-style: dashed; }
+
+/* 우측 체크리스트 표 - 프로세스 · 체크리스트 · 담당자 (kind='check' 노드를 표로 고친다) */
+.pm-side { position: relative; min-width: 0; padding: 6px 0 20px; border-left: 1px solid var(--gray-200); background: #fff; }
+/* 왼쪽 경계의 너비 조절 손잡이 - 평소엔 비치지 않고 가까이 가면 파랗게 선다 */
+.pm-side__grip { position: absolute; top: 0; bottom: 0; left: -4px; z-index: 2; width: 9px; cursor: col-resize; background: transparent; }
+.pm-side__grip::before { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 3px; border-radius: 2px; background: transparent; transition: background .12s ease; }
+.pm-side__grip:hover::before, .pm-side__grip:focus-visible::before, .pm.is-resizing .pm-side__grip::before { background: var(--blue); }
+.pm-side__grip:focus-visible { outline: none; }
+.pm-side__head { display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px 6px; color: var(--gray-700); font-size: 12.5px; font-weight: 700; }
+.pm-side__head small { min-width: 0; overflow: hidden; color: var(--gray-500); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.pm-side__tbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12.5px; }
+.pm-side__tbl th { padding: 5px 8px; border-bottom: 1px solid var(--gray-300); color: var(--gray-500); font-size: 11.5px; font-weight: 700; text-align: left; }
+.pm-side__tbl th:first-child { width: 86px; }
+.pm-side__tbl th:last-child { width: 84px; }
+.pm-side__tbl td { padding: 2px 6px; border-bottom: 1px solid var(--gray-100); vertical-align: middle; }
+.pm-side__tbl tr.is-picked > td { background: var(--blue-soft); }
+.pm-side__proc { border-right: 1px solid var(--gray-100); color: var(--gray-700); font-weight: 600; word-break: keep-all; vertical-align: top !important; padding-top: 8px !important; }
+.pm-side__proc small { display: block; color: var(--gray-500); font-size: 11px; font-weight: 400; }
+.pm-side__proc .is-sit { display: inline-flex; align-items: center; gap: 2px; color: var(--amber); }
+.pm-side__loose { color: var(--gray-500); font-weight: 400; }
+.pm-side__cell { display: flex; align-items: center; gap: 2px; }
+.pm-side__cell input { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-size: 12.5px; }
+.pm-side__cell input:hover { border-color: var(--gray-300); }
+.pm-side__cell input:focus { border-color: var(--blue); background: #fff; outline: none; }
+.pm-side__cell input.is-skip { color: var(--gray-500); }
+.pm-side__who { width: 100%; height: 28px; padding: 0 4px; border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-size: 12px; color: var(--gray-700); }
+.pm-side__who:hover { border-color: var(--gray-300); }
+.pm-side__none { color: var(--gray-400); font-size: 12px; }
+/* 표 아래 추가 폼 - 프로세스를 고른 뒤 이름을 넣는다 */
+.pm-side__add { display: flex; flex-direction: column; gap: 5px; margin: 8px 10px 0; padding: 8px; border: 1px dashed var(--gray-300); border-radius: 8px; }
+.pm-side__add select { width: 100%; height: 28px; padding: 0 4px; border: 1px solid var(--gray-300); border-radius: 6px; background: #fff; font: inherit; font-size: 12px; color: var(--gray-700); }
+.pm-side__addrow { display: flex; gap: 5px; }
+.pm-side__addrow input { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--gray-300); border-radius: 6px; font: inherit; font-size: 12.5px; }
+.pm-side__addrow input:focus { border-color: var(--blue); outline: none; }
+.pm-side__empty { padding: 14px 10px; color: var(--gray-500); }
+/* 표 안의 ✎ 는 편집 모드와 상관없이 늘 보인다 (여기가 등록·수정 구역이다) */
+.cl-manage .pm-side .pm-tools { display: inline-flex !important; }
+
+/* 단계 줄 - 상황 블록 안의 대응 단계(작은 사슬)에만 쓴다 */
 .pm-step { display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: 10px; }
 .pm-step + .pm-step { margin-top: 14px; }
 .pm-step__rail { position: relative; display: flex; justify-content: center; padding-top: 8px; }
@@ -1739,6 +1808,8 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-card__title { font-size: 14px; font-weight: 700; }
 .pm-card__desc { color: var(--gray-500); font-size: 12.5px; }
 .pm-note { color: var(--gray-500); font-size: 12px; }
+.pm-note--join { display: flex; align-items: center; gap: 4px; color: var(--blue); font-weight: 600; }
+.pm-note--warn { color: var(--amber); font-weight: 600; }
 /* 카드 머리를 누르면 상세(설명·담당·주기·이어지는 단계)가 열린다. 접힌 카드는 이름과 체크항목 이름만 */
 .pm-card__head, .pm-sit__head { cursor: pointer; user-select: none; }
 .pm-caret { display: inline-flex; color: var(--gray-500); }
@@ -1762,13 +1833,12 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-step--sub + .pm-step--sub { margin-top: 10px; }
 .pm-step--sub > .pm-step__rail { padding-top: 7px; }
 .pm-step--sub > .pm-step__rail .pm-no { width: 22px; height: 22px; background: #fff; color: var(--blue); border: 1.5px solid var(--blue); font-size: 11.5px; }
+.pm-step--sub > .pm-step__rail .pm-no--fork { width: auto; min-width: 22px; padding: 0 4px; border-radius: 11px; font-size: 10.5px; }
 .pm-step--sub:not(.is-last) > .pm-step__rail::after { top: 31px; bottom: -10px; }
 .pm-step--sub:not(.is-last) > .pm-step__rail::before { bottom: -10px; }
 .pm-step--sub .pm-card { border-width: 1px; }
 .pm-step--sub .pm-card__head { min-height: 36px; padding: 5px 10px; }
 .pm-step--sub .pm-card__title { font-size: 13px; }
-.pm-step--loose .pm-no { background: #fff; color: var(--gray-500); border: 1.5px dashed var(--gray-500); }
-.pm-step--loose .pm-card { border-style: dashed; }
 
 /* 상황 블록 - 카드 안의 주황 상자. 「X 발생 시」 → 대응 → 처리 후 다음 단계 */
 .pm-sit { margin: 6px 8px 8px; border: 1.5px dashed var(--amber); border-radius: 10px; background: #fffaf0; }
@@ -1829,6 +1899,32 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .pm-mfoot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; width: 100%; }
 .pm-mfoot__order { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; color: var(--gray-500); font-size: 12px; }
 
+/* 1024~1280px - 우측 체크리스트 표를 먼저 접는다 (「체크리스트」 버튼으로 여닫는 서랍) */
+@media (max-width: 1280px) {
+    .pm { grid-template-columns: 230px minmax(0, 1fr); overflow: hidden; }
+    .pm-side__grip { display: none; }   /* 서랍으로 접힌 뒤에는 끌 경계가 없다 */
+    .pm-side {
+        position: absolute; top: 0; right: 0; bottom: 0; z-index: 3;
+        width: var(--pm-side-w, 320px); overflow-y: auto; border-left: 1px solid var(--gray-300);
+        box-shadow: -10px 0 20px rgba(15, 23, 42, .1);
+        transform: translateX(calc(100% + 24px)); transition: transform .18s ease;
+    }
+    .pm.is-side-open .pm-side { transform: none; }
+    .pm-sidebtn { display: inline-flex; }
+}
+/* 1024px 이하 - 세 칸을 세그먼트(구성 | 흐름 | 체크리스트)로 갈라 한 칸씩 본다 */
+@media (max-width: 1024px) {
+    .pm { grid-template-columns: 1fr; overflow: visible; }
+    .pm-head__actions .seg { display: inline-flex; }
+    .pm-sidebtn { display: none; }
+    .pm[data-pane="nav"] .pm-main, .pm[data-pane="nav"] .pm-side,
+    .pm[data-pane="flow"] .pm-nav, .pm[data-pane="flow"] .pm-side,
+    .pm[data-pane="side"] .pm-nav, .pm[data-pane="side"] .pm-main { display: none; }
+    .pm-side {
+        position: static; width: auto; transform: none; box-shadow: none;
+        border-left: none; border-top: 1px solid var(--gray-200);
+    }
+}
 @media (max-width: 860px) {
     .dq-grp { grid-template-columns: 1fr; }
     .dq-grp__name { border-right: none; border-bottom: 1px dashed var(--gray-200); padding: 8px 10px 4px; }
@@ -1843,9 +1939,12 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 }
 @media print {
     body.cl-printing .sidebar, body.cl-printing .topbar, body.cl-printing .tabbar, body.cl-printing .tabs,
-    body.cl-printing .pm-nav, body.cl-printing .pm-head__actions, body.cl-printing .pm-tools,
+    body.cl-printing .pm-nav, body.cl-printing .pm-side, body.cl-printing .pm-head__actions,
+    body.cl-printing .pm-tools,
     body.cl-printing .pm-quick, body.cl-printing .pm-guide { display: none !important; }
     body.cl-printing .main { margin: 0; } body.cl-printing .card { border: none; box-shadow: none; }
-    body.cl-printing .pm { display: block; } body.cl-printing .pm-main { padding-left: 0; }
+    body.cl-printing .pm { display: block; overflow: visible; }
+    body.cl-printing .pm-main { padding-left: 0; }
+    body.cl-printing .pm-canvas { overflow: visible; }
     body.cl-printing .pm-step, body.cl-printing .pm-sit { break-inside: avoid; }
 }

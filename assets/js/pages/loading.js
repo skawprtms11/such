@@ -1,4 +1,4 @@
-/** 당일상차리스트 - 모바일 사용을 우선한 화면. 검수와 상차완료를 처리한다 */
+/** 상차리스트 - 모바일 사용을 우선한 화면. 검수와 상차완료를 처리한다 */
 import {
     LOAD_STATUS, stowStatus, STOW_STATUS, formatLocation, compareLocation,
 } from '../config.js';
@@ -104,7 +104,7 @@ export async function render(root, { user }) {
     };
 
     function downloadRows() {
-        downloadCsv(`당일상차리스트_${filter.date}.csv`,
+        downloadCsv(`상차리스트_${filter.date}.csv`,
             ['출고일자', '대표주문번호', '주문번호', '거래처명', '출고형태',
                 '파렛트수', '박스수', '검수파렛트', '상태'],
             rows.map((o) => [

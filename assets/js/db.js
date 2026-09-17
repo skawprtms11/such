@@ -4,12 +4,13 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    CHECK_CYCLE, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
+    CHECK_CYCLE, CHECK_FLOW, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
-    adjustCategory, formatLocation, isValidLocation, stowStatus,
+    adjustCategory, formatLocation, isFork, isValidLocation, stowStatus,
 } from './config.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
+import { forkBase, rowNos } from './checkflow.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
@@ -32,6 +33,8 @@ function normalize(db) {
     db.checklistItems.forEach((i) => {
         i.parent_id = i.parent_id ?? null;
         i.kind = i.kind ?? (hasKid.has(i.id) ? CHECK_KIND.PROCESS : CHECK_KIND.CHECK);
+        // 하위 프로세스 연결 방식이 없던 옛 항목은 순차(seq) - 지금까지의 모양 그대로다
+        i.child_flow = i.child_flow ?? CHECK_FLOW.SEQ;
         i.category = i.category ?? '';
         i.daily = i.daily ?? true;       // 포함 여부 컬럼이 없던 옛 항목은 포함으로 본다
         i.description = i.description ?? '';
@@ -117,7 +120,7 @@ export async function resetDb() {
 /* ------------------- 묶음 (일괄 처리 = 대표주문번호 / 상차 = 대표주문번호 · 차수) ------------------- */
 
 /**
- * 상차 묶음 키 🔑 (상차대기 · 당일상차리스트 · 상차검수 · 상차라벨 전용)
+ * 상차 묶음 키 🔑 (상차대기 · 상차리스트 · 상차검수 · 상차라벨 전용)
  * 대표주문번호 > 차수 기준번호 > 주문번호 순으로 본다.
  *   rep_no  - 여러 주문번호를 한 검수·상차 단위로 묶는다 (선택 입력)
  *   base_no - 추가주문의 차수를 묶는다 (a11111 → a11111-1)
@@ -253,7 +256,7 @@ export function hasSplitPallets(rows) {
 
 /**
  * `readyToLoad` 에 넘길 조건값을 만드는 함수를 돌려준다 🔑
- * 당일상차리스트(`listLoading`) · 상차완료(`completeLoading`) · 합치기 조건(④-2)이
+ * 상차리스트(`listLoading`) · 상차완료(`completeLoading`) · 합치기 조건(④-2)이
  * **같은 기준**으로 단계 완료를 판단하도록 한곳에 모았다.
  * @returns {(o:object) => import('./steps.js').StepOpt}
  */
@@ -276,7 +279,7 @@ function stepsLeft(o, opt) {
 
 /**
  * 상차 묶음에서 **상차 이외의 단계가 끝나지 않은 멤버**의 사유 🔑
- * 당일상차리스트의 막힘 표시(`listLoading` · `groupOf`)와 상차완료 거부(`completeLoading`)가
+ * 상차리스트의 막힘 표시(`listLoading` · `groupOf`)와 상차완료 거부(`completeLoading`)가
  * 같은 계산을 쓰도록 한곳에 모았다. 화면은 이 문구를 그대로 보여준다.
  * @returns {string} `주문번호 - 미완료단계·미완료단계` 형식. 전원 준비됐으면 빈 문자열
  */
@@ -541,7 +544,7 @@ function assertRepOwner(db, repNo, owner, excludeId) {
  * 등록 폼에서 제안할 대표주문번호 목록.
  * **종결된 주문(완료처리·취소)은 제외한다.**
  * 🔑 **상차검수가 시작된 묶음도 뺀다.** 라벨을 읽기 시작한 뒤에 멤버가 늘면 묶음 진행률과
- * 실제 스캔 수가 어긋나 그 묶음 전체가 당일상차리스트에서 사라진다 (`mergeBlockReason` 과
+ * 실제 스캔 수가 어긋나 그 묶음 전체가 상차리스트에서 사라진다 (`mergeBlockReason` 과
  * 같은 기준이다). 취소된 멤버는 묶음에서 빠지므로 판정에 넣지 않는다.
  * @returns {Promise<Array<{rep_no:string, customer:string, count:number}>>}
  */
@@ -568,7 +571,7 @@ export async function listOpenRepNos(f = {}) {
  * 등록·수정 폼에서 **대표주문번호를 직접 지정할 때**의 검사 🔑
  * 합치기(`mergeOrders`)와 **같은 기준**(`mergeBlockReason`)으로 기존 묶음 멤버를 본다.
  * 상차검수가 시작된 묶음에 주문이 하나 끼면 묶음 진행률과 실제 스캔 수가 어긋나,
- * 데이터는 멀쩡한데 그 묶음 전체가 당일상차리스트에서 빠지고 상차완료가 영구 거부된다.
+ * 데이터는 멀쩡한데 그 묶음 전체가 상차리스트에서 빠지고 상차완료가 영구 거부된다.
  * @param {string|null} repNo 붙이려는 대표주문번호
  * @param {string} [excludeId] 수정 중인 주문 자신
  */
@@ -1108,7 +1111,7 @@ export async function setInspectDone(id, done, checks, user) {
     // 다시 완료 처리하면 파렛트수 변경으로 상차검수가 초기화되어(rebuildPallets)
     // loaded_at 만 남고 load_status 가 '대기' 로 어긋난다. 상차를 먼저 되돌려야 한다
     if (done && rows.some((r) => loadDone(r))) {
-        throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
+        throw new Error('상차완료된 주문입니다. 상차리스트에서 상차완료를 먼저 취소하세요.');
     }
     // 적치가 끝난 주문은 순서대로 되돌린다. 적치를 남긴 채 검수만 취소하면
     // '검수 미완료 · 적치 완료' 라는 앞뒤 안 맞는 상태가 되고, 적치를 고칠 수도 없다.
@@ -1629,7 +1632,7 @@ export async function createRestore(payload, user) {
 /* -------------------------------- 상차 / 검수 -------------------------------- */
 
 /**
- * 당일상차리스트 조회.
+ * 상차리스트 조회.
  * 상차 이외의 모든 작업(패킹리스트까지)이 완료된 주문만 대상으로 한다.
  *
  * 🔑 **묶음 전체가 준비돼야 실을 수 있다.** 상차 묶음은 한 거래처로 함께 실리는
@@ -1848,7 +1851,7 @@ export async function completeStow(orderId, user) {
 }
 
 /**
- * 상차 준비 - 적치된 파렛트를 하나씩 내린다 (당일상차리스트의 로케이션 팝업).
+ * 상차 준비 - 적치된 파렛트를 하나씩 내린다 (상차리스트의 로케이션 팝업).
  * 상차완료된 주문은 더 이상 바꾸지 않는다.
  */
 export async function setPalletPicked(palletId, done) {
@@ -1984,7 +1987,7 @@ export async function resetInspection(orderId, user) {
     const group = groupOf(db, orderId);
     if (!group) throw new Error('주문을 찾을 수 없습니다.');
     if (group.rows.some((r) => loadDone(r))) {
-        throw new Error('상차완료된 주문입니다. 당일상차리스트에서 상차완료를 먼저 취소하세요.');
+        throw new Error('상차완료된 주문입니다. 상차리스트에서 상차완료를 먼저 취소하세요.');
     }
     const ids = new Set(group.rows.map((r) => r.id));
     db.pallets.filter((p) => ids.has(p.order_id)).forEach((p) => { p.scanned_at = null; });
@@ -2002,7 +2005,7 @@ export async function resetInspection(orderId, user) {
  * 상차완료 처리 🔑
  * `loaded_at` 은 **상차 묶음 전체**에 찍히므로, 찍기 전에 멤버마다
  * ① 상차검수 통과(`load_status`) ② **상차 이외의 모든 단계 완료**(`readyToLoad`)를
- * 다시 확인한다. 판정은 당일상차리스트와 같은 함수를 쓴다 (`steps.js` 의 `readyToLoad`).
+ * 다시 확인한다. 판정은 상차리스트와 같은 함수를 쓴다 (`steps.js` 의 `readyToLoad`).
  *
  * ⚠️ 상차검수만 보면 검수·적치를 건너뛴 주문이 묶음에 딸려 상차완료·마감까지 올라간다.
  * 목록에서 보이지 않던 멤버도 `groupOf` 로 다시 펼쳐지므로 여기서 한 번 더 막는다.
@@ -2694,11 +2697,19 @@ function checkItemInput(patch, base, db, parent, relation = true) {
         subs.push({ id: u.id, name: u.name });
     });
 
+    // 하위 프로세스 연결 방식 - 업무항목·프로세스만 뜻이 있다. 나머지는 기본값(순차)으로 둔다
+    const wantFlow = patch.child_flow ?? base.child_flow ?? CHECK_FLOW.SEQ;
+    const canFork = kind === CHECK_KIND.GROUP || kind === CHECK_KIND.PROCESS;
+    if (!Object.values(CHECK_FLOW).includes(wantFlow)) {
+        throw new Error('하위 프로세스 연결 방식이 올바르지 않습니다.');
+    }
+
     return {
         title,
         description: String(patch.description ?? base.description ?? '').trim(),
         category,
         kind,
+        child_flow: canFork ? wantFlow : CHECK_FLOW.SEQ,
         cycle,
         weekday,
         monthday,
@@ -2808,6 +2819,7 @@ export async function duplicateChecklistGroup(id, user) {
         const row = insertChecklistItem(db, {
             parent_id: parentId,
             kind: item.kind,
+            child_flow: item.child_flow,
             title: newTitle ?? item.title,
             description: item.description,
             cycle: item.cycle,
@@ -2955,6 +2967,94 @@ function isDueOn(item, date) {
     return false;
 }
 
+/** 프로세스 줄에서 하위 프로세스를 가려낸다 (체크항목·상황은 도식 노드가 아니다) */
+function isStepKind(item) {
+    return item.kind !== CHECK_KIND.CHECK && item.kind !== CHECK_KIND.SITUATION;
+}
+
+/**
+ * 형제 프로세스 줄의 번호 🔑 - 채번은 `checkflow.rowNos` 한 곳이고 여기서는 갈래 여부만 알려 준다.
+ * **대상 판정과 무관한 캡션용 값**이라 걸러내기 전 원본 줄로 매긴다 (그 날짜에 안 나오는
+ * 단계가 있어도 번호가 흔들리지 않는다).
+ * @param {Array} steps 하위 프로세스 (원본 순서)
+ * @param {{fork:boolean, no:number|string|null, stepsOf:(id:string)=>Array}} o
+ */
+function stepNos(steps, o) {
+    return rowNos(steps, {
+        fork: o.fork,
+        base: forkBase(o.no),
+        // 하위 프로세스가 있는 갈래 부모만 갈래 줄 몫의 슬롯을 더 쓴다
+        isBranch: (c) => isFork(c) && o.stepsOf(c.id).length > 0,
+    });
+}
+
+/**
+ * 체크리스트 트리 전처리 🔑 - dailyFlow() · catalogTable() 이 함께 쓴다.
+ * 두 뷰모델이 **같은 트리 · 같은 담당자 판정**을 보도록 한 곳에서만 만든다
+ * (따로 적으면 한쪽만 고쳐져 같은 항목이 탭마다 다르게 보인다).
+ * @param {string} date YYYY-MM-DD
+ * @param {{assignee?:string}} f
+ * @returns {Promise<{day, byId, kids, checks, checkOf, childrenOf, passes}>}
+ */
+async function checklistContext(date, f = {}) {
+    const db = (await load());
+    const day = String(date || today()).slice(0, 10);
+    const alive = aliveItems(db).filter((i) => i.active);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const kids = new Map();
+    alive.forEach((i) => {
+        const k = i.parent_id ?? null;
+        if (!kids.has(k)) kids.set(k, []);
+        kids.get(k).push(i);
+    });
+    kids.forEach((v, k) => kids.set(k, sortChecklist(v)));
+    const checks = db.checklistChecks.filter((c) => c.check_date === day);
+    const checkOf = (id) => checks.find((c) => c.item_id === id) ?? null;
+    const childrenOf = (id, kind) => (kids.get(id) ?? []).filter((c) => c.kind === kind);
+
+    /** 담당자 필터 - 상속 담당자로 판정한다. 담당자 없는 공통 업무는 누구의 목록에나 든다 */
+    const passes = (item) => {
+        if (!f.assignee) return true;
+        const eff = effectiveAssignee(item, byId);
+        if (!eff.id && !eff.subs.length) return true;
+        return eff.id === f.assignee || eff.subs.some((s) => s.id === f.assignee);
+    };
+    return { day, byId, kids, checks, checkOf, childrenOf, passes };
+}
+
+/** 업무구분 → 업무항목 짝. 업무구분 없는 옛 업무항목은 「미분류」 로 뒤에 붙인다 */
+function divisionPairs(childrenOf) {
+    const UNSORTED = { id: null, title: '미분류', kind: CHECK_KIND.DIVISION };
+    const pairs = [];
+    childrenOf(null, CHECK_KIND.DIVISION).forEach((d) => {
+        childrenOf(d.id, CHECK_KIND.GROUP).forEach((g) => pairs.push([d, g]));
+    });
+    childrenOf(null, CHECK_KIND.GROUP).forEach((g) => pairs.push([UNSORTED, g]));
+    return pairs;
+}
+
+/** 업무항목 묶음을 업무구분으로 굴린다 (표의 첫 컬럼) */
+function rollupDivisions(groups) {
+    const divisions = [];
+    groups.forEach((g) => {
+        let d = divisions.find((x) => x.item.id === g.division.id);
+        if (!d) {
+            d = { item: g.division, name: g.division.title, done: 0, total: 0, groups: [] };
+            divisions.push(d);
+        }
+        d.groups.push(g);
+        d.done += g.done;
+        d.total += g.total;
+    });
+    return divisions;
+}
+
+/** 전날에도 대상이었는데 체크하지 않은 항목 id (수시 제외) - 줄의 「어제 미체크」 표시 */
+async function lateIdSet(date, f = {}) {
+    const prev = await dueItems(addDays(date, -1), f);
+    return new Set(prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC).map((r) => r.id));
+}
+
 /**
  * 날짜별 판정 뷰모델 🔑 - dailyTable()·dueItems() 가 이것을 편다. 주기·상속·발생 판정은 여기서 끝난다.
  *
@@ -2975,27 +3075,12 @@ function isDueOn(item, date) {
  *   Row          = 항목 + { path, check, assignee_eff_id, assignee_eff_name, process_id }
  */
 export async function dailyFlow(date, f = {}) {
-    const db = (await load());
-    const day = String(date || today()).slice(0, 10);
-    const alive = aliveItems(db).filter((i) => i.active);
-    const byId = new Map(alive.map((i) => [i.id, i]));
-    const kids = new Map();
-    alive.forEach((i) => {
-        const k = i.parent_id ?? null;
-        if (!kids.has(k)) kids.set(k, []);
-        kids.get(k).push(i);
-    });
-    kids.forEach((v, k) => kids.set(k, sortChecklist(v)));
-    const checks = db.checklistChecks.filter((c) => c.check_date === day);
-    const checkOf = (id) => checks.find((c) => c.item_id === id) ?? null;
+    const { day, byId, kids, checks, checkOf, childrenOf, passes } = await checklistContext(
+        date, f,
+    );
 
-    /** 담당자 필터 - 상속 담당자로 판정한다. 담당자 없는 공통 업무는 누구의 목록에나 든다 */
-    const passes = (item) => {
-        if (!f.assignee) return true;
-        const eff = effectiveAssignee(item, byId);
-        if (!eff.id && !eff.subs.length) return true;
-        return eff.id === f.assignee || eff.subs.some((s) => s.id === f.assignee);
-    };
+    /** 그 노드의 하위 프로세스 (번호 채번이 갈래 부모를 가릴 때 본다) */
+    const stepsOf = (id) => (kids.get(id) ?? []).filter(isStepKind);
 
     /** 체크 대상 한 줄 */
     const rowOf = (item, processId) => {
@@ -3023,7 +3108,10 @@ export async function dailyFlow(date, f = {}) {
         if (leaf && item.daily && isDueOn(item, day) && passes(item)) {
             vm.self = rowOf(item, item.parent_id);
         }
-        let subNo = 0;
+        // 갈래(fork) 부모의 하위 프로세스는 `4.1` `4.2` 로 - 다음 단계가 유형별로 쪼개진 것이다
+        const fork = isFork(item);
+        const nos = stepNos(children.filter(isStepKind), { fork, no, stepsOf });
+        let at = 0;
         children.forEach((c) => {
             if (c.kind === CHECK_KIND.CHECK) {
                 if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.id));
@@ -3031,8 +3119,8 @@ export async function dailyFlow(date, f = {}) {
                 const s = buildSituation(c);
                 if (s) vm.situations.push(s);
             } else {
-                subNo += 1;
-                const p = buildProcess(c, subNo);
+                const p = buildProcess(c, nos[at]);
+                at += 1;
                 if (p) vm.subs.push(p);
             }
         });
@@ -3059,13 +3147,16 @@ export async function dailyFlow(date, f = {}) {
             total: 0,
         };
         const children = kids.get(item.id) ?? [];
-        let subNo = 0;
+        // 상황에는 번호가 없다 - 대응 단계는 ①②③ 부터, 갈래면 `1.1` `1.2` 다
+        const nos = stepNos(children.filter((c) => c.kind === CHECK_KIND.PROCESS),
+            { fork: isFork(item), no: null, stepsOf });
+        let at = 0;
         children.forEach((c) => {
             if (c.kind === CHECK_KIND.CHECK) {
                 if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.parent_id));
             } else if (c.kind === CHECK_KIND.PROCESS) {
-                subNo += 1;
-                const p = buildProcess(c, subNo);
+                const p = buildProcess(c, nos[at]);
+                at += 1;
                 if (p) vm.subs.push(p);
             }
             // 상황 아래 상황은 두지 않는다 (allowedChildKinds) - 있어도 무시한다
@@ -3080,27 +3171,21 @@ export async function dailyFlow(date, f = {}) {
         return vm;
     };
 
-    // 업무구분 순서 → 그 안의 업무항목 순서. 업무구분 없는 옛 업무항목은 「미분류」 로 뒤에 붙인다
-    const roots0 = kids.get(null) ?? [];
-    const UNSORTED = { id: null, title: '미분류', kind: CHECK_KIND.DIVISION };
-    const pairs = [];
-    roots0.filter((d) => d.kind === CHECK_KIND.DIVISION).forEach((d) => {
-        (kids.get(d.id) ?? []).filter((g) => g.kind === CHECK_KIND.GROUP)
-            .forEach((g) => pairs.push([d, g]));
-    });
-    roots0.filter((g) => g.kind === CHECK_KIND.GROUP).forEach((g) => pairs.push([UNSORTED, g]));
-
-    const groups = pairs.map(([division, g]) => {
+    // 업무구분 순서 → 그 안의 업무항목 순서
+    const groups = divisionPairs(childrenOf).map(([division, g]) => {
         const roots = kids.get(g.id) ?? [];
         const processes = [];
         const loose = [];      // 업무항목에 바로 둔 체크항목 (흐름 없는 단독 업무)
-        let no = 0;
+        const forkGroup = isFork(g);
+        const nos = stepNos(roots.filter((r) => r.kind === CHECK_KIND.PROCESS),
+            { fork: forkGroup, no: null, stepsOf });
+        let at = 0;
         roots.forEach((r) => {
             if (r.kind === CHECK_KIND.CHECK) {
                 if (r.daily && isDueOn(r, day) && passes(r)) loose.push(rowOf(r, null));
             } else if (r.kind === CHECK_KIND.PROCESS) {
-                no += 1;
-                const p = buildProcess(r, no);
+                const p = buildProcess(r, nos[at]);
+                at += 1;
                 if (p) processes.push(p);
             }
         });
@@ -3136,10 +3221,9 @@ export async function dailyFlow(date, f = {}) {
  */
 export async function dailyTable(date, f = {}) {
     const flow = await dailyFlow(date, f);
-    const prev = await dueItems(addDays(flow.date, -1), f);
-    const lateIds = new Set(prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC)
-        .map((r) => r.id));
-    const mark = (rows) => rows.map((r) => ({ ...r, late: lateIds.has(r.id) }));
+    const late = await lateIdSet(flow.date, f);
+    // due = 그 날짜의 체크 대상. dailyTable 의 줄은 모두 대상이다 (전체 표와 모양을 맞춘다)
+    const mark = (rows) => rows.map((r) => ({ ...r, late: late.has(r.id), due: true }));
     const groups = flow.groups.map((g) => {
         const sections = [];
         const walkP = (p, path, sit) => {
@@ -3178,19 +3262,119 @@ export async function dailyTable(date, f = {}) {
             sections,
         };
     });
-    const divisions = [];
-    groups.forEach((g) => {
-        let d = divisions.find((x) => x.item.id === g.division.id);
-        if (!d) {
-            d = { item: g.division, name: g.division.title, done: 0, total: 0, groups: [] };
-            divisions.push(d);
-        }
-        d.groups.push(g);
-        d.done += g.done;
-        d.total += g.total;
-    });
+    const divisions = rollupDivisions(groups);
     return {
         date: flow.date, done: flow.done, total: flow.total, raised: flow.raised, groups, divisions,
+    };
+}
+
+/**
+ * 업무체크리스트 탭의 표 뷰모델 🔑 - 세그먼트(`일일` / `전체`)를 한 함수로 가른다.
+ *
+ *   scope 'daily' (기본) : dailyTable() 그대로 - 그 날짜에 해야 하는 항목만
+ *   scope 'all'          : 주기·일일 포함 판정을 건너뛴 **전체 확인내용 목록**
+ *
+ * 두 결과의 모양(divisions → groups → sections → rows)이 같아 화면이 하나로 그린다.
+ * 🔑 줄의 `due` 가 **그 날짜의 체크 대상인지**다. 전체 표에서 `due` 가 false 인 줄은
+ * 조회 전용이다 - 주기 밖 날짜에 체크 기록이 들어가면 `late`·checklistSummary 집계가 어긋난다.
+ * @param {string} date YYYY-MM-DD
+ * @param {{assignee?:string, scope?:'daily'|'all'}} f
+ */
+export async function checklistTable(date, f = {}) {
+    if (f.scope !== 'all') return dailyTable(date, f);
+    return catalogTable(date, f);
+}
+
+/**
+ * 전체 확인내용 표 - 활성 체크항목 전부(+ 단계 자체를 체크하는 잎 프로세스)를 업무 순서대로 편다.
+ * 주기·상황 발생과 무관하게 목록에 올리되, 그 날짜의 체크 대상만 `due: true` 로 표시한다.
+ */
+async function catalogTable(date, f = {}) {
+    const { day, byId, kids, checks, checkOf, childrenOf, passes } = await checklistContext(
+        date, f,
+    );
+    const late = await lateIdSet(day, f);
+    /** 그 노드의 하위 프로세스 (번호 채번이 갈래 부모를 가릴 때 본다) */
+    const stepsOf = (id) => childrenOf(id, CHECK_KIND.PROCESS);
+
+    const rowOf = (item) => {
+        const eff = effectiveAssignee(item, byId);
+        const sits = situationAncestors(item, byId);
+        return {
+            ...item,
+            path: pathOf(item, byId),
+            check: checkOf(item.id),
+            assignee_eff_id: eff.id,
+            assignee_eff_name: eff.name,
+            assignee_eff_subs: eff.subs,
+            // 「일일」 표와 같은 기준이어야 한 항목이 탭마다 다르게 보이지 않는다
+            late: late.has(item.id),
+            // 상위 상황이 발생하지 않은 날에는 체크할 수 없다 (setCheck 와 같은 기준)
+            due: !!item.daily && isDueOn(item, day) && sits.every((id) => !!checkOf(id)),
+        };
+    };
+
+    /** 프로세스 한 단계를 구간(section)으로 편다 (하위 프로세스·상황까지 재귀) */
+    const walk = (item, no, parentPath, sit, out) => {
+        const here = [...parentPath, { title: item.title, no, sit: false }];
+        const children = kids.get(item.id) ?? [];
+        const rows = [];
+        // 전체 표는 일일체크리스트 포함(daily) 여부와 무관하게 모두 올린다
+        // (대상이 아닌 줄은 due:false 로 나가 화면에서 잠긴다)
+        const leaf = !children.some((c) => c.kind !== CHECK_KIND.SITUATION);
+        if (leaf && passes(item)) rows.push(rowOf(item));
+        childrenOf(item.id, CHECK_KIND.CHECK).forEach((c) => {
+            if (passes(c)) rows.push(rowOf(c));
+        });
+        if (rows.length) out.push({ key: item.id, path: here, sit, rows, situations: [] });
+
+        const steps = childrenOf(item.id, CHECK_KIND.PROCESS);
+        const nos = stepNos(steps, { fork: isFork(item), no, stepsOf });
+        steps.forEach((c, i) => walk(c, nos[i], here, sit, out));
+        childrenOf(item.id, CHECK_KIND.SITUATION).forEach((s) => {
+            const sPath = [...here, { title: s.title, no: null, sit: true }];
+            const sRows = childrenOf(s.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
+            if (sRows.length) {
+                out.push({ key: s.id, path: sPath, sit: s, rows: sRows, situations: [] });
+            }
+            const sSteps = childrenOf(s.id, CHECK_KIND.PROCESS);
+            const sNos = stepNos(sSteps, { fork: isFork(s), no: null, stepsOf });
+            sSteps.forEach((sp, i) => walk(sp, sNos[i], sPath, s, out));
+        });
+    };
+
+    // 업무구분 → 업무항목 짝 (dailyFlow 와 같은 순서)
+    const groups = divisionPairs(childrenOf).map(([division, g]) => {
+        const sections = [];
+        const steps = childrenOf(g.id, CHECK_KIND.PROCESS);
+        const nos = stepNos(steps, { fork: isFork(g), no: null, stepsOf });
+        steps.forEach((p, i) => walk(p, nos[i], [], null, sections));
+        const loose = childrenOf(g.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
+        if (loose.length) {
+            sections.push({
+                key: `loose-${g.id}`, path: [], sit: null, rows: loose, situations: [],
+            });
+        }
+        const rows = sections.flatMap((s) => s.rows);
+        return {
+            item: g,
+            name: g.title,
+            division,
+            // 진행 숫자는 그 날짜의 대상(due)만 센다 - 일일 표와 같은 값이어야 한다
+            done: rows.filter((r) => r.due && r.check).length,
+            total: rows.filter((r) => r.due).length,
+            sections,
+        };
+    }).filter((g) => g.sections.length);
+
+    const divisions = rollupDivisions(groups);
+    return {
+        date: day,
+        done: groups.reduce((n, g) => n + g.done, 0),
+        total: groups.reduce((n, g) => n + g.total, 0),
+        raised: checks.filter((c) => byId.get(c.item_id)?.kind === CHECK_KIND.SITUATION).length,
+        groups,
+        divisions,
     };
 }
 
@@ -3235,6 +3419,8 @@ export async function listChecks(date) {
  * 🔑 상황(situation) 노드에 쓰면 **발생 처리**다. 발생을 해제하면 그 상황 아래
  * 체크 기록도 같은 날짜 것은 함께 지운다 (끼어들었던 단계가 통째로 빠진다).
  * 상위 상황이 발생 처리되지 않은 항목은 체크할 수 없다.
+ * 🔑 **주기(`isDueOn`) 밖 날짜에는 체크할 수 없다** - 주기 밖 기록이 들어가면
+ * `late`·`checklistSummary` 집계가 어긋난다. 해제는 막지 않는다 (잘못 들어간 기록 정리).
  */
 export async function setCheck(itemId, date, on, memo, user) {
     const db = (await load());
@@ -3251,6 +3437,9 @@ export async function setCheck(itemId, date, on, memo, user) {
     const day = String(date || today()).slice(0, 10);
     const sits = situationAncestors(item, byId);
     const isOn = (id) => db.checklistChecks.some((c) => c.item_id === id && c.check_date === day);
+    if (on && !isDueOn(item, day)) {
+        throw new Error('그 날짜의 체크 대상이 아닙니다.');
+    }
     if (on && sits.some((id) => !isOn(id))) {
         throw new Error('상위 상황을 먼저 발생 처리해야 체크할 수 있습니다.');
     }
@@ -3408,7 +3597,7 @@ export async function listStowWaiting(f = {}) {
     const optOf = stepOptOf(db);
     return loadGroups(live)
         .map((g) => {
-            // 당일상차리스트와 같은 판정이다 - 화면끼리 같은 묶음이 다르게 보이지 않게 한다
+            // 상차리스트와 같은 판정이다 - 화면끼리 같은 묶음이 다르게 보이지 않게 한다
             const reason = notReadyReason(g.rows, optOf);
             return {
                 head: g.head,

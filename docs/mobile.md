@@ -2,7 +2,7 @@
 
 > 코드 `m.html` · `assets/js/shell.js` · `assets/js/mobile/app.js` · `assets/js/mobile/ui.js` ·
 > `assets/js/mobile/screens/*.js` · `assets/css/mobile.css` · [공통 규약](common.md) · [CLAUDE.md](../CLAUDE.md)
-> 관련 문서: [출고주문처리](shipping.md) · [당일상차리스트](loading.md) · [검수](inspect.md) · [이슈등록](issues.md)
+> 관련 문서: [출고주문처리](shipping.md) · [상차리스트](loading.md) · [검수](inspect.md) · [이슈등록](issues.md)
 
 **현장(협력사·용마담당자)이 휴대폰으로 쓰는 전용 셸.** 웹 셸(`app.html`)과 화면 코드를
 공유하지 않고, `db.js` `steps.js` `auth.js` `config.js` `scanner.js` `util.js` `icons.js` 만
@@ -194,7 +194,7 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 
 ### 3-5. 상차작업 (`#/load`) — 리스트 → 검수 → 완료 → 로케이션 🔑
 
-`mobile/screens/load.js` 가 당일상차리스트·검수(구 `#/inspect/:id`)·상차완료·파렛트 내리기를
+`mobile/screens/load.js` 가 상차리스트·검수(구 `#/inspect/:id`)·상차완료·파렛트 내리기를
 **한 화면 흐름**으로 합쳤다 (설계서 §4).
 
 ```
@@ -219,10 +219,11 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 
 - 🔑 **박스수는 묶음 합계다.** 목록 카드는 `db.listLoading()` 의 `group_boxes`,
   상세 화면은 `getLoadGroup().rows` 의 `box_count` 합을 쓴다.
-  예전에는 대표 1건의 `box_count` 만 보여 웹 [당일상차리스트](loading.md)와 값이 달랐다
+  예전에는 대표 1건의 `box_count` 만 보여 웹 [상차리스트](loading.md)와 값이 달랐다
 - 상세 화면 진입 시 `db.loadProgress()` 류 진행 계산은 새 규칙이 아니라
   `getLoadGroup().pallets` 를 세는 조합이다.
-- 카메라 쿨다운 2.5초, 직접 입력 무쿨다운(블루투스 스캐너 연속 입력)은 [inspect.md](inspect.md)와 동일.
+- 카메라 중복 방지(같은 라벨을 계속 비추면 2.5초, 다음 1건은 1.5초 이상 비어 있을 때)와
+  직접 입력 무쿨다운(블루투스 스캐너 연속 입력)은 [inspect.md](inspect.md)와 동일.
 - 날짜 이동은 웹처럼 `◀ 오늘 ▶` 버튼을 앱에도 둔다(장갑 낀 손으로 date picker 는 어렵다).
 
 
@@ -237,13 +238,26 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 상황(입고수량오류 등)은 프로세스의 체크 줄 아래 점선 칩 「발생」을 눌러 **시트에서 발생 처리**한다.
 발생한 칩(주황)을 누르면 내용 수정 · 발생 해제 시트가 뜬다.
 
+날짜 아래 **`일일 | 전체` 세그먼트**가 있다(웹과 같다). 기본은 `일일` 이고, `전체` 는 등록된 확인내용
+전부를 보여 주되 **그 날짜의 대상이 아닌 줄은 「대상 아님」 꼬리표가 붙고 눌리지 않는다** — 주기 밖
+날짜에 체크가 들어가면 미체크 집계가 어긋나기 때문이다.
+
 ### 3-7. 업무프로세스 (`#/process`) — 상단바 메뉴 · 보기 전용
 
 현장에서 매뉴얼을 펼쳐 보는 화면. 업무구분·업무항목 세그먼트로 고르면 흐름을 **세로 스테퍼**로 그린다 —
 시작 → 프로세스 박스(체크항목 목록) → 박스 아래 주황 블록 `⚠ 상황 발생 시`(대응 단계, `↩ 처리 후 다음 단계`) → 완료.
 편집(업무프로세스 탭 편집 모드)은 **웹에만** 있다.
 
-주기·담당자 상속·상황 판정은 웹과 같은 `db.dailyTable()` · `db.canCheckItem()` · `db.checklistTree()` 를 쓴다
+🔑 **웹 업무프로세스 탭은 좌표로 놓는 도식이지만 앱은 세로 스테퍼를 유지한다** (좁은 화면에서
+가로 스크롤은 읽기 어렵다). 하위 프로세스를 **갈래**(`child_flow = 'fork'`)로 둔 단계는
+`4.1 국내` 머리가 붙은 하위 스테퍼(파란 점선 레일)로 편다 — 번호는 머리에만 적고 동글은
+가운뎃점이다. **합류**(`join`)도 도식으로 그리지 않고 갈래 블록 끝에
+`↩ 갈래가 다시 ④ 출고완료 로 모입니다` 캡션 한 줄만 붙인다 ([checklist.md](checklist.md) 참고).
+
+🔑 **공유 경계는 번호다.** 갈래 번호(`4.1` · `checkflow.js` 의 `rowNos`)는 웹·앱이 같은 순수 함수를
+쓰고, **좌표(`layoutFlow`)는 웹 도식 전용**이다. 화면 코드는 여전히 서로 import 하지 않는다.
+
+주기·담당자 상속·상황 판정은 웹과 같은 `db.checklistTable()` · `db.canCheckItem()` · `db.checklistTree()` 를 쓴다
 ([checklist.md](checklist.md) 참고).
 
 ---
@@ -256,6 +270,7 @@ app.html#/orders, #/users →  앱에 없는 메뉴 → 홈(빈 문자열, `#/sh
 | 함수 | 역할 |
 |---|---|
 | `scanBar` / `mountScan` | 주문번호·바코드 스캔 바 (카메라 + 직접입력) |
+| `scanPreview` | 카메라 프리뷰 상자 (조준 밴드 · 플래시 버튼 · 보인 뒤 카메라 켜기) |
 | `orderHead` / `bindOrderHead` | 주문 요약 헤더 (대표 배지·묶인 주문·접기) |
 | `stepBar` | 단계 흐름 칩 (`visibleSteps()` 결과를 앱 폭에 맞게 표시) |
 | `dock` | 하단 고정 액션 독 (입력형/버튼형/2버튼형) |

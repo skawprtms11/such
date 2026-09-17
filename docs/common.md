@@ -56,8 +56,8 @@
 로그인·재방문 시의 셸 분기와는 별개로, **이미 `app.html` 을 연 채로 창을 줄이는 경우**에만
 보인다(자동으로 `m.html` 로 튕기지 않는다). 이 반응형 블록은 웹 코드 정리(6단계, 앱 운영
 1주 후 예정)에서 걷어낼 예정이다. 그때까지는 `MENUS` 의 `mobile: true` 4개(주문처리현황·
-출고주문처리·당일상차리스트·이슈등록)만 이 좁은 탭바에 나온다. 검수 화면(`#/inspect/:id`)은
-메뉴가 아니라 당일상차리스트에서 들어가므로 막지 않는다.
+출고주문처리·상차리스트·이슈등록)만 이 좁은 탭바에 나온다. 검수 화면(`#/inspect/:id`)은
+메뉴가 아니라 상차리스트에서 들어가므로 막지 않는다.
 
 실제 사용자는 로그인 시점의 `shellUrl()` 분기로 대부분 `m.html` 만 보게 되므로, 위 반응형
 블록은 실사용 경로라기보다 과도기 코드다. **모바일 화면을 고칠 때는 [docs/mobile.md](mobile.md)
@@ -128,7 +128,7 @@ export async function render(root, { user, params }) {
 | 주문정보등록 | ✅ | ❌ |
 | 주문처리현황 | ✅ | ✅ |
 | 출고주문처리 | ✅ | ✅ |
-| 당일상차리스트 | ✅ | ✅ |
+| 상차리스트 | ✅ | ✅ |
 | 이슈등록 | ✅ | ✅ |
 | 공지사항 | ✅ | ✅ |
 | 업무체크리스트 | ✅ | ✅ |
@@ -213,7 +213,7 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 | 함수 | 설명 |
 |---|---|
 | `listLoading(shipDate)` | 해당 출고일의 주문을 `loadGroups` 로 **먼저 묶고**, 묶음 전체가 `readyToLoad` 인지 본다. 대표 1건에 `group_no` `group_nos` `group_count` `group_pallets` **`group_boxes`**(묶음 박스수 합계) `group_inspected` 를 붙이며 **묶음 전체 기준**이다. 🔑 준비되지 않은 묶음도 **목록에서 지우지 않고** `blocked: true` 와 `block_reason`(`주문번호 - 미완료단계`)을 붙여 함께 돌려준다 — 화면은 회색 행으로 구분하고 상차검수·상차완료를 막는다 |
-| `getLoadGroup(orderId)` / `listStowWaiting(f)` | 같은 판정을 담아 돌려준다 (`blocked` `block_reason`). 상차대기 화면이 당일상차리스트와 다르게 보이지 않게 하는 장치다 |
+| `getLoadGroup(orderId)` / `listStowWaiting(f)` | 같은 판정을 담아 돌려준다 (`blocked` `block_reason`). 상차대기 화면이 상차리스트와 다르게 보이지 않게 하는 장치다 |
 | `listBlockedRepNos(f)` | 상차검수가 시작돼 **더 넣을 수 없는** 대표주문번호 목록 (일괄등록 검증용). `listOpenRepNos` 가 후보에서 뺀 것과 같은 기준(`mergeBlockReason`) |
 | `listPallets(orderId)` | 파렛트 바코드 목록 |
 | `scanPallet(orderId, barcode, user)` | `{ok, msg, order}` 반환. 전량 스캔 시 `검수` 전환 |
@@ -320,7 +320,7 @@ allow(user, ORDER_POLICY.write);   // 역할이 맞거나 소속이 맞으면 tr
 |---|---|
 | `esc(s)` | **HTML 이스케이프. 사용자 입력 출력 시 필수** |
 | `addBadge(count, label)` | 묶음 대표 행에 붙는 `+N건` 배지 |
-| `noSubHtml(nos, repNo)` | 대표주문번호 아래에 묶인 주문번호를 작은 글씨(`.no-sub`)로 나열한다. 주문정보등록·주문처리현황·상차대기·당일상차리스트·상차검수가 함께 쓴다 |
+| `noSubHtml(nos, repNo)` | 대표주문번호 아래에 묶인 주문번호를 작은 글씨(`.no-sub`)로 나열한다. 주문정보등록·주문처리현황·상차대기·상차리스트·상차검수가 함께 쓴다 |
 | `num(n)` | 천단위 구분자 |
 | `today()` `toDateStr(d)` `fmtDateTime(iso)` | 날짜 포맷 |
 | `rate(done, total)` | 진행률(%) 정수 |
@@ -387,7 +387,7 @@ tbl.querySelectorAll('[data-edit]').forEach((el) => {
 
 - 기준점 **860px**. 이하에서 사이드바가 서랍으로 바뀌고 하단 탭바가 나타난다
 - 표는 `.table-wrap` 으로 감싸 가로 스크롤시킨다. **본문이 가로로 밀리면 안 된다**
-- 당일상차리스트만 PC는 표(`.load-table`), 모바일은 카드(`.load-list`)로 전환한다.
+- 상차리스트만 PC는 표(`.load-table`), 모바일은 카드(`.load-list`)로 전환한다.
   두 마크업을 모두 그려두고 CSS 로 감춘다
 - 색상은 `:root` 의 CSS 변수를 쓴다. 색상값을 직접 쓰지 않는다
 

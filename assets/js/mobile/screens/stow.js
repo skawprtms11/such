@@ -23,7 +23,7 @@ import {
 } from '../../util.js';
 import {
     emptyState, tag, plusBadge, card, orderHead, bindOrderHead, closeAllSheets,
-    segment, dock, scanBar, menuSheet,
+    segment, dock, scanBar, menuSheet, scanPreview,
 } from '../ui.js';
 
 /** 스캐너가 같은 값을 연달아 보내는 것을 무시하는 시간(ms) - 웹 출고적치와 같다 */
@@ -255,16 +255,11 @@ async function renderDetail(root, user, orderId) {
         : null;
 
     // 로케이션 라벨을 카메라로 읽는다. 켜 둔 채로 연속 입력할 수 있다
-    const camBox = document.createElement('div');
-    camBox.className = 'm-scanbox';
-    camBox.hidden = true;
-    camBox.innerHTML = `
-<video class="m-scanbox__video" playsinline muted></video>
-<span class="m-scanbox__aim"></span>`;
-    camHost.appendChild(camBox);
+    const camBox = scanPreview(camHost);
     const scanner = editable && scanSupported()
-        ? createScanner(camBox.querySelector('video'), (code) => submit(code))
+        ? createScanner(camBox.video, (code) => submit(code))
         : null;
+    camBox.bind(scanner);
 
     /* ------------------------------ 대상 계산 ------------------------------ */
 
@@ -724,20 +719,23 @@ ${t.location
 
     async function startCam() {
         if (!scanner) return;
+        // 프리뷰를 먼저 보이게 한 뒤 카메라를 켠다 (숨겨진 비디오는 iOS 에서 프레임이 안 온다)
+        camBox.show();
         try {
             await scanner.start();
-            camBox.hidden = false;
-            camBox.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            camBox.el.scrollIntoView({ behavior: 'smooth', block: 'end' });
         } catch (err) {
+            camBox.hide();
             toast(err.message, 'error');
         }
+        camBox.sync();
         drawTools();
     }
 
     function stopCam() {
         if (!scanner?.isOn()) return;
         scanner.stop();
-        camBox.hidden = true;
+        camBox.hide();
         drawTools();
     }
 

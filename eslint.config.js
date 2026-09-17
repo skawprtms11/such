@@ -34,8 +34,8 @@ export default [
         },
     },
     {
-        // 빌드 설정 파일은 Node 환경에서 실행된다
-        files: ['vite.config.js', 'eslint.config.js'],
+        // 빌드 설정 파일과 개발용 스크립트는 Node 환경에서 실행된다
+        files: ['vite.config.js', 'eslint.config.js', 'tools/**/*.js'],
         languageOptions: {
             globals: globals.node,
         },

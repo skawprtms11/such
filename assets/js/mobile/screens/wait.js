@@ -99,7 +99,7 @@ function waitCard(g) {
 
     return card(esc(o.rep_no || o.order_no), g.blocked
         ? `${body}<span class="m-card__block">${esc(g.block_reason)}</span>` : body, {
-        // 🔑 당일상차리스트와 같은 판정이다. 배지가 없으면 실을 준비가 된 것처럼 보인다
+        // 🔑 상차리스트와 같은 판정이다. 배지가 없으면 실을 준비가 된 것처럼 보인다
         badges: `${o.rep_no ? tag('대표', 'amber') : ''}${plusBadge(g.rows.length)}`
             + `${g.blocked ? tag('당일상차 제외', 'gray') : ''}`,
         status: tag(stowStatus(done, total), TONE[stowStatus(done, total)] ?? 'gray'),

@@ -704,14 +704,48 @@ html, body {
     object-fit: cover;
 }
 
-/* 조준선 - 라벨을 가로로 맞추도록 가운데 한 줄만 둔다 */
+/* 조준 밴드 - 이 안쪽만 디코더에 넘긴다(scanner.js 의 TUNE.roi). 가운데 선에 라벨을 맞춘다 */
 .m-scanbox__aim {
     position: absolute;
-    left: 8%;
-    right: 8%;
+    left: 4%;
+    right: 4%;
+    top: 27.5%;
+    height: 45%;
+    border: 1px dashed rgba(255, 255, 255, .6);
+    border-radius: 8px;
+}
+
+.m-scanbox__aim::after {
+    content: '';
+    position: absolute;
+    left: 4%;
+    right: 4%;
     top: 50%;
     height: 2px;
     background: rgba(255, 64, 64, .85);
+}
+
+/* 플래시 - 기기가 지원할 때만 나타난다 (어두운 창고에서 인식률을 크게 좌우한다) */
+.m-scanbox__torch {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 50%;
+    background: rgba(16, 32, 48, .55);
+    color: #fff;
+}
+
+.m-scanbox__torch[hidden] { display: none; }
+
+.m-scanbox__torch.is-on {
+    background: #ffd54a;
+    color: #2b2000;
 }
 
 /* -------------------------------- 바텀시트 -------------------------------- */
@@ -1591,6 +1625,8 @@ button.m-pallet:disabled { cursor: default; }
 .m-dl-div:first-child { margin-top: 4px; }
 .m-dq-grp { margin: 6px 0 2px; font-size: 13px; font-weight: 700; color: var(--m-gray-700); }
 .m-chk__late { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--m-red); border-radius: 999px; color: var(--m-red); font-size: 10.5px; font-weight: 700; line-height: 15px; vertical-align: middle; }
+/* 전체 뷰에서 그 날짜의 대상이 아닌 줄 (조회 전용) */
+.m-chk__off { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--m-gray-300); border-radius: 999px; color: var(--m-gray-500); font-size: 10.5px; font-weight: 700; line-height: 15px; vertical-align: middle; }
 .m-chk__path.is-sit { color: var(--m-amber); font-weight: 600; }
 .m-dq-fold { display: block; width: 100%; min-height: 40px; border: none; background: transparent; color: var(--m-gray-500); font: inherit; font-size: 13px; text-align: left; padding: 0 2px; }
 
@@ -1618,6 +1654,11 @@ button.m-pallet:disabled { cursor: default; }
 .m-fc__sit .m-fc__line { border-color: var(--m-amber); }
 .m-fc__merge { font-size: 12.5px; color: var(--m-amber); font-weight: 600; margin-top: 6px; }
 .m-fc__loose { border-style: dashed; }
+/* 갈래(fork) - 번호 대신 갈래 이름이 붙은 하위 스테퍼로 편다 */
+.m-fc__fork { margin: 6px 0 0 6px; padding-left: 10px; border-left: 2px dashed var(--m-blue); }
+.m-fc__fork-head { margin: 8px 0 2px; font-size: 12px; font-weight: 700; color: var(--m-blue); }
+.m-fc__fork .m-fc__step { border-width: 1px; border-color: var(--m-blue); padding: 6px 8px; }
+.m-fc__fork .m-fc__no { width: 20px; height: 20px; font-size: 11px; background: #fff; color: var(--m-blue); border: 1.5px dashed var(--m-blue); }
 
 /* 상황 칩 - 발생 전 점선 「발생」, 발생하면 주황 실선(누르면 시트) */
 .m-sits { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 8px; }
