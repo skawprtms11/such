@@ -260,3 +260,28 @@ db 함수를 직접 부르면 주기 밖 기록이 들어가 `late`·`checklistS
 **파일**: `assets/js/checkflow.js`(`colTail` `blockNextEdge` `laneWidth`) ·
 `tools/checkflow-check.js`(P8~P10 · `points` · 치수 5조합) · `docs/checklist.md`
 
+
+---
+
+### 2026-09-19 — [code-review-team] 되돌릴 수 없는 값의 저장 실패에서 캐시를 버리지 않았다
+
+**무엇**: 유통가공 작업지시서 채번(`issueProcessDoc`)이 `unique(doc_no)` 충돌만 재시도하고,
+그 밖의 저장 실패(네트워크·RLS)는 `invalidate()` 없이 다시 던졌다. `db` 는 `store.js` 의
+캐시와 같은 객체라 실패한 문서번호가 메모리에 남고, 0.7초 안의 다른 저장이 `pushChanges` 로
+그 번호를 서버에 밀어 넣을 수 있었다. 같이 잡힌 것 — 수정 팝업은 스냅샷(`qty_per`)으로,
+저장은 현재 마스터로 필요수량을 계산해 마스터가 바뀌면 화면은 「합계 맞음」 인데 저장은 거부.
+**원인**:
+  1. 재시도 분기만 생각하고 **실패의 나머지 경우**를 적지 않았다. 되돌릴 수 없는 값
+     (문서번호)은 실패 경로마다 캐시가 어떻게 남는지 봐야 한다.
+  2. 같은 계산(필요수량)을 화면 3곳에 인라인으로 복제했고, 정작 `db.js` 의 export 는
+     쓰이지 않았다 (2026-09-16 「같은 계산을 화면마다 다시 짜서 갈렸다」 재발 자리).
+**교훈**:
+  1. **되돌릴 수 없는 값을 쓰는 함수는 모든 실패 경로에서 `invalidate()`** — 재시도 여부와
+     무관하게 캐시를 버리고 다시 읽는다.
+  2. **화면이 보여 주는 검증과 저장이 거부하는 검증은 같은 입력을 봐야 한다.** 스냅샷과
+     현재 마스터 중 하나로 통일하고, 순수 함수(`needQty`) 한 곳을 쓴다.
+  3. 화면이 항상 보내는 값이라도 **db 는 「빠진 경우」를 조용히 채우지 않는다**
+     (제품 LOT 줄 누락 → 거부). 조용한 기본값은 화면 버그를 정상 저장으로 바꾼다.
+**파일**: `assets/js/db.js`(`issueProcessDoc` `buildJobItems` `updateProcessJob`) ·
+`assets/js/pages/processing/jobform.js` · `assets/js/processing-calc.js`(`needQty`) ·
+`docs/processing.md`

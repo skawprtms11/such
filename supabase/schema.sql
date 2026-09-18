@@ -808,3 +808,218 @@ drop trigger if exists trg_enforce_rep_owner on public.orders;
 create trigger trg_enforce_rep_owner
     before insert or update of rep_no, created_by on public.orders
     for each row execute function public.enforce_rep_owner();
+
+-- ═══════════════════════════ 유통가공작업 (docs/processing.md) ═══════════════════════════
+-- 창고에서 출고 전에 하는 유통가공(라벨 부착·세트 구성·해체)을 등록하고, 구성품(제품 + 부자재)과
+-- LOT 을 확정해 작업지시서를 낸다. 주문(orders)과 연결되지 않는 **독립 업무**다.
+-- `updated_at` 은 트리거를 쓰지 않고 db.js 가 채운다 (업무 규칙을 서버와 앱 양쪽에 두지 않는다).
+
+-- ─────────────────────── 유통가공 작업마스터 (process_masters) ───────────────────────
+-- 제품 1건의 유통가공 구성(BOM). 작업 등록 시 제품코드로 찾아 구성품을 펼친다.
+-- 살아 있는 마스터는 제품코드당 1건이다 (작업 등록 폼에 작업구분 입력칸이 없다).
+create table if not exists public.process_masters (
+    id              text        primary key,
+    work_type       text        not null check (work_type in ('라벨', '해체', '세트')),
+    product_code    text        not null,
+    product_name    text        not null,
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz,
+    deleted_at      timestamptz
+);
+
+comment on table public.process_masters is '유통가공 작업마스터(제품별 구성품 BOM). 등록·수정·삭제는 manageProcessing 권한';
+
+create unique index if not exists process_masters_code_uidx
+    on public.process_masters (product_code) where deleted_at is null;
+
+-- 마스터 구성품. 마스터를 지우면 함께 사라진다 (작업에는 값이 복사돼 있어 영향이 없다)
+create table if not exists public.process_master_items (
+    id         text     primary key,
+    master_id  text     not null references public.process_masters (id) on delete cascade,
+    kind       text     not null check (kind in ('제품', '부자재')),
+    code       text     not null default '',     -- 부자재는 코드가 없을 수 있다
+    name       text     not null,
+    qty_per    integer  not null check (qty_per > 0),
+    sort_order integer  not null default 0
+);
+
+create index if not exists process_master_items_master_idx
+    on public.process_master_items (master_id, sort_order);
+
+-- ─────────────────────── 유통가공 작업 (process_jobs) ───────────────────────
+-- 진행상태는 저장하지 않는다. done_at → 완료, doc_created_at → 진행, 없으면 대기.
+-- 문서번호는 한 번 나가면 고정이고 재생성하지 않는다 (unique 가 최후 방어선).
+-- 삭제는 soft delete 라 지워진 작업의 번호도 되돌아오지 않는다.
+create table if not exists public.process_jobs (
+    id                  text        primary key,
+    doc_no              text        unique,
+    -- 마스터를 하드 삭제해도 작업은 남는다 (구성품은 값으로 복사돼 있어 지시서가 그대로 열린다)
+    master_id           text        references public.process_masters (id) on delete set null,
+    work_type           text        not null,          -- 마스터 값 스냅샷
+    product_code        text        not null,
+    product_name        text        not null,
+    qty                 integer     not null check (qty > 0),
+    start_date          date        not null,
+    due_date            date        not null,
+    doc_created_at      timestamptz,
+    doc_created_by      uuid        references public.profiles (id),
+    doc_created_by_name text        not null default '',
+    done_at             timestamptz,
+    created_by          uuid        references public.profiles (id),
+    created_by_name     text        not null default '',
+    created_at          timestamptz not null default now(),
+    updated_at          timestamptz,
+    deleted_at          timestamptz,
+    check (due_date >= start_date)
+);
+
+comment on table public.process_jobs is '유통가공 작업. 진행상태는 저장하지 않고 done_at·doc_created_at 으로 계산한다(db.processStatus)';
+
+create index if not exists process_jobs_date_idx on public.process_jobs (start_date, due_date);
+create index if not exists process_jobs_code_idx on public.process_jobs (product_code);
+
+-- 구성품 스냅샷 + LOT 행. line_no 가 같은 행들이 구성품 한 줄이다.
+-- 🔑 마스터를 참조하지 않고 **값을 복사**한다 - 마스터가 바뀌어도 이미 인쇄한 작업지시서를
+-- 다시 뽑았을 때 내용이 달라지지 않게 한다.
+create table if not exists public.process_job_items (
+    id         text     primary key,
+    job_id     text     not null references public.process_jobs (id) on delete cascade,
+    line_no    integer  not null,
+    kind       text     not null check (kind in ('제품', '부자재')),
+    code       text     not null default '',
+    name       text     not null,
+    qty_per    integer  not null check (qty_per > 0),    -- 마스터 필요수량 스냅샷
+    lot        text     not null default '',             -- 제품 행만 쓴다
+    qty        integer  not null check (qty > 0),
+    sort_order integer  not null default 0
+);
+
+create index if not exists process_job_items_job_idx
+    on public.process_job_items (job_id, line_no, sort_order);
+
+-- ── 권한 판정 함수 (config.js 의 manageProcessing 과 같아야 한다) ──
+create or replace function public.can_manage_processing()
+    returns boolean language sql stable set search_path = public as $$
+    select public.my_role() in ('admin', 'yongma', 'shipper_admin')
+$$;
+
+-- ── RLS ── 조회는 로그인 사용자 모두 (창고 내부 업무라 등록자 제한을 두지 않는다)
+alter table public.process_masters      enable row level security;
+alter table public.process_master_items enable row level security;
+alter table public.process_jobs         enable row level security;
+alter table public.process_job_items    enable row level security;
+
+drop policy if exists process_masters_select on public.process_masters;
+create policy process_masters_select on public.process_masters for select to authenticated
+    using (true);
+
+drop policy if exists process_masters_insert on public.process_masters;
+create policy process_masters_insert on public.process_masters for insert to authenticated
+    with check (public.can_manage_processing() and created_by = auth.uid());
+
+drop policy if exists process_masters_update on public.process_masters;
+create policy process_masters_update on public.process_masters for update to authenticated
+    using (public.can_manage_processing()) with check (public.can_manage_processing());
+
+-- 🔑 앱은 soft delete(deleted_at) 만 쓴다. 하드 삭제는 관리자만 - 실수로 지운 마스터는
+-- 되돌릴 길이 없고, 자식 구성품이 cascade 로 함께 사라진다.
+drop policy if exists process_masters_delete on public.process_masters;
+create policy process_masters_delete on public.process_masters for delete to authenticated
+    using (public.my_role() = 'admin');
+
+drop policy if exists process_master_items_select on public.process_master_items;
+create policy process_master_items_select on public.process_master_items
+    for select to authenticated using (true);
+
+drop policy if exists process_master_items_insert on public.process_master_items;
+create policy process_master_items_insert on public.process_master_items
+    for insert to authenticated with check (public.can_manage_processing());
+
+drop policy if exists process_master_items_update on public.process_master_items;
+create policy process_master_items_update on public.process_master_items
+    for update to authenticated
+    using (public.can_manage_processing()) with check (public.can_manage_processing());
+
+drop policy if exists process_master_items_delete on public.process_master_items;
+create policy process_master_items_delete on public.process_master_items
+    for delete to authenticated using (public.can_manage_processing());
+
+drop policy if exists process_jobs_select on public.process_jobs;
+create policy process_jobs_select on public.process_jobs for select to authenticated
+    using (true);
+
+-- 작업만 등록자를 함께 본다 (마스터와 달리 등록자 이름이 작업지시서에 찍힌다)
+drop policy if exists process_jobs_insert on public.process_jobs;
+create policy process_jobs_insert on public.process_jobs for insert to authenticated
+    with check (public.can_manage_processing() and created_by = auth.uid());
+
+drop policy if exists process_jobs_update on public.process_jobs;
+create policy process_jobs_update on public.process_jobs for update to authenticated
+    using (public.can_manage_processing()) with check (public.can_manage_processing());
+
+-- 하드 삭제는 관리자만 (db.deleteProcessJobs 는 soft delete 다 - 문서번호를 되살리지 않는다)
+drop policy if exists process_jobs_delete on public.process_jobs;
+create policy process_jobs_delete on public.process_jobs for delete to authenticated
+    using (public.my_role() = 'admin');
+
+drop policy if exists process_job_items_select on public.process_job_items;
+create policy process_job_items_select on public.process_job_items
+    for select to authenticated using (true);
+
+drop policy if exists process_job_items_insert on public.process_job_items;
+create policy process_job_items_insert on public.process_job_items
+    for insert to authenticated with check (public.can_manage_processing());
+
+drop policy if exists process_job_items_update on public.process_job_items;
+create policy process_job_items_update on public.process_job_items
+    for update to authenticated
+    using (public.can_manage_processing()) with check (public.can_manage_processing());
+
+drop policy if exists process_job_items_delete on public.process_job_items;
+create policy process_job_items_delete on public.process_job_items
+    for delete to authenticated using (public.can_manage_processing());
+
+-- ── 문서번호는 한 번 나가면 바꾸지 않는다 (재채번·번호 갈아끼우기 차단) ──
+-- 화면과 db.issueProcessDoc 이 이미 막지만, 서버에서도 못 박아 둔다.
+create or replace function public.enforce_process_doc_no()
+    returns trigger language plpgsql set search_path = public as $$
+begin
+    if old.doc_no is not null and new.doc_no is distinct from old.doc_no then
+        raise exception '작업지시서 문서번호 ''%'' 는 변경할 수 없습니다.', old.doc_no;
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_process_doc_no on public.process_jobs;
+create trigger trg_enforce_process_doc_no
+    before update of doc_no on public.process_jobs
+    for each row execute function public.enforce_process_doc_no();
+
+-- ── 실시간 갱신 (멱등) ── db.subscribe() 가 store.js 의 TABLES 를 돌며 자동으로 구독한다.
+-- 이미 publication 멤버면 42710 오류가 나므로 가드를 둔다 (재실행 안전).
+do $$
+declare
+    t text;
+begin
+    if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime publication 이 없어 건너뜁니다.';
+        return;
+    end if;
+    if (select puballtables from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime 이 FOR ALL TABLES 라 추가할 것이 없습니다.';
+        return;
+    end if;
+    foreach t in array array[
+        'process_masters', 'process_master_items', 'process_jobs', 'process_job_items'
+    ] loop
+        if not exists (
+            select 1 from pg_publication_tables
+            where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+        ) then
+            execute format('alter publication supabase_realtime add table public.%I', t);
+        end if;
+    end loop;
+end $$;

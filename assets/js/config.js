@@ -54,33 +54,35 @@ export const COMPANIES = Object.values(COMPANY);
  * closeOrder   : 주문처리현황의 출고 완료처리
  * manageNotice : 공지사항 등록·수정·삭제 (조회와 댓글 등록은 모든 로그인 사용자)
  * manageChecklist : 업무체크리스트 항목 등록·수정·삭제 (체크는 담당자 본인도 한다)
+ * manageProcessing : 유통가공작업·작업마스터 등록·수정·삭제·작업지시서 생성
+ *                    (조회는 로그인 사용자 모두 - viewAll 을 보지 않는다)
  */
 export const PERMISSION = {
     [ROLE.ADMIN]: {
         viewAll: true, download: true, manageUsers: true,
         createOrder: true, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true, manageChecklist: true,
+        manageNotice: true, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.YONGMA]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true, manageChecklist: true,
+        manageNotice: true, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.SHIPPER_ADMIN]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false, manageChecklist: true,
+        manageNotice: false, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.SHIPPER_SALES]: {
         viewAll: false, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false, manageChecklist: false,
+        manageNotice: false, manageChecklist: false, manageProcessing: false,
     },
     // 현장작업자 - 출고주문처리·상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
-        manageNotice: false, manageChecklist: false,
+        manageNotice: false, manageChecklist: false, manageProcessing: false,
     },
 };
 
@@ -529,6 +531,38 @@ export const CHECK_TEMPLATES = {
     ],
 };
 
+/* ------------------------------ 유통가공작업 ------------------------------ */
+
+/**
+ * 유통가공 작업구분 (process_masters.work_type · process_jobs.work_type).
+ * 작업에는 마스터 값을 **스냅샷**으로 복사한다 (docs/processing.md §3).
+ */
+export const PROCESS_WORK_TYPE = { LABEL: '라벨', DISMANTLE: '해체', SET: '세트' };
+export const PROCESS_WORK_TYPES = Object.values(PROCESS_WORK_TYPE);
+
+/**
+ * 구성품 구분.
+ * 제품만 LOT 을 나눠 적고, 부자재는 수량이 필요수량으로 고정된다 (docs/processing.md §10).
+ */
+export const PROCESS_ITEM_KIND = { PRODUCT: '제품', MATERIAL: '부자재' };
+export const PROCESS_ITEM_KINDS = Object.values(PROCESS_ITEM_KIND);
+
+/**
+ * 유통가공 진행상태 - **저장하지 않고 계산한다** (db.processStatus 가 유일한 출처).
+ *   완료 : done_at 있음
+ *   진행 : doc_created_at 있음 (작업지시서가 나갔다 = 현장에 내려갔다)
+ *   대기 : 그 밖
+ */
+export const PROCESS_STATUS = { WAIT: '대기', DOING: '진행', DONE: '완료' };
+export const PROCESS_STATUSES = Object.values(PROCESS_STATUS);
+
+/** 진행상태별 태그 색 (.tag--*) */
+export const PROCESS_STATUS_TONE = {
+    [PROCESS_STATUS.WAIT]: 'gray',
+    [PROCESS_STATUS.DOING]: 'blue',
+    [PROCESS_STATUS.DONE]: 'green',
+};
+
 /**
  * 메뉴 정의
  * icon      : icons.js 의 아이콘 키
@@ -548,6 +582,14 @@ export const MENUS = [
     { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
     { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
     { key: 'loading', path: '#/loading', label: '상차리스트', icon: 'loading', mobile: true },
+    // 유통가공작업은 현장 작업이 아니라 사무 등록 업무라 앱(m.html)에 넣지 않는다
+    {
+        key: 'processing',
+        path: '#/processing',
+        label: '유통가공작업',
+        icon: 'processing',
+        mobile: false,
+    },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     {
         key: 'users',

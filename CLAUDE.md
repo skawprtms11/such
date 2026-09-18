@@ -17,6 +17,7 @@
 | 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` | `#/status` (상단바 메뉴) |
 | 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` | `#/ship` `#/inspect` `#/stow` `#/adjust` (탭 4개로 분리) |
 | 상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
+| 유통가공작업 | [docs/processing.md](docs/processing.md) | `assets/js/pages/processing.js` | `#/processing` | — (앱에 없음) |
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |
@@ -70,6 +71,7 @@ npm run build      프로덕션 빌드 → dist/
 npm run preview    빌드 결과물 확인 (http://localhost:4173)
 npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 트리 · docs/checklist.md)
+npm run check:processing 유통가공 순수 계산(캘린더 배치·LOT·문서번호)의 불변식 검사 (docs/processing.md)
 ```
 
 ⚠️ **카메라는 HTTPS 또는 localhost 에서만 동작한다.**
@@ -127,11 +129,13 @@ thefurerap/
 │     ├─ icons.js        단색 라인 SVG 아이콘 (currentColor 기반)
 │     ├─ steps.js        출고 처리 단계 계산 (여러 화면이 공유)
 │     ├─ checkflow.js    업무프로세스 도식의 좌표 계산 (순수 함수 · 웹/앱 공용)
+│     ├─ processing-calc.js  유통가공 순수 계산 (구성품 전개·LOT 분할·문서번호·캘린더 레인)
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     ├─ pages/           웹 화면 모듈
-│     │  └─ checklist/    업무체크리스트 화면 분할 (common·daily·process·flowview·form)
+│     │  ├─ checklist/    업무체크리스트 화면 분할 (common·daily·process·flowview·form)
+│     │  └─ processing/   유통가공작업 화면 분할 (common·jobs·jobform·calendar·master·doc)
 │     └─ mobile/          모바일 앱 화면 층 (docs/mobile.md) — pages/ 와 서로 import 하지 않는다
 │        ├─ app.js        앱 셸 · 해시 라우터 · 하단 탭 · 상단바 메뉴(≡)
 │        ├─ ui.js         앱 공통 컴포넌트 (dock·scanBar·sheet·bigCounter 등)
@@ -327,6 +331,7 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | `closeOrder` 출고 완료처리 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `manageNotice` 공지 등록·수정·삭제 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `manageChecklist` 업무프로세스 편집 | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `manageProcessing` 유통가공 작업·마스터 등록·문서생성 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `manageUsers` 사용자 권한 변경 | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 **현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·상차리스트는 전부 처리하고,
@@ -400,6 +405,10 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
 | `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(하위 프로세스 연결 - seq 순차 ①②③ / fork 갈래 / join 갈래→합류) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
 | `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
+| `process_masters` | 유통가공 작업마스터 (제품별 구성품 BOM · docs/processing.md) | `work_type`(라벨/해체/세트) `product_code` `product_name` `created_by` `created_by_name` `updated_at` `deleted_at`(soft delete) · **`unique(product_code) where deleted_at is null`** |
+| `process_master_items` | 마스터 구성품 | `master_id`(on delete cascade) `kind`(제품/부자재) `code`(부자재는 빌 수 있다) `name` `qty_per`(작업 1개당 소요량) `sort_order` |
+| `process_jobs` | 유통가공 작업 | `doc_no`(작업지시서 문서번호 `YYYYMMDD-NN` · **unique**) `master_id` `work_type` `product_code` `product_name`(마스터 **스냅샷**) `qty` `start_date` `due_date` `doc_created_at`(=진행) `doc_created_by(_name)` `done_at`(=완료) `created_by(_name)` `updated_at` `deleted_at` · **진행상태는 저장하지 않고 계산한다(`db.processStatus`)** |
+| `process_job_items` | 작업 구성품 스냅샷 + LOT 행 | `job_id`(on delete cascade) `line_no`(**구성품 줄** - 같은 값이 한 구성품의 LOT 행들) `kind` `code` `name` `qty_per`(스냅샷) `lot`(제품 행만) `qty` `sort_order` · 필요수량은 `qty_per × job.qty` 로 **계산한다**(컬럼 없음) |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
 검수작업 탭에서 검수완료 시 수기로 입력**한다 ([docs/shipping.md](docs/shipping.md) 참고).

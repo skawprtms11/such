@@ -119,6 +119,40 @@ const TABLES = [
             'checked_by', 'checked_by_name', 'checked_at',
         ],
     },
+    // ── 유통가공작업 (docs/processing.md) ──
+    {
+        key: 'processMasters',
+        name: 'process_masters',
+        cols: [
+            'id', 'work_type', 'product_code', 'product_name',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    {
+        key: 'processMasterItems',
+        name: 'process_master_items',
+        cols: ['id', 'master_id', 'kind', 'code', 'name', 'qty_per', 'sort_order'],
+    },
+    {
+        key: 'processJobs',
+        name: 'process_jobs',
+        cols: [
+            'id', 'doc_no', 'master_id', 'work_type', 'product_code', 'product_name',
+            'qty', 'start_date', 'due_date',
+            'doc_created_at', 'doc_created_by', 'doc_created_by_name', 'done_at',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    // ⚠️ 작업 1건이 구성품 행 수십 개를 만들어 가장 빨리 커지는 테이블이다.
+    // 운영 6개월치를 넘기면 이 테이블만 기간 조건 조회로 빼는 것을 검토한다
+    {
+        key: 'processJobItems',
+        name: 'process_job_items',
+        cols: [
+            'id', 'job_id', 'line_no', 'kind', 'code', 'name',
+            'qty_per', 'lot', 'qty', 'sort_order',
+        ],
+    },
 ];
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
@@ -165,6 +199,7 @@ function mockLoad() {
     const empty = {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
         notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
+        processMasters: [], processMasterItems: [], processJobs: [], processJobItems: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;

@@ -3,7 +3,7 @@
 > 새 화면을 추가하거나 데이터 계층·권한을 건드릴 때 먼저 읽는다.
 > 메뉴별 문서: [orders](orders.md) · [status](status.md) · [shipping](shipping.md) ·
 > [loading](loading.md) · [inspect](inspect.md) · [issues](issues.md) · [notices](notices.md) ·
-> [users](users.md) ·
+> [users](users.md) · [processing](processing.md) ·
 > 모바일 앱 셸 전체는 [mobile](mobile.md)
 
 ---
@@ -133,6 +133,7 @@ export async function render(root, { user, params }) {
 | 공지사항 | ✅ | ✅ |
 | 업무체크리스트 | ✅ | ✅ |
 | 사용자관리 (관리자) | ✅ | ❌ |
+| 유통가공작업 | ✅ | ❌ |
 
 탭바에 없는 메뉴도 **모바일에서 햄버거 버튼(☰)의 서랍으로 접근할 수 있다.**
 
