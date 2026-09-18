@@ -3670,7 +3670,9 @@ export async function checklistCategories() {
 
 /**
  * 일일체크리스트 보드 🔑 - 독립 체크항목(트리가 아니라 parent_id 없는 kind='check')을 주기별로
- * 묶은 데이터. 트리 판정(`isDueOn`)은 쓰지 않는다 - 노출 규칙이
+ * 묶은 데이터. 🔑 독립 항목은 `daily` 플래그를 쓰지 않는다 - 보드는 `active` 만 본다
+ * (그래서 등록 폼도 독립 체크항목에는 「일일체크리스트 포함」 체크박스를 내지 않는다).
+ * 트리 판정(`isDueOn`)은 쓰지 않는다 - 노출 규칙이
  * 아예 다르다(그 날짜에만 나오는 것이 아니라 **기간 전체에 걸쳐** 나온다).
  * @param {string} dateStr YYYY-MM-DD - 그 날짜가 속한 기간(주·달)을 본다
  * @param {{assignee?:string, user?:object}} [f]
@@ -3703,8 +3705,11 @@ export async function checklistBoard(dateStr, f = {}) {
         const period = periodStart(item.cycle, day);
         const row = db.checklistChecks
             .find((c) => c.item_id === item.id && c.check_date === period);
+        // 지난 기간 미체크 - 🔑 그 기간이 시작된 뒤에 만든 항목은 애초에 체크할 수 없었으므로 뺀다
+        // (안 그러면 방금 등록한 항목이 바로 「지난 기간 미체크」로 뜬다)
         const prevPeriod = prevPeriodStart(item.cycle, day);
-        const late = !db.checklistChecks
+        const born = String(item.created_at ?? '').slice(0, 10);
+        const late = (!born || born <= prevPeriod) && !db.checklistChecks
             .some((c) => c.item_id === item.id && c.check_date === prevPeriod && c.checked_at);
 
         const bucket = item.cycle === CHECK_CYCLE.WEEKLY ? 'weekly'

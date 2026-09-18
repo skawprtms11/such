@@ -266,7 +266,7 @@ function formHtml(item, kind, parent, users, divisions = []) {
     ${textBtn('plus', '부담당자 추가', 'data-add-sub', 'btn btn--sm pm-add')}
   </div>
   <div class="cl-form__checks">
-    ${isCheck || kind === CHECK_KIND.PROCESS ? `
+    ${(isCheck && parent) || kind === CHECK_KIND.PROCESS ? `
     <label class="check" title="${isCheck ? '켜면 일일체크리스트에 나옵니다' : '체크항목이 없는 단계일 때 단계 자체를 일일체크리스트에 넣습니다'}">
       <input type="checkbox" name="daily" ${item ? (item.daily ? 'checked' : '') : (isCheck ? 'checked' : '')}>
       <span>일일체크리스트 포함</span>

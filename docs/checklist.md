@@ -135,9 +135,17 @@ kind = 'check'  AND  parent_id 없음  AND  active  AND  cycle ≠ adhoc
 | 프로세스 · 상황 | ❌ 흐름의 구성 요소다 |
 
 - 🔑 **`daily` 플래그로 거르지 않는다.** 독립 항목은 그 자체가 일일체크리스트 항목이라
-  플래그가 뜻이 없다 (등록 탭은 새 항목에 `daily: true` 를 적어 두기만 한다)
+  플래그가 뜻이 없다 (보드는 `active` 만 본다). 그래서 **독립 체크항목 등록·수정 폼에는
+  「일일체크리스트 포함」 체크박스를 내지 않는다** — 트리 안의 체크항목·프로세스에만 나온다
+- 🔑 **「지난 기간 미체크」(`late`)는 항목을 만든 시점을 본다.** 항목 `created_at` 이 이전 기간
+  시작일보다 뒤면 그 기간에는 체크할 수 없었으므로 표시하지 않는다 (방금 등록한 항목이 바로
+  미체크로 뜨지 않는다)
 - 프로세스 아래에 있던 옛 체크항목은 스키마의 1회성 이행 SQL 이 **담당자를 구운 뒤 독립 항목으로
-  옮긴다** (`legacy_parent_id` 에 옛 부모를 남긴다 — 되돌릴 수 있다)
+  옮긴다** (`legacy_parent_id` 에 옛 부모를 남긴다 — 되돌릴 수 있다). 규칙 세 가지가 중요하다 —
+  ① **상황과 그 하위 전체는 제외** ② 담당자 굽기는 **정·부가 모두 빈 항목만**
+  (부담당자만 지정한 항목의 `sub_assignees` 를 덮어쓰지 않는다) ③ **group 조상이 없어도 떼어낸다**
+  (없으면 기존 `category` 유지 — 안 그러면 트리에도 보드에도 안 나오는 항목이 남는다).
+  실행 전 백업표 `public._cl_mig_bak_YYYYMMDD` 를 만들고 롤백은 그 표에서 복원한다
 
 ### 상황 발생 🔑 — 업무프로세스(매뉴얼) 쪽 이야기다
 
@@ -199,6 +207,10 @@ db.js   effectiveAssignee(item)   →  rows 의 assignee_eff_id / assignee_eff_n
 
 - 서버 RLS 도 같은 기준이다 (`supabase/schema.sql` 의 `can_manage_checklist()` ·
   `checklist_can_check()`). **화면 제어만 믿지 않는다**
+- 🔑 **`checked_by is null` 인 행도 지나가야 한다.** 체크 없이 메모만 남긴 행과 체크 해제
+  (메모가 남아 행을 지우지 않는 경우)가 `checked_by` 를 비우므로, `checklist_checks` 의
+  insert·update 정책은 `checked_by = auth.uid()` 외에 `checked_by is null` +
+  `checklist_can_check(item_id)` 를 함께 허용한다
 
 ---
 
