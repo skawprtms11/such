@@ -109,7 +109,7 @@ const TABLES = [
         cols: [
             'id', 'category', 'parent_id', 'kind', 'child_flow', 'title', 'description',
             'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name', 'sub_assignees',
-            'sort_order', 'active', 'daily',
+            'sort_order', 'active', 'daily', 'legacy_parent_id',
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
         ],
     },

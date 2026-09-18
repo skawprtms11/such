@@ -369,7 +369,8 @@ create table if not exists public.checklist_items (
     created_by_name text        not null default '',
     created_at      timestamptz not null default now(),
     updated_at      timestamptz,
-    deleted_at      timestamptz                               -- 삭제 시각 (있으면 목록에서 제외)
+    deleted_at      timestamptz,                              -- 삭제 시각 (있으면 목록에서 제외)
+    legacy_parent_id text                                      -- 독립 체크항목 이행 전 parent_id (롤백용)
 );
 
 comment on table public.checklist_items is '업무체크리스트 흐름 트리(프로세스·상황·체크항목). 등록·수정·삭제는 manageChecklist 권한';
@@ -394,6 +395,8 @@ alter table public.checklist_items add constraint checklist_items_child_flow_che
 alter table public.checklist_items add column if not exists daily boolean not null default false;
 -- 부담당자(여러 명) - 정담당자와 한 묶음으로 상속된다 (db.js effectiveAssignee · 아래 checklist_can_check)
 alter table public.checklist_items add column if not exists sub_assignees jsonb not null default '[]'::jsonb;
+-- 독립 체크항목 이행 전 parent_id 백업 (롤백용). 값이 있으면 이미 이행된 항목이라 이행 블록을 건너뛴다
+alter table public.checklist_items add column if not exists legacy_parent_id text;
 update public.checklist_items set daily = true
  where kind in ('check', 'process') and daily = false and updated_at is null
    and created_at < '2026-09-09T02:00:00Z';
@@ -464,6 +467,106 @@ create or replace function public.checklist_can_check(p_item text)
                     where (s->>'id')::uuid = auth.uid())
 $$;
 
+-- ═══════════════ 이행: 프로세스 아래 체크항목 → 독립 체크항목 (기존 구축분 1회 실행) ═══════════════
+-- 실행은 부장이 결과를 보면서 한다. dev-team 커밋에는 SQL 만 포함하고 여기서 자동 실행하지 않는다.
+-- 대상: kind='check' · parent_id is not null · deleted_at is null · legacy_parent_id is null(멱등 - 이미
+--       이행된 항목은 legacy_parent_id 가 채워져 있어 다시 안 걸린다) · 부모 체인에 situation 이 없는 항목만
+--       (상황 아래 체크항목은 상황 발생 시 같이 끼어드는 항목이라 그대로 둔다)
+-- 순서: ① 사전 확인 → ② 담당자 bake → ③ category 채우고 parent_id 끊기 → 도우미 함수 정리 → ④ 사후 확인
+--       필요하면 ⑤ 롤백
+
+-- 도우미 함수(이행 전용) - ③ 끝에서 스스로 지운다
+create or replace function public.checklist_migrate_eligible()
+    returns table(item_id text) language sql stable as $$
+    select c.id
+      from public.checklist_items c
+     where c.kind = 'check'
+       and c.parent_id is not null
+       and c.deleted_at is null
+       and c.legacy_parent_id is null
+       and not exists (
+           with recursive up as (
+               select id, parent_id, kind, 0 as depth
+                 from public.checklist_items where id = c.parent_id
+               union all
+               select i.id, i.parent_id, i.kind, up.depth + 1
+                 from public.checklist_items i join up on i.id = up.parent_id
+                where up.depth < 50
+           )
+           select 1 from up where kind = 'situation'
+       )
+$$;
+
+-- ① 사전 확인 - 대상 건수 · 담당 없는(공통) 건수
+select
+    count(*)                                                              as 대상건수,
+    count(*) filter (where c.assignee_id is null
+                        and jsonb_array_length(coalesce(c.sub_assignees, '[]'::jsonb)) = 0) as 담당없음건수
+  from public.checklist_items c
+  join public.checklist_migrate_eligible() e on e.item_id = c.id;
+
+-- ② 담당자 bake - 자기 assignee_id 가 null 인 대상만, 부모 체인에서 처음 만나는 담당자 묶음(정·부 함께)을 복사
+with recursive up as (
+    select c.id as target_id, i.id, i.parent_id, i.assignee_id, i.assignee_name, i.sub_assignees, 0 as depth
+      from public.checklist_items c
+      join public.checklist_migrate_eligible() e on e.item_id = c.id
+      join public.checklist_items i on i.id = c.parent_id
+     where c.assignee_id is null
+    union all
+    select up.target_id, i.id, i.parent_id, i.assignee_id, i.assignee_name, i.sub_assignees, up.depth + 1
+      from public.checklist_items i
+      join up on i.id = up.parent_id
+     where up.depth < 50
+), picked as (
+    select distinct on (target_id) target_id, assignee_id, assignee_name, sub_assignees
+      from up
+     where assignee_id is not null
+        or jsonb_array_length(coalesce(sub_assignees, '[]'::jsonb)) > 0
+     order by target_id, depth
+)
+update public.checklist_items t
+   set assignee_id = p.assignee_id,
+       assignee_name = p.assignee_name,
+       sub_assignees = p.sub_assignees
+  from picked p
+ where t.id = p.target_id;
+
+-- ③ category = 가장 가까운 group 조상의 title, legacy_parent_id = 원래 parent_id, parent_id = null
+with recursive up as (
+    select c.id as target_id, i.id, i.parent_id, i.kind, i.title, 0 as depth
+      from public.checklist_items c
+      join public.checklist_migrate_eligible() e on e.item_id = c.id
+      join public.checklist_items i on i.id = c.parent_id
+    union all
+    select up.target_id, i.id, i.parent_id, i.kind, i.title, up.depth + 1
+      from public.checklist_items i
+      join up on i.id = up.parent_id
+     where up.depth < 50
+), grp as (
+    select distinct on (target_id) target_id, title
+      from up
+     where kind = 'group'
+     order by target_id, depth
+)
+update public.checklist_items t
+   set legacy_parent_id = t.parent_id,
+       category = coalesce(g.title, t.category),
+       parent_id = null
+  from grp g
+ where t.id = g.target_id;
+
+drop function public.checklist_migrate_eligible();
+
+-- ④ 사후 확인 - 이행된 독립 체크항목 수 · 트리에 남아있는 체크항목 수(상황 하위 등 - 남아 있어야 정상)
+select
+    count(*) filter (where kind = 'check' and parent_id is null and legacy_parent_id is not null) as 이행됨,
+    count(*) filter (where kind = 'check' and parent_id is not null)                               as 트리에_남은_체크항목
+  from public.checklist_items where deleted_at is null;
+
+-- ⑤ 롤백 (필요할 때만 실행)
+-- update public.checklist_items set parent_id = legacy_parent_id, legacy_parent_id = null
+--  where legacy_parent_id is not null;
+
 create index if not exists checklist_items_cat_idx
     on public.checklist_items (category, sort_order);
 create index if not exists checklist_items_parent_idx on public.checklist_items (parent_id);
@@ -483,9 +586,13 @@ create table if not exists public.checklist_checks (
     memo            text        not null default '',
     checked_by      uuid        references public.profiles (id),
     checked_by_name text        not null default '',
-    checked_at      timestamptz not null default now(),
+    checked_at      timestamptz,                              -- null = 미체크(메모만 있는 행)
     unique (item_id, check_date)
 );
+
+-- 기존 구축분: 메모만 남기고 체크는 안 한 행을 표현하려면 checked_at 이 비어 있어야 한다
+alter table public.checklist_checks alter column checked_at drop not null;
+alter table public.checklist_checks alter column checked_at drop default;
 
 create index if not exists checklist_checks_date_idx on public.checklist_checks (check_date);
 

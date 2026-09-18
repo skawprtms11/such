@@ -2652,8 +2652,13 @@ function checkItemInput(patch, base, db, parent, relation = true) {
         throw new Error(`${where}에는 ${CHECK_KINDS[kind]}을(를) 둘 수 없습니다.`);
     }
 
-    // category 는 최상위(업무구분) 이름이다 - 최상위는 자기 이름, 그 아래는 상위를 따른다 (옛 컬럼 호환)
-    const category = parent ? parent.category : title;
+    // category 는 최상위(업무구분) 이름이다 - 최상위는 자기 이름, 그 아래는 상위를 따른다 (옛 컬럼 호환).
+    // 단, 독립 체크항목(최상위 + kind='check')은 트리가 아니라 일일체크리스트 구분값을 직접 받는다
+    const category = parent
+        ? parent.category
+        : (kind === CHECK_KIND.CHECK
+            ? String(patch.category ?? base.category ?? '').trim()
+            : title);
     // 업무구분은 전체에서, 업무항목은 같은 업무구분 안에서 이름이 겹치면 안 된다
     if (kind === CHECK_KIND.DIVISION || kind === CHECK_KIND.GROUP) {
         const dup = aliveItems(db).find((i) => i.kind === kind && i.id !== base.id
@@ -3484,6 +3489,40 @@ export async function noteLabels(groupId) {
 }
 
 /**
+ * 주기의 기간 시작일 🔑 (독립 체크항목의 「기간당 1회」 판정은 이 함수 한 곳에만 둔다)
+ *   daily/adhoc : 그 날짜 그대로 (하루가 곧 한 기간)
+ *   weekly      : 그 날짜가 속한 주의 **월요일** (ISO 주 - 일요일은 그 전주 월요일로 간다)
+ *   monthly     : 그 날짜가 속한 달의 1일
+ * @param {string} cycle CHECK_CYCLE 값
+ * @param {string} dateStr YYYY-MM-DD
+ * @returns {string} YYYY-MM-DD
+ */
+export function periodStart(cycle, dateStr) {
+    const day = String(dateStr || today()).slice(0, 10);
+    if (cycle === CHECK_CYCLE.WEEKLY) {
+        const d = new Date(`${day}T00:00:00`);
+        if (Number.isNaN(d.getTime())) return day;
+        const diff = (d.getDay() + 6) % 7;   // 월요일까지 거슬러 올라갈 일수 (일=6, 월=0 …)
+        d.setDate(d.getDate() - diff);
+        return toDateStr(d);
+    }
+    if (cycle === CHECK_CYCLE.MONTHLY) return `${day.slice(0, 7)}-01`;
+    return day;
+}
+
+/** 직전 기간의 시작일 - late(지난 기간 미체크) 판정용. daily=어제, weekly=지난주 월요일, monthly=지난달 1일 */
+export function prevPeriodStart(cycle, dateStr) {
+    const start = periodStart(cycle, dateStr);
+    if (cycle === CHECK_CYCLE.WEEKLY) return addDays(start, -7);
+    if (cycle === CHECK_CYCLE.MONTHLY) {
+        const d = new Date(`${start}T00:00:00`);
+        d.setMonth(d.getMonth() - 1);
+        return toDateStr(d);
+    }
+    return addDays(start, -1);
+}
+
+/**
  * 그 날짜에 해야 하는 항목인지 🔑 (주기 판정은 이 함수 한 곳에만 둔다)
  *   daily   : 매일
  *   weekly  : 지정 요일과 같은 날
@@ -3945,13 +3984,17 @@ export async function listChecks(date) {
 }
 
 /**
- * 체크 처리 - on 이면 기록을 만들고, 아니면 지운다.
- * 항목·날짜당 1건이므로 이미 있으면 메모만 갱신한다.
+ * 체크 처리 - on 이면 체크 기록을 남기고, 아니면 체크를 해제한다.
+ * 항목·기간당 1건이므로 이미 있으면 메모만 갱신한다. 날짜는 항목 주기의 **기간 시작일**로
+ * 정규화한다(`periodStart`) - 같은 주·같은 달 안에서 어느 날 눌러도 같은 기록 1건을 본다.
  * 🔑 상황(situation) 노드에 쓰면 **발생 처리**다. 발생을 해제하면 그 상황 아래
  * 체크 기록도 같은 날짜 것은 함께 지운다 (끼어들었던 단계가 통째로 빠진다).
  * 상위 상황이 발생 처리되지 않은 항목은 체크할 수 없다.
  * 🔑 **주기(`isDueOn`) 밖 날짜에는 체크할 수 없다** - 주기 밖 기록이 들어가면
- * `late`·`checklistSummary` 집계가 어긋난다. 해제는 막지 않는다 (잘못 들어간 기록 정리).
+ * `late`·`checklistSummary` 집계가 어긋난다. **독립 항목(부모 없음)은 이 가드를 받지 않는다** -
+ * 일일체크리스트는 기간(오늘 속한 주·달) 안에서 노출하는 것으로 대신한다. 해제는 막지 않는다
+ * (잘못 들어간 기록 정리).
+ * 해제 시 메모가 남아 있으면 행을 지우지 않고 `checked_at`·`checked_by`만 비운다(메모까지 비면 삭제).
  */
 export async function setCheck(itemId, date, on, memo, user) {
     const db = (await load());
@@ -3965,10 +4008,11 @@ export async function setCheck(itemId, date, on, memo, user) {
         throw new Error('담당자(정·부) 본인 또는 체크리스트 관리자만 체크할 수 있습니다.');
     }
 
-    const day = String(date || today()).slice(0, 10);
+    const independent = !item.parent_id;
+    const day = periodStart(item.cycle, date);
     const sits = situationAncestors(item, byId);
     const isOn = (id) => db.checklistChecks.some((c) => c.item_id === id && c.check_date === day);
-    if (on && !isDueOn(item, day)) {
+    if (on && !independent && !isDueOn(item, day)) {
         throw new Error('그 날짜의 체크 대상이 아닙니다.');
     }
     if (on && sits.some((id) => !isOn(id))) {
@@ -3979,7 +4023,17 @@ export async function setCheck(itemId, date, on, memo, user) {
         .findIndex((c) => c.item_id === itemId && c.check_date === day);
 
     if (!on) {
-        if (at >= 0) db.checklistChecks.splice(at, 1);
+        if (at >= 0) {
+            const row = db.checklistChecks[at];
+            if (memo !== undefined) row.memo = String(memo ?? '').trim();
+            if (String(row.memo ?? '').trim()) {
+                row.checked_at = null;
+                row.checked_by = null;
+                row.checked_by_name = '';
+            } else {
+                db.checklistChecks.splice(at, 1);
+            }
+        }
         if (item.kind === CHECK_KIND.SITUATION) {
             const under = new Set(withDescendants(alive, itemId).map((x) => x.id));
             db.checklistChecks = db.checklistChecks
@@ -3991,7 +4045,10 @@ export async function setCheck(itemId, date, on, memo, user) {
 
     const text = String(memo ?? '').trim();
     if (at >= 0) {
-        db.checklistChecks[at].memo = text;
+        Object.assign(db.checklistChecks[at], {
+            memo: text, checked_by: user.id, checked_by_name: user.name,
+            checked_at: new Date().toISOString(),
+        });
         await save(db);
         return db.checklistChecks[at];
     }
@@ -4007,6 +4064,118 @@ export async function setCheck(itemId, date, on, memo, user) {
     db.checklistChecks.push(row);
     await save(db);
     return row;
+}
+
+/**
+ * 체크는 안 하고 메모만 남기거나 고친다 - 체크 여부는 건드리지 않는다.
+ * 이미 체크된 행이면 메모만 바뀐다. 없던 행이면 `checked_at` 이 비어 있는 메모 전용 행을 만든다.
+ */
+export async function setCheckMemo(itemId, date, memo, user) {
+    const db = (await load());
+    const alive = aliveItems(db);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const item = byId.get(itemId);
+    if (!item) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
+
+    const eff = effectiveAssignee(item, byId);
+    if (!canCheckItem(user, { ...item, assignee_eff_id: eff.id, assignee_eff_subs: eff.subs })) {
+        throw new Error('담당자(정·부) 본인 또는 체크리스트 관리자만 메모를 남길 수 있습니다.');
+    }
+
+    const day = periodStart(item.cycle, date);
+    const text = String(memo ?? '').trim();
+    const at = db.checklistChecks.findIndex((c) => c.item_id === itemId && c.check_date === day);
+    if (at >= 0) {
+        db.checklistChecks[at].memo = text;
+        if (!text && !db.checklistChecks[at].checked_at) db.checklistChecks.splice(at, 1);
+        await save(db);
+        return db.checklistChecks[at] ?? null;
+    }
+    if (!text) return null;
+    const row = {
+        id: uid('cc'),
+        item_id: itemId,
+        check_date: day,
+        memo: text,
+        checked_by: null,
+        checked_by_name: '',
+        checked_at: null,
+    };
+    db.checklistChecks.push(row);
+    await save(db);
+    return row;
+}
+
+/** 독립 체크항목(parent_id 없는 kind='check')이 쓰는 구분값 목록 - 빈 값 제외, 가나다순 */
+export async function checklistCategories() {
+    const db = await load();
+    const cats = aliveItems(db)
+        .filter((i) => i.kind === CHECK_KIND.CHECK && !i.parent_id && i.active)
+        .map((i) => String(i.category ?? '').trim())
+        .filter(Boolean);
+    return [...new Set(cats)].sort((a, b) => a.localeCompare(b, 'ko'));
+}
+
+/**
+ * 일일체크리스트 보드 🔑 - 독립 체크항목(트리가 아니라 parent_id 없는 kind='check')을 주기별로
+ * 묶은 데이터. 트리 판정(`checklistContext`·`dailyFlow`·`isDueOn`)은 쓰지 않는다 - 노출 규칙이
+ * 아예 다르다(그 날짜에만 나오는 것이 아니라 **기간 전체에 걸쳐** 나온다).
+ * @param {string} dateStr YYYY-MM-DD - 그 날짜가 속한 기간(주·달)을 본다
+ * @param {{assignee?:string, user?:object}} [f]
+ *   assignee - manageChecklist 권한자가 특정 담당자로 좁혀 볼 때만 쓴다
+ *   user     - 로그인 사용자. manageChecklist 권한이 없으면 본인 담당(정·부) + 담당 없는 항목만 준다
+ * @returns {Promise<{daily:Array, weekly:Array, monthly:Array}>}
+ */
+export async function checklistBoard(dateStr, f = {}) {
+    const db = await load();
+    const day = String(dateStr || today()).slice(0, 10);
+    const alive = aliveItems(db);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const targets = alive.filter((i) => i.kind === CHECK_KIND.CHECK && !i.parent_id && i.active
+        && i.cycle !== CHECK_CYCLE.ADHOC);   // 보드는 일/주/월만 - 수시 독립 항목은 다른 화면 몫이다
+
+    const canSeeAll = !!f.user && canManageChecklist(f.user);
+    const mine = f.user?.id ?? null;
+
+    const board = { daily: [], weekly: [], monthly: [] };
+    targets.forEach((item) => {
+        const eff = effectiveAssignee(item, byId);
+        if (canSeeAll) {
+            const other = eff.id !== f.assignee && !eff.subs.some((s) => s.id === f.assignee);
+            if (f.assignee && other) return;
+        } else {
+            const hasAssignee = !!eff.id || eff.subs.length > 0;
+            if (hasAssignee && eff.id !== mine && !eff.subs.some((s) => s.id === mine)) return;
+        }
+
+        const period = periodStart(item.cycle, day);
+        const row = db.checklistChecks
+            .find((c) => c.item_id === item.id && c.check_date === period);
+        const prevPeriod = prevPeriodStart(item.cycle, day);
+        const late = !db.checklistChecks
+            .some((c) => c.item_id === item.id && c.check_date === prevPeriod && c.checked_at);
+
+        const bucket = item.cycle === CHECK_CYCLE.WEEKLY ? 'weekly'
+            : item.cycle === CHECK_CYCLE.MONTHLY ? 'monthly' : 'daily';
+        board[bucket].push({
+            item,
+            category: item.category || '',
+            title: item.title,
+            cycle: item.cycle,
+            description: item.description || '',
+            assignee_eff_id: eff.id,
+            assignee_eff_name: eff.name,
+            assignee_eff_subs: eff.subs,
+            check: row ? {
+                checked_at: row.checked_at,
+                checked_by_name: row.checked_by_name,
+                memo: row.memo,
+            } : null,
+            late,
+            period,
+        });
+    });
+    return board;
 }
 
 /**
