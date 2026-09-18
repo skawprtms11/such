@@ -461,13 +461,6 @@ export const CHECK_FLOW = {
     JOIN: 'join',
 };
 
-/** @deprecated 연결 방식 표시 문구 (간선 테이블로 대체) */
-export const CHECK_FLOWS = {
-    [CHECK_FLOW.SEQ]: '순차 ①②③',
-    [CHECK_FLOW.FORK]: '갈래 (조건 분기)',
-    [CHECK_FLOW.JOIN]: '갈래 → 합류 (다시 한 단계로)',
-};
-
 /**
  * @deprecated 갈래는 `from` 하나에 나가는 간선이 여럿인 것으로 표현한다 (db.processFlow).
  *

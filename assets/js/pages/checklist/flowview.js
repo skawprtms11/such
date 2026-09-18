@@ -1,121 +1,98 @@
 /**
- * 업무프로세스 탭 가운데의 **흐름 도식**.
- *
- * 노드는 지금까지 쓰던 HTML 카드 그대로다 (드래그 손잡이 · 접힘/펼침 · ✎ 속성 모달이 살아 있다).
- * 달라진 것은 **잇는 선만 SVG** 이고 카드가 좌표로 놓인다는 점이다.
+ * 업무프로세스 탭 가운데의 **흐름 도식** (간선 기반 DAG).
  *
  *   .pm-canvas (가로 스크롤)
  *     └ .pm-stage (position:relative · 크기는 계산 결과)
  *         ├ <svg class="pm-edges">  직교 꺾은선 + 화살촉 (pointer-events:none)
- *         └ .pm-node (position:absolute)  ← 카드
+ *         ├ .pm-node (position:absolute)  ← 카드
+ *         └ .pm-labels                    ← 선 위 라벨 칩 (HTML · 선과 좌표를 공유한다)
  *
- * 좌표 계산은 순수 함수(assets/js/checkflow.js)가 한다. 카드 높이는 접힘·체크항목 수에 따라
- * 달라지므로 **먼저 붙여서 재고**(1-pass) 그 값으로 자리를 잡는다(2-pass).
+ * 🔑 **흐름의 유일한 출처는 `db.processFlow`** 다 - 번호(`no`)·시작(`entries`)·끝(`exits`)·
+ * 순환(`cyclic`)을 화면이 다시 계산하지 않는다. 좌표만 순수 함수(checkflow.js)가 낸다.
  *
- * 🔑 하위 프로세스는 카드 안이 아니라 **아래에 놓인 다른 노드**로 나온다 - 순차 하위는 같은
- * 열에서 들여쓰고, 갈래는 오른쪽으로 벌린다 (읽는 규칙: 아래로 = 다음 단계).
- * 상황(주황 블록)은 예외 처리라 지금처럼 카드 안에 그대로 둔다.
+ * 🔑 **카드는 기본으로 제목만**이다 (번호 배지 + 한 줄). 머리를 누르면 펼쳐져 설명·담당·
+ * 상황 블록이 나온다. 흐름을 눈으로 훑는 것이 이 화면의 목적이라 접힌 상태가 기본이다.
  *
- * 🔑 **합류(join)** 는 갈래를 벌린 뒤 **자기 다음 형제**로 다시 모으는 것이다. 모일 곳은
- * 고르지 않고 언제나 다음 형제라, 여기서는 그 형제를 `joinTo` 로 달아 두기만 한다.
+ * 🔑 상황(situation)은 간선에 들지 않는다 - 카드 안 주황 블록이고, 그 아래 대응 프로세스는
+ * 트리(`sort_order`) 사슬이다. 「늘 있는 경로」와 「그날 생긴 일」은 층이 다르다.
+ *
+ * 🔑 **체크항목(kind=check)은 이 탭에 나오지 않는다.** 흐름과 그 설명만 다루고, 체크항목은
+ * 일일체크리스트 탭이 맡는다 (데이터는 그대로 있고 탭1 이 읽는다 - docs/checklist.md).
  */
-import { CHECK_KIND, cycleLabel, isFork, isJoin } from '../../config.js';
+import { CHECK_KIND } from '../../config.js';
 import { icon } from '../../icons.js';
 import { esc } from '../../util.js';
-import { flowCols, forkBase, laneWidth, layoutFlow, rowNos } from '../../checkflow.js';
+import { DAG_SIZE, dagCols, laneWidth, layoutDag } from '../../checkflow.js';
 import { openBtn, quickBar, stepCaption, whoHtml } from './common.js';
 
-/** 도식 노드가 되는 하위인가 (체크항목·상황은 카드 안에 들어간다) */
-function isStep(node) {
-    return node.item.kind !== CHECK_KIND.CHECK && node.item.kind !== CHECK_KIND.SITUATION;
+/** 트리에서 그 항목의 자식 (등록 순서 = sort_order) */
+function kidsOf(rows, id) {
+    return rows.filter((r) => r.parent_id === id)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 }
 
-/**
- * 하위 프로세스 줄의 번호 🔑 - 채번은 `checkflow.rowNos` 한 곳이다.
- * 갈래 줄이면 `4.1` `4.2`, 순차 줄이면 `①②③` 이고 갈래 부모는 슬롯을 2칸 쓴다.
- * @param {Array} kids 트리 자식 전부 (프로세스만 골라 쓴다)
- * @param {boolean} fork 이 줄이 갈래 줄인가
- * @param {number|string|null} no 부모 번호 (갈래 줄의 앞자리를 여기서 만든다)
- */
-function stepNos(kids, fork, no) {
-    return rowNos(kids.filter(isStep), {
-        fork,
-        base: forkBase(no),
-        isBranch: (c) => isFork(c.item) && c.children.some(isStep),
-    });
-}
-
-/**
- * 트리 노드 → 화면 VM. 프로세스 모양 { item, no, rows(체크항목), subs(하위 프로세스), situations }
- * 순번(no)은 같은 줄 안의 슬롯이다 - 순차면 정수, **갈래 줄이면 `4.1` 꼴 점 번호**다.
- * @param {boolean} branch 갈래 줄에 놓인 노드인가 (번호 뱃지를 파란 알약으로 그린다)
- */
-function treeToVM(node, no, branch = false) {
-    const vm = {
-        item: node.item, no, branch, rows: [], subs: [], situations: [],
-        fork: isFork(node.item), join: isJoin(node.item),
+/** 상황 아래 대응 프로세스 한 줄 - 간선이 아니라 트리 사슬이라 번호는 `i+1` 이다 */
+function chainVM(item, rows, no) {
+    const kids = kidsOf(rows, item.id);
+    const subs = kids.filter((c) => c.kind === CHECK_KIND.PROCESS);
+    return {
+        item,
+        no,
+        subs: subs.map((c, i) => chainVM(c, rows, i + 1)),
+        situations: kids.filter((c) => c.kind === CHECK_KIND.SITUATION)
+            .map((c) => sitVM(c, rows)),
     };
-    const nos = stepNos(node.children, vm.fork, no);
-    let at = 0;
-    node.children.forEach((c) => {
-        if (c.item.kind === CHECK_KIND.CHECK) vm.rows.push(c.item);
-        else if (c.item.kind === CHECK_KIND.SITUATION) vm.situations.push(treeToSitVM(c));
-        else {
-            vm.subs.push(treeToVM(c, nos[at], vm.fork));
-            at += 1;
-        }
-    });
-    markJoins(vm.subs, !vm.fork);
-    return vm;
+}
+
+/** 상황 블록 - 대응 프로세스 사슬 */
+function sitVM(item, rows) {
+    return {
+        item,
+        subs: kidsOf(rows, item.id).filter((c) => c.kind === CHECK_KIND.PROCESS)
+            .map((c, i) => chainVM(c, rows, i + 1)),
+    };
 }
 
 /**
- * 합류(join) 하위에 **모일 곳**(다음 형제)을 달아 준다.
- * @param {boolean} chained 형제끼리 이어지는 줄인가. 갈래로 벌린 줄은 이어지지 않아 모일 곳이 없다
- *   (그때는 갈래와 똑같이 그리고 카드 상세에 주의 문구를 띄운다)
+ * 업무항목 한 벌 → 화면 VM.
+ * @param {object} group 업무항목 행
+ * @param {Array} rows 그 업무항목 아래 항목 전부 (비활성 포함)
+ * @param {object} flow db.processFlow 결과 - **번호·순서·상태는 전부 여기서 온다**
+ * @returns {{item, flow, nodes:Array, edges:Array}}
  */
-function markJoins(subs, chained) {
-    subs.forEach((s, i) => {
-        s.joinTo = chained && s.join && s.subs.length ? (subs[i + 1] ?? null) : null;
-        s.joinRow = chained;
-    });
-}
-
-function treeToSitVM(node) {
-    const vm = { item: node.item, rows: [], subs: [], fork: isFork(node.item) };
-    // 상황에는 번호가 없다 - 대응 단계는 ①②③ 부터, 갈래면 `1.1` `1.2` 다
-    const nos = stepNos(node.children, vm.fork, null);
-    let at = 0;
-    node.children.forEach((c) => {
-        if (c.item.kind === CHECK_KIND.CHECK) vm.rows.push(c.item);
-        else if (c.item.kind === CHECK_KIND.PROCESS) {
-            vm.subs.push(treeToVM(c, nos[at], vm.fork));
-            at += 1;
-        }
-    });
-    markJoins(vm.subs, !vm.fork);
-    return vm;
-}
-
-/** 업무항목 노드 한 그루 → { item, processes, loose, fork } */
-export function groupVM(tree) {
-    const processes = [];
-    const loose = [];
-    const fork = isFork(tree.item);
-    const nos = stepNos(tree.children, fork, null);
-    let at = 0;
-    tree.children.forEach((c) => {
-        if (c.item.kind === CHECK_KIND.CHECK) loose.push(c.item);
-        else if (c.item.kind === CHECK_KIND.PROCESS) {
-            processes.push(treeToVM(c, nos[at], fork));
-            at += 1;
-        }
-    });
-    markJoins(processes, !fork);
-    return { item: tree.item, processes, loose, fork };
+export function groupVM(group, rows, flow) {
+    const nodes = flow.nodes.map((item) => ({
+        item,
+        no: flow.no[item.id] ?? null,
+        situations: kidsOf(rows, item.id).filter((c) => c.kind === CHECK_KIND.SITUATION)
+            .map((c) => sitVM(c, rows)),
+    }));
+    return {
+        item: group,
+        flow,
+        nodes,
+        // 좌표 계산이 쓰는 모양으로 바꾼다 (db 는 from_id·to_id, checkflow 는 from·to)
+        edges: flow.edges.map((e) => ({
+            id: e.id,
+            from: e.from_id ?? null,
+            to: e.to_id,
+            label: e.label ?? '',
+            sort_order: e.sort_order ?? 0,
+        })),
+    };
 }
 
 /* --------------------------------- 카드 조각 --------------------------------- */
+
+/** 펼침 화살표 - 카드 머리를 누르면 상세가 열린다 */
+function caretHtml(open) {
+    return `<span class="pm-caret" aria-hidden="true">${icon(open ? 'down' : 'next', 'icon icon--sm')}</span>`;
+}
+
+/** 드래그 정렬 대상 속성 - 상황·대응 단계는 같은 상위 안에서 자리를 바꾼다 */
+function dragAttr(item, parentId) {
+    return `data-item="${esc(item.id)}" data-parent="${esc(parentId)}" data-kind="${esc(item.kind)}"`;
+}
 
 /** 편집 도구 - 드래그 손잡이 (편집 모드에서만 보인다) */
 function gripHtml() {
@@ -123,64 +100,27 @@ function gripHtml() {
         >${icon('menu', 'icon icon--sm')}</span></span>`;
 }
 
-/** 펼침 화살표 - 카드 머리를 누르면 상세가 열린다 */
-function caretHtml(open) {
-    return `<span class="pm-caret" aria-hidden="true">${icon(open ? 'down' : 'next', 'icon icon--sm')}</span>`;
-}
-
-/** 드래그 정렬 대상 속성 - 같은 상위·같은 종류끼리만 자리를 바꾼다 */
-function dragAttr(item, parentId) {
-    return `data-item="${esc(item.id)}" data-parent="${esc(parentId)}" data-kind="${esc(item.kind)}"`;
-}
-
-/** 일일체크리스트 포함 토글 - 켠 항목만 일일체크리스트에 나온다 */
-function dailyToggle(item) {
-    return `
-<label class="cl-daily ${item.daily ? 'is-on' : ''}" title="일일체크리스트에 포함">
-  <input type="checkbox" data-daily="${esc(item.id)}" ${item.daily ? 'checked' : ''}>
-  <span>일일</span>
-</label>`;
-}
-
 /**
- * 순번 뱃지 🔑 - 한 줄기의 정수는 파란 동글, **갈래 줄의 점 번호(`4.1`)는 파란 알약**이다.
- * 갈래인지는 `no` 가 비었는지가 아니라 `branch` 플래그로 가른다 (갈래 하위도 번호를 가진다).
+ * 순번 배지 🔑 - 카드 왼쪽의 사각 배지. 한 줄기는 `3`, 갈래 줄은 `4.1` 이라 폭이 늘어난다.
+ * 번호는 `db.processFlow` 가 낸 것을 그대로 적는다 (화면이 다시 매기지 않는다).
  */
-function noHtml(no, branch) {
+function noHtml(no) {
     if (no == null) return '';
-    return `<span class="pm-no ${branch ? 'pm-no--fork' : ''}"
-        ${branch ? 'title="갈래"' : ''}>${esc(String(no))}</span>`;
-}
-
-/** 체크항목 한 줄. 접힌 카드에서는 이름만, 펼치면(open) 설명·주기·담당·일일 제외가 붙는다 */
-function checkRow(r, parentId, open) {
-    const subs = r.sub_assignees ?? [];
-    const who = `${r.assignee_name ? ` · ${esc(r.assignee_name)}` : ''}${subs.length
-        ? ` · 부 ${esc(subs.map((s) => s.name).join(', '))}` : ''}`;
-    return `
-<div class="pm-check ${r.active === false ? 'is-off' : ''} ${r.daily ? '' : 'is-skip'}" ${dragAttr(r, parentId)}>
-  ${gripHtml()}
-  ${icon('square', 'icon icon--sm pm-check__box')}
-  <span class="pm-check__title">${esc(r.title)}
-    ${open && r.description ? `<small>${esc(r.description)}</small>` : ''}</span>
-  ${open ? `<span class="pm-check__meta">${esc(cycleLabel(r))}${who}</span>` : ''}
-  ${open && !r.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : ''}
-  ${r.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
-  <span class="pm-tools">${dailyToggle(r)}</span>
-  ${openBtn(r, '체크항목')}
-</div>`;
+    const txt = String(no);
+    return `<span class="pm-no ${txt.includes('.') ? 'pm-no--fork' : ''}"
+        ${txt.includes('.') ? 'title="갈래"' : ''}>${esc(txt)}</span>`;
 }
 
 /** 「처리 후 ③ 입고검수 로 이어집니다」 - 상황 블록 끝 문구 */
 function mergeText(next) {
     return next
-        ? `처리가 끝나면 <b>${stepCaption({ title: next.item.title, no: next.no })}</b> 로 이어집니다`
+        ? `처리가 끝나면 <b>${stepCaption(next)}</b> 로 이어집니다`
         : '처리가 끝나면 흐름을 마칩니다';
 }
 
 /**
- * 상황 블록 - 카드 안의 주황 상자. 「X 발생 시」 → 대응 체크항목·대응 단계 → 처리 후 다음 단계.
- * 상황 아래 대응 프로세스는 예외 절차라 지금처럼 블록 안 작은 사슬로 그린다.
+ * 상황 블록 - 카드 안의 주황 상자. 「X 발생 시」 → 대응 단계 → 처리 후 다음 단계.
+ * @param {{title:string, no:number|string|null}|null} next 처리 후 돌아갈 단계 (흐름의 다음 단계)
  */
 function sitHtml(s, parentId, next, state) {
     const it = s.item;
@@ -188,12 +128,12 @@ function sitHtml(s, parentId, next, state) {
     const detail = [
         it.description ? `<span>${esc(it.description)}</span>` : '',
         whoHtml(it),
-        !s.rows.length && !s.subs.length ? '<span class="pm-note">대응 절차 없음 · 발생 내용만 기록</span>' : '',
+        !s.subs.length ? '<span class="pm-note">대응 절차 없음 · 발생 내용만 기록</span>' : '',
         `<span class="pm-sit__merge">${icon('reply', 'icon icon--sm')}${mergeText(next)}</span>`,
     ].filter(Boolean).join('');
     return `
 <div class="pm-sit ${it.active === false ? 'is-off' : ''} ${open ? 'is-open' : ''}" ${dragAttr(it, parentId)}>
-  <div class="pm-sit__head" data-toggle="${esc(it.id)}">
+  <div class="pm-sit__head" data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}" data-sit="1">
     ${gripHtml()}
     ${icon('issues', 'icon icon--sm')}
     <strong>${esc(it.title)} 발생 시</strong>
@@ -202,12 +142,12 @@ function sitHtml(s, parentId, next, state) {
     ${openBtn(it, '상황')}
     ${caretHtml(open)}
   </div>
-  ${open ? `<div class="pm-detail pm-detail--sit">${detail}</div>` : ''}
-  ${s.rows.length ? `<div class="pm-checks">${s.rows.map((r) => checkRow(r, it.id, open)).join('')}</div>` : ''}
+  ${open ? `
+  <div class="pm-detail pm-detail--sit">${detail}</div>
   ${s.subs.length ? `<div class="pm-chain">${s.subs.map((p, i) => chainStep(p, {
         parentId: it.id, last: i === s.subs.length - 1, state,
     })).join('')}</div>` : ''}
-  ${state.edit ? quickBar(it) : ''}
+  ${state.edit ? quickBar(it) : ''}` : ''}
 </div>`;
 }
 
@@ -218,182 +158,196 @@ function chainStep(p, o) {
     return `
 <div class="pm-step pm-step--sub ${o.last ? 'is-last' : ''} ${it.active === false ? 'is-off' : ''}"
      ${dragAttr(it, o.parentId)}>
-  <div class="pm-step__rail">${noHtml(p.no, p.branch)}</div>
+  <div class="pm-step__rail">${noHtml(p.no)}</div>
   <div class="pm-card">
-    <div class="pm-card__head" data-toggle="${esc(it.id)}">
+    <div class="pm-card__head" data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}">
       ${gripHtml()}
       <span class="pm-card__title">${esc(it.title)}</span>
-      ${!p.rows.length && !p.subs.length ? `<span class="pm-tools">${dailyToggle(it)}</span>` : ''}
       <span class="toolbar__spacer"></span>
       ${openBtn(it, '프로세스')}
       ${caretHtml(open)}
     </div>
-    ${open && it.description ? `<div class="pm-detail"><span>${esc(it.description)}</span>${whoHtml(it)}</div>` : ''}
-    ${p.rows.length ? `<div class="pm-checks">${p.rows.map((r) => checkRow(r, it.id, open)).join('')}</div>` : ''}
+    ${open ? `
+    ${it.description || it.assignee_name ? `<div class="pm-detail"><span>${esc(it.description ?? '')}</span>${whoHtml(it)}</div>` : ''}
     ${p.subs.length ? `<div class="pm-chain">${p.subs.map((s, i) => chainStep(s, {
         parentId: it.id, last: i === p.subs.length - 1, state: o.state,
     })).join('')}</div>` : ''}
     ${p.situations.map((s) => sitHtml(s, it.id, null, o.state)).join('')}
-    ${o.state.edit ? quickBar(it) : ''}
+    ${o.state.edit ? quickBar(it) : ''}` : ''}
   </div>
 </div>`;
 }
 
 /**
- * 「갈래가 다시 ③ 출고완료 로 모입니다」 - 합류(join) 단계의 카드 상세 한 줄.
- * 갈래로 벌린 줄(`joinRow` 가 false)은 형제끼리 이어지지 않아 모일 곳이 원래 없다.
- * 그때까지 경고로 적으면 다음 형제가 눈에 보이는 탓에 오해를 부르므로 설명으로 적는다.
+ * 카드 아래 편집 손잡이 🔑 - **선 긋기**가 흐름 편집의 전부다.
+ *   ＋  다음 단계를 새로 만들어 잇는다. 이미 다음 단계가 있으면 **한 번 더 눌러 갈래**를 만든다
+ *   ↳  이미 있는 단계로 잇는다 (합류) - 연결 모드로 들어간다
  */
-function joinNote(p) {
-    if (p.joinTo) {
-        return `<span class="pm-note pm-note--join">${icon('reply', 'icon icon--sm')}갈래가 다시
-        <b>${stepCaption({ title: p.joinTo.item.title, no: p.joinTo.no })}</b> 로 모입니다</span>`;
+function portsHtml(id, adding) {
+    if (adding) {
+        return `
+<form class="pm-port pm-port--form" data-next-form="${esc(id)}">
+  <input type="text" name="title" maxlength="100" autocomplete="off"
+         placeholder="다음 단계 이름 · Enter (Esc 닫기)">
+  <button class="btn btn--sm btn--primary" type="submit">추가</button>
+</form>`;
     }
-    if (!p.joinRow) return '<span class="pm-note">갈래 안이라 여기서는 모이지 않습니다</span>';
-    return '<span class="pm-note pm-note--warn">합류할 다음 단계가 없습니다</span>';
+    return `
+<div class="pm-port">
+  <button class="btn btn--sm btn--primary pm-port__btn" type="button" data-next="${esc(id)}"
+          title="다음 단계 추가 (한 번 더 누르면 갈래)" aria-label="다음 단계 추가"
+    >${icon('plus', 'icon icon--sm')}</button>
+  <button class="btn btn--sm pm-port__btn" type="button" data-link="${esc(id)}"
+          title="이미 있는 단계로 잇기 (합류)" aria-label="이미 있는 단계로 잇기"
+    >${icon('branch', 'icon icon--sm')}</button>
+</div>`;
 }
 
 /**
- * 도식 노드 한 개 - 프로세스 카드.
- * @param {{parentId:string, next:object|null, state:object, picked:boolean}} o
+ * 도식 노드 한 개 - 프로세스 카드. 접히면 **번호 + 제목 한 줄**이다.
+ * @param {{next:object|null, state:object, picked:boolean, exit:boolean, block:boolean}} o
  */
 function nodeHtml(p, o) {
     const it = p.item;
-    const leaf = !p.rows.length && !p.subs.length;
-    const open = o.state.open.has(it.id);
+    const { state } = o;
+    const open = state.open.has(it.id);
     const detail = [
         it.description ? `<span>${esc(it.description)}</span>` : '',
         whoHtml(it),
-        leaf ? '<span class="pm-note">체크항목 없음 · 단계 자체를 체크</span>' : '',
-        leaf && !it.daily ? '<span class="tag tag--gray pm-skip">일일 제외</span>' : '',
-        p.subs.length && p.fork ? '<span class="pm-note">하위는 갈래입니다 (조건에 따라 하나를 탑니다)</span>' : '',
-        p.subs.length && p.join ? joinNote(p) : '',
     ].filter(Boolean).join('');
+    const linking = !!state.link;
     return `
-<div class="pm-node ${it.active === false ? 'is-off' : ''} ${open ? 'is-open' : ''} ${o.picked ? 'is-picked' : ''}"
-     data-node="${esc(it.id)}" ${dragAttr(it, o.parentId)}>
+<div class="pm-node ${it.active === false ? 'is-off' : ''} ${open ? 'is-open' : ''}
+     ${o.picked ? 'is-picked' : ''} ${o.block ? 'is-nolink' : ''}"
+     data-node="${esc(it.id)}">
   <div class="pm-card">
-    <div class="pm-card__head" data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}">
-      ${gripHtml()}
-      ${noHtml(p.no, p.branch)}
+    <div class="pm-card__head" ${linking ? `data-target="${esc(it.id)}"` : `data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}"`}>
+      ${noHtml(p.no)}
       <span class="pm-card__title">${esc(it.title)}</span>
       ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
-      ${leaf ? `<span class="pm-tools">${dailyToggle(it)}</span>` : ''}
+      ${o.exit ? '<span class="tag tag--amber pm-tip">이후 단계 없음</span>' : ''}
       <span class="toolbar__spacer"></span>
       ${openBtn(it, '프로세스')}
       ${caretHtml(open)}
     </div>
-    ${open && detail ? `<div class="pm-detail">${detail}</div>` : ''}
-    ${p.rows.length ? `<div class="pm-checks">${p.rows.map((r) => checkRow(r, it.id, open)).join('')}</div>` : ''}
-    ${p.situations.map((s) => sitHtml(s, it.id, o.next, o.state)).join('')}
-    ${o.state.edit ? quickBar(it) : ''}
+    ${open ? `
+    ${detail ? `<div class="pm-detail">${detail}</div>` : ''}
+    ${p.situations.map((s) => sitHtml(s, it.id, o.next, state)).join('')}
+    ${state.edit ? quickBar(it) : ''}` : ''}
   </div>
+  ${state.edit && !linking ? portsHtml(it.id, state.step?.fromId === it.id) : ''}
 </div>`;
 }
 
-/** 프로세스 VM 을 도식 순서(부모 → 자식)대로 편다 */
-function flatten(processes, parentId, next, out) {
-    processes.forEach((p, i) => {
-        const after = processes[i + 1] ?? next;
-        out.push({ p, parentId, next: after });
-        flatten(p.subs, p.item.id, after, out);
-    });
-    return out;
+/** 흐름 상태 알림 - 시작이 여럿 · 순환 (막지는 않고 알린다) */
+function statusHtml(flow) {
+    const out = [];
+    if (flow.cyclic) {
+        out.push(`<span class="tag tag--red">${icon('issues', 'icon icon--sm')} 흐름이 되돌아옵니다 (순환) · 연결을 하나 끊으세요</span>`);
+    }
+    if (flow.entries.length > 1) {
+        out.push(`<span class="tag tag--gray">시작 단계 ${flow.entries.length}개</span>`);
+    }
+    return out.length ? `<div class="pm-status">${out.join('')}</div>` : '';
 }
 
 /**
  * 가운데 도식 마크업. 자리는 아직 없다 - 붙인 뒤 layoutCanvas() 가 잡는다.
  * @param {object} gvm groupVM 결과
- * @param {object} state 화면 상태 (edit · open · pick)
+ * @param {object} state 화면 상태 (edit · open · pick · link · step)
  */
 export function canvasHtml(gvm, state) {
-    if (!gvm.processes.length) {
-        return `<div class="pm-canvas"><p class="pm-empty">아직 프로세스가 없습니다.${state.edit
-            ? ' 아래 「+ 다음 프로세스」 로 첫 단계를 넣으세요.'
-            : ' 「편집」을 켜고 첫 프로세스 이름을 입력하세요.'}</p></div>`;
+    if (!gvm.nodes.length) {
+        return `
+<div class="pm-canvas">
+  <p class="pm-empty">아직 단계가 없습니다.
+    ${state.edit ? '아래 「+ 다음 프로세스」 로 첫 단계를 넣으세요.' : '「편집」 을 켜고 첫 단계를 넣으세요.'}</p>
+</div>`;
     }
-    const nodes = flatten(gvm.processes, gvm.item.id, null, []);
+    const { flow } = gvm;
+    // 끝이 여럿이면 각 카드에 알린다 (하나뿐이면 그게 흐름의 끝이라 당연하다)
+    const exits = new Set(flow.exits.length > 1 ? flow.exits : []);
+    const block = state.link?.block ?? null;
     return `
+${statusHtml(flow)}
 <div class="pm-canvas">
   <div class="pm-stage is-measuring">
     <svg class="pm-edges" width="0" height="0" aria-hidden="true"></svg>
-    ${nodes.map(({ p, parentId, next }) => nodeHtml(p, {
-        parentId, next, state, picked: state.pick === p.item.id,
+    ${gvm.nodes.map((p) => nodeHtml(p, {
+        state,
+        next: nextCaption(gvm, p.item.id),
+        picked: state.pick === p.item.id,
+        exit: exits.has(p.item.id),
+        block: !!block?.has(p.item.id),
     })).join('')}
+    <div class="pm-labels"></div>
   </div>
 </div>`;
 }
 
-/** 단독 업무 - 흐름에 속하지 않아 도식 아래에 따로 둔다 */
-export function looseHtml(gvm, state) {
-    if (!gvm.loose.length) return '';
-    const open = state.open.has(gvm.item.id);
-    return `
-<div class="pm-loose ${open ? 'is-open' : ''}">
-  <div class="pm-card">
-    <div class="pm-card__head" data-toggle="${esc(gvm.item.id)}">
-      ${icon('square', 'icon icon--sm')}
-      <span class="pm-card__title">단독 업무</span>
-      <span class="pm-card__desc">흐름과 상관없이 그때그때 하는 일</span>
-      <span class="toolbar__spacer"></span>
-      ${caretHtml(open)}
-    </div>
-    <div class="pm-checks">${gvm.loose.map((r) => checkRow(r, gvm.item.id, open)).join('')}</div>
-  </div>
-</div>`;
+/** 그 단계의 다음 단계 캡션 (상황 블록의 「처리 후 …」 용) - 갈래면 첫 갈래를 적는다 */
+function nextCaption(gvm, id) {
+    const to = (gvm.flow.nexts[id] ?? [])[0];
+    if (!to) return null;
+    const node = gvm.nodes.find((n) => n.item.id === to);
+    return node ? { title: node.item.title, no: node.no } : null;
 }
 
 /**
  * 2-pass 배치 🔑 - 레인 폭을 정해 내려주고 → 카드 높이를 재고 → 좌표를 잡고 선을 그린다.
  *
- * 🔑 **순서가 중요하다.** 열 수(`flowCols`)는 측정값 없이 셀 수 있으므로 **재기 전에** 레인
+ * 🔑 **순서가 중요하다.** 열 수(`dagCols`)는 측정값 없이 셀 수 있으므로 **재기 전에** 레인
  * 폭을 정해 `--pm-lane` 으로 내려 준다. 순서를 어기면 카드가 다른 폭으로 줄바꿈된 높이를
- * 쓰게 되어 선이 카드에서 떨어진다.
+ * 쓰게 되어 선이 카드에서 떨어진다 (지난 결함).
+ *
+ * 라벨 칩은 SVG 가 아니라 **HTML** 이다 - 같은 좌표계(.pm-stage)에 얹어 클릭·팝오버를 붙인다.
  * @param {HTMLElement} host 도식이 들어 있는 엘리먼트 (.pm-canvas 를 품는다)
  * @param {object} gvm groupVM 결과
- * @param {{width?:number}} [o] width - 가용폭을 직접 줄 때 (인쇄는 A4 폭을 넣는다)
+ * @param {{width?:number, edit?:boolean}} o width - 가용폭 직접 지정 (인쇄는 A4 폭)
  */
 export function layoutCanvas(host, gvm, o = {}) {
     const stage = host.querySelector('.pm-stage');
     if (!stage) return;
-    const toNode = (p) => ({
-        id: p.item.id,
-        height: 0,
-        fork: !!p.fork,
-        join: !!p.join,
-        children: p.subs.map(toNode),
-    });
-    const roots = gvm.processes.map(toNode);
+    const nodes = gvm.nodes.map((p) => ({ id: p.item.id, height: 0 }));
+    // 편집 모드에서는 라벨이 없는 간선도 작은 점으로 집을 수 있어야 한다
+    const edges = gvm.edges.map((e) => ({ ...e, label: e.label || (o.edit ? '·' : '') }));
     const avail = o.width ?? host.querySelector('.pm-canvas')?.clientWidth ?? 0;
-    const lane = laneWidth(avail, flowCols(roots, gvm.fork));
+    const lane = laneWidth(avail, dagCols(nodes, edges), { gapX: DAG_SIZE.gapX });
     stage.style.setProperty('--pm-lane', `${lane}px`);
 
-    const measured = new Map();
-    stage.querySelectorAll('.pm-node').forEach((el) => {
-        measured.set(el.dataset.node, el.offsetHeight);
+    nodes.forEach((n) => {
+        const el = stage.querySelector(`.pm-node[data-node="${CSS.escape(n.id)}"]`);
+        n.height = el ? el.offsetHeight : 0;
     });
-    const fill = (n) => {
-        n.height = measured.get(n.id) ?? 0;
-        n.children.forEach(fill);
-    };
-    roots.forEach(fill);
-    const { boxes, edges, width, height } = layoutFlow(roots, { rootFork: gvm.fork, lane });
+    const out = layoutDag(nodes, edges, { lane });
 
-    boxes.forEach((b) => {
-        const el = stage.querySelector(`.pm-node[data-node="${CSS.escape(b.id)}"]`);
+    Object.entries(out.boxes).forEach(([id, b]) => {
+        const el = stage.querySelector(`.pm-node[data-node="${CSS.escape(id)}"]`);
         if (!el) return;
         el.style.left = `${b.x}px`;
         el.style.top = `${b.y}px`;
-        // 순차 하위는 들여쓰기 + 왼쪽 레일로 「같은 줄기의 하위」임을 알린다
-        el.classList.toggle('is-indent', b.indent > 0);
     });
-    stage.style.width = `${width}px`;
-    stage.style.height = `${height}px`;
+    stage.style.width = `${out.width}px`;
+    stage.style.height = `${out.height}px`;
     const svg = stage.querySelector('.pm-edges');
-    svg.setAttribute('width', width);
-    svg.setAttribute('height', height);
-    svg.innerHTML = edges.map((e) => `
-<path class="pm-edge ${e.fork ? 'is-fork' : ''} ${e.join ? 'is-join' : ''}" d="${e.d}" />
-${e.head ? `<path class="pm-edge__head ${e.join ? 'is-join' : ''}" d="${e.head}" />` : ''}`).join('');
+    svg.setAttribute('width', out.width);
+    svg.setAttribute('height', out.height);
+    // ⚠️ 합류 버스는 좌표가 겹쳐 그려진다 - 반투명을 쓰면 겹친 자리만 진해진다 (불투명만)
+    svg.innerHTML = out.edges.map((e) => `
+<path class="pm-edge" d="${e.path}" />
+<path class="pm-edge__head" d="${e.head}" />`).join('');
+
+    const labels = stage.querySelector('.pm-labels');
+    const raw = new Map(gvm.edges.map((e) => [e.id, e]));
+    labels.innerHTML = out.edges.filter((e) => e.label).map((e) => {
+        const dot = !raw.get(e.id)?.label;
+        const style = `left:${e.label.x}px; top:${e.label.y}px`;
+        if (!o.edit) {
+            return `<span class="pm-elabel" style="${style}">${esc(e.label.text)}</span>`;
+        }
+        return `<button class="pm-elabel ${dot ? 'is-dot' : ''}" type="button"
+            data-edge="${esc(e.id)}" style="${style}"
+            title="조건 라벨 · 갈래 순서 · 연결 끊기">${esc(e.label.text)}</button>`;
+    }).join('');
     stage.classList.remove('is-measuring');
 }

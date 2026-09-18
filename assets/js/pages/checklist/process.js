@@ -2,51 +2,67 @@
  * 업무프로세스 탭 - 세 칸 화면.
  *
  *   좌 pm-nav     업무구분 › 업무항목 (등록·선택)
- *   중 pm-canvas  흐름 도식 (flowview.js · 카드 + SVG 선)
- *   우 pm-side    고른 업무항목의 **체크리스트 표** (프로세스 · 체크리스트 · 담당자)
+ *   중 pm-canvas  흐름 도식 (flowview.js · 제목만 보이는 카드 + SVG 선)
+ *   우 pm-side    고른 단계의 **설명 표** (구분 · 내용 · 비고)
  *
- * 우측 표는 새 데이터가 아니라 **kind='check' 노드를 표로 편집**하는 것이다.
- * 추가는 표 아래 폼에서 프로세스를 골라 그 아래 체크항목을 만들고, 담당자는 assignee_id 다.
+ * 🔑 **이 탭이 다루는 것은 흐름과 그 설명뿐이다.** 체크항목(kind=check)은 만들지도 보이지도
+ * 않는다 - 일일체크리스트 탭이 맡는다 (docs/checklist.md).
+ *
+ * 🔑 **흐름 편집은 「선 긋기」다.** 속성 폼에서 연결 방식을 고르는 것이 아니라
+ * 카드 아래 ＋(다음 단계) · ↳(이미 있는 단계로 잇기)로 간선을 만들고, 선 위 라벨 칩에서
+ * 조건·갈래 순서·연결 끊기를 한다. 규칙(순환 금지·브릿지)은 전부 db.js 가 판단한다.
+ *
  * 좁은 화면에서는 우측을 먼저 접고(서랍), 더 좁으면 세그먼트로 한 칸씩 본다 (app.css).
  */
 import * as db from '../../db.js';
 import { icon } from '../../icons.js';
-import { CHECK_KIND, CHECK_TEMPLATES, cycleLabel } from '../../config.js';
+import { CHECK_KIND, CHECK_TEMPLATES } from '../../config.js';
 import { esc, num, toast, confirmDialog } from '../../util.js';
 import {
-    UNSORTED_ID, iconBtn, openBtn, quickBar, segHtml, stepCaption, textBtn, whoHtml,
+    UNSORTED_ID, circled, iconBtn, openBtn, quickBar, segHtml, textBtn, whoHtml,
 } from './common.js';
-import { canvasHtml, groupVM, layoutCanvas, looseHtml } from './flowview.js';
+import { canvasHtml, groupVM, layoutCanvas } from './flowview.js';
 import { openForm } from './form.js';
 
-/** 인쇄용 가용폭 (px) - A4 세로에서 여백을 뺀 대략치. 열이 1~2개면 여유롭게 들어간다 */
+/** 인쇄용 가용폭 (px) - A4 세로에서 여백을 뺀 대략치 */
 const PRINT_W = 680;
 
 /** 지금 그려져 있는 도식 - 창 리사이즈·인쇄가 카드를 다시 그리지 않고 좌표만 다시 잡는다 */
 let shown = null;
 
-/** 화면을 떠날 때 창 리사이즈 구독을 끊는다 (checklist.js 의 정리 함수가 부른다) */
+/** 열려 있는 간선 팝오버를 닫는 함수 (문서 리스너를 함께 걷는다) */
+let closePop = null;
+
+/** 연결 모드의 Esc 리스너를 걷는 함수 */
+let offEsc = null;
+
+/** 화면을 떠날 때 창 리사이즈·문서 리스너를 모두 끊는다 (checklist.js 의 정리 함수가 부른다) */
 export function disposeManage() {
     shown?.off();
     shown = null;
+    closePop?.();
+    offEsc?.();
+    offEsc = null;
 }
 
 /**
  * 도식 재배치 구독 🔑 - 창 리사이즈는 **디바운스로 한 번만** 한다.
- * 서랍 여닫기·세그먼트 전환·드래그 정렬은 화면을 통째로 다시 그리므로 여기서 따로 걸지 않는다.
+ * 서랍 여닫기·세그먼트 전환은 화면을 통째로 다시 그리므로 여기서 따로 걸지 않는다.
  */
-function watchCanvas(body, gvm) {
-    disposeManage();
+function watchCanvas(body, gvm, edit) {
+    shown?.off();
+    shown = null;
     if (!gvm) return;
     let timer = null;
     const onResize = () => {
         clearTimeout(timer);
-        timer = setTimeout(() => layoutCanvas(body, gvm), 150);
+        timer = setTimeout(() => layoutCanvas(body, gvm, { edit }), 150);
     };
     window.addEventListener('resize', onResize);
     shown = {
         body,
         gvm,
+        edit,
         off: () => {
             clearTimeout(timer);
             window.removeEventListener('resize', onResize);
@@ -56,6 +72,9 @@ function watchCanvas(body, gvm) {
 
 export async function drawManage(ctx) {
     const { state, body, user, users, reload } = ctx;
+    closePop?.();
+    offEsc?.();
+    offEsc = null;
     const divisions = await db.listChecklistDivisions();
     // 업무구분 없는 옛 업무항목이 있으면 「미분류」 를 마지막에 붙인다 (옮길 수 있게)
     const orphans = await db.listChecklistGroups(null);
@@ -78,8 +97,9 @@ export async function drawManage(ctx) {
     const rows = group
         ? await db.listChecklistItems({ root: group.id, includeInactive: true })
         : [];
-    const tree = group ? db.checklistTree(rows)[0] : null;
-    const gvm = tree ? groupVM(tree) : null;
+    // 흐름(번호·시작·끝·순환)은 db 가 낸 것을 그대로 읽는다 - 화면이 다시 계산하지 않는다
+    const flow = group ? await db.processFlow(group.id, { includeInactive: true }) : null;
+    const gvm = group ? groupVM(group, rows, flow) : null;
     const templates = (division && !isUnsorted ? Object.keys(CHECK_TEMPLATES) : [])
         .filter((name) => !groups.some((g) => g.title === name));
     const allGroups = Object.values(groupsBy).flat();
@@ -87,7 +107,10 @@ export async function drawManage(ctx) {
         ?? allGroups.find((g) => g.id === id)
         ?? divisions.find((d) => d.id === id);
 
-    body.className = `card__body cl-manage ${state.edit ? 'is-edit' : ''}`;
+    if (state.link) await prepLink(state, flow, group);
+    if (state.step && !flow?.order.includes(state.step.fromId)) state.step = null;
+
+    body.className = `card__body cl-manage ${state.edit ? 'is-edit' : ''} ${state.link ? 'is-linking' : ''}`;
     body.innerHTML = `
 <div class="pm ${state.side ? 'is-side-open' : ''}" data-pane="${esc(state.pane)}"
      ${state.sideW ? `style="--pm-side-w:${Number(state.sideW)}px"` : ''}>
@@ -128,37 +151,30 @@ export async function drawManage(ctx) {
                 : '왼쪽에서 업무항목을 고르거나 「업무항목」 을 추가하세요')
             : '왼쪽에서 업무구분을 추가해 시작하세요'}</span>`}
       <div class="pm-head__actions">
-        ${segHtml('seg-pane', [['nav', '구성'], ['flow', '흐름'], ['side', '체크리스트']], state.pane)}
+        ${segHtml('seg-pane', [['nav', '구성'], ['flow', '흐름'], ['side', '설명']], state.pane)}
         ${templates.map((name) => `<span class="pm-tools">${textBtn('checklist', `견본: ${name}`, `data-seed="${esc(name)}"`)}</span>`).join('')}
-        ${group ? textBtn('checklist', '체크리스트', 'id="btn-side"', `btn btn--sm pm-sidebtn ${state.side ? 'btn--primary' : ''}`) : ''}
+        ${group ? textBtn('memo', '설명', 'id="btn-side"', `btn btn--sm pm-sidebtn ${state.side ? 'btn--primary' : ''}`) : ''}
         <button class="btn btn--sm ${state.edit ? 'btn--primary' : ''}" type="button" id="btn-edit">
           ${icon('edit', 'icon icon--sm')}<span>${state.edit ? '편집 끝' : '편집'}</span></button>
         ${group ? textBtn('sheet', '인쇄', 'id="btn-print"') : ''}
       </div>
     </header>
-    ${state.edit && group ? `
-    <p class="pm-guide">
-      위에서 아래로가 업무 순서입니다 (오른쪽으로 벌어지면 갈래, 들여쓰기는 순차 하위).
-      카드의 ${icon('menu', 'icon icon--sm')} 를 끌어 순서를 바꾸고,
-      ${icon('edit', 'icon icon--sm')} 로 이름·담당자·주기·${icon('branch', 'icon icon--sm')} 갈래 여부를 고칩니다.
-      「+ 체크항목」 「+ 상황」 은 이름을 적고 Enter 만 누르면 바로 들어갑니다.
-    </p>` : ''}
+    ${guideHtml(state, group)}
     ${gvm ? canvasHtml(gvm, state) : ''}
-    ${gvm ? looseHtml(gvm, state) : ''}
-    ${gvm && state.edit ? quickBar(gvm.item, true) : ''}
+    ${gvm && state.edit && !state.link ? quickBar(gvm.item, true) : ''}
   </section>
-  ${gvm ? sideHtml(gvm, users, state) : '<aside class="pm-side"></aside>'}
+  ${sideHtml(gvm, state)}
 </div>`;
 
-    if (gvm) layoutCanvas(body, gvm);
-    watchCanvas(body, gvm);
+    if (gvm) layoutCanvas(body, gvm, { edit: state.edit });
+    watchCanvas(body, gvm, state.edit);
 
     body.querySelectorAll('[data-nav-div]').forEach((el) => {
         el.addEventListener('click', () => {
             if (state.division === el.dataset.navDiv) return;
             state.division = el.dataset.navDiv;
             state.group = null;
-            state.quick = null;
+            resetEdit(state);
             reload();
         });
     });
@@ -166,7 +182,7 @@ export async function drawManage(ctx) {
         el.addEventListener('click', () => {
             state.division = el.dataset.navIn;
             state.group = el.dataset.navGrp;
-            state.quick = null;
+            resetEdit(state);
             state.pick = null;
             if (state.pane === 'nav') state.pane = 'flow';
             reload();
@@ -174,7 +190,7 @@ export async function drawManage(ctx) {
     });
     body.querySelector('#btn-edit').addEventListener('click', () => {
         state.edit = !state.edit;
-        state.quick = null;
+        resetEdit(state);
         reload();
     });
     body.querySelector('#btn-side')?.addEventListener('click', () => {
@@ -194,7 +210,7 @@ export async function drawManage(ctx) {
             const id = el.dataset.toggle;
             if (state.open.has(id)) state.open.delete(id);
             else state.open.add(id);
-            // 도식에서 고른 프로세스는 우측 표에서 그 구간으로 옮겨 준다
+            // 도식에서 고른 단계는 우측 설명 표도 그 단계로 옮겨 준다
             if (el.dataset.pick) state.pick = el.dataset.pick;
             reload();
         });
@@ -205,7 +221,7 @@ export async function drawManage(ctx) {
         rows.forEach((r) => state.open.add(r.id));
         await reload();
         // 인쇄는 화면 폭이 아니라 A4 폭에 맞춰 다시 배치한다 (열이 화면보다 좁아진다)
-        if (shown) layoutCanvas(shown.body, shown.gvm, { width: PRINT_W });
+        if (shown) layoutCanvas(shown.body, shown.gvm, { width: PRINT_W, edit: false });
         document.body.classList.add('cl-printing');
         const off = () => {
             document.body.classList.remove('cl-printing');
@@ -232,7 +248,7 @@ export async function drawManage(ctx) {
         });
     });
     body.querySelector('[data-dup]')?.addEventListener('click', async () => {
-        const msg = `「${group.title}」 을(를) 프로세스·상황·체크항목까지 통째로 복제할까요?`;
+        const msg = `「${group.title}」 을(를) 단계·상황·체크항목과 흐름까지 통째로 복제할까요?`;
         if (!(await confirmDialog(msg))) return;
         try {
             const r = await db.duplicateChecklistGroup(group.id, user);
@@ -259,219 +275,85 @@ export async function drawManage(ctx) {
             }
         });
     });
-    body.querySelectorAll('[data-daily]').forEach((el) => {
-        el.addEventListener('change', async () => {
-            try {
-                await db.updateChecklistItem(el.dataset.daily, { daily: el.checked }, user);
-                await reload();
-            } catch (err) {
-                el.checked = !el.checked;
-                toast(err.message, 'error');
-            }
-        });
-    });
-
-    bindSide(body, state, user, reload);
     bindGrip(body, state, () => {
-        if (gvm) layoutCanvas(body, gvm);
+        if (gvm) layoutCanvas(body, gvm, { edit: state.edit });
     });
     bindQuick(body, state, user, reload);
-    if (state.edit) bindDrag(body, user, reload);
-
-    // 도식에서 고른 프로세스의 구간을 우측 표에서 보여 준다
-    if (state.pick) {
-        body.querySelector(`[data-pick-row="${CSS.escape(state.pick)}"]`)
-            ?.scrollIntoView({ block: 'nearest' });
+    if (state.edit && group) {
+        bindStep(body, state, group, user, reload);
+        bindLink(body, state, user, reload);
+        bindEdge(body, gvm, user, reload);
+        bindDrag(body, user, reload);
     }
 }
 
-/* ------------------------------ 우측 체크리스트 표 ------------------------------ */
-
-/** 표 한 구간 - 프로세스(또는 상황) 하나와 그 아래 체크항목들 */
-function sideSections(gvm) {
-    const out = [];
-    const walk = (p, path) => {
-        const here = [...path, { title: p.item.title, no: p.no, sit: false }];
-        out.push({ host: p.item, path: here, checks: p.rows });
-        p.subs.forEach((s) => walk(s, here));
-        p.situations.forEach((s) => {
-            const sPath = [...here, { title: s.item.title, no: null, sit: true }];
-            out.push({ host: s.item, path: sPath, checks: s.rows });
-            s.subs.forEach((sp) => walk(sp, sPath));
-        });
-    };
-    gvm.processes.forEach((p) => walk(p, []));
-    out.push({ host: gvm.item, path: [], checks: gvm.loose });
-    return out;
+/** 편집 중이던 상태(연결 모드·다음 단계 입력칸·빠른 추가)를 한꺼번에 접는다 */
+function resetEdit(state) {
+    state.link = null;
+    state.step = null;
+    state.quick = null;
 }
 
-/** 구간 머리 - `② 입고거래명세서 확인` · 상황이면 주황 */
-function pathCell(sec) {
-    if (!sec.path.length) return '<span class="pm-side__loose">단독 업무</span>';
-    const last = sec.path[sec.path.length - 1];
-    const up = sec.path.slice(0, -1)
-        .map((n) => (n.sit ? esc(n.title) : stepCaption(n))).join(' › ');
-    const head = last.sit
-        ? `${icon('issues', 'icon icon--sm')}${esc(last.title)}`
-        : stepCaption(last);
-    return `${up ? `<small>${up}</small>` : ''}
-<span class="${last.sit ? 'is-sit' : ''}">${head}</span>`;
+/**
+ * 연결 모드에서 **고를 수 없는 카드** 🔑 - 그렇게 이으면 흐름이 되돌아오는 곳이다.
+ * `from → to` 가 순환이 되는 조건은 「to 에서 from 으로 닿는다」 = **from 의 선행자들**이라
+ * `reachableFrom(..., {reverse:true})` 이 그대로 답이다. 자기 자신과 이미 이은 곳도 뺀다.
+ */
+async function prepLink(state, flow, group) {
+    const from = state.link.fromId;
+    if (!group || !flow?.order.includes(from)) {
+        state.link = null;
+        return;
+    }
+    const back = await db.reachableFrom(group.id, from, { reverse: true });
+    state.link.block = new Set([...back, from, ...(flow.nexts[from] ?? [])]);
+    const node = flow.nodes.find((n) => n.id === from);
+    state.link.caption = `${circled(flow.no[from] ?? '')} ${node?.title ?? ''}`;
 }
 
-/** 담당자 선택 칸 - 비우면 상위 담당을 따른다 */
-function whoSelect(r, users) {
+/** 편집 안내 - 연결 모드에서는 안내가 바뀐다 */
+function guideHtml(state, group) {
+    if (!state.edit || !group) return '';
+    if (state.link) {
+        return `
+<p class="pm-guide pm-guide--link">
+  ${icon('branch', 'icon icon--sm')}
+  <b>${esc(state.link.caption)}</b> 뒤에 이을 단계를 고르세요.
+  흐린 카드는 고를 수 없습니다 (그렇게 이으면 흐름이 되돌아옵니다).
+  <span class="toolbar__spacer"></span>
+  <button class="btn btn--sm" type="button" data-link-cancel>취소 (Esc)</button>
+</p>`;
+    }
     return `
-<select class="pm-side__who" data-cassignee="${esc(r.id)}">
-  <option value="">상위 따름</option>
-  ${users.map((u) => `
-  <option value="${esc(u.id)}" ${u.id === r.assignee_id ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}
-</select>`;
+<p class="pm-guide">
+  위에서 아래로가 업무 순서입니다. 카드 아래 ${icon('plus', 'icon icon--sm')} 로 다음 단계를 만들고
+  (이미 다음 단계가 있으면 한 번 더 눌러 <b>갈래</b>), ${icon('branch', 'icon icon--sm')} 로
+  이미 있는 단계에 잇습니다 (<b>합류</b>).
+  선 위 칩을 누르면 조건·갈래 순서·연결 끊기를 할 수 있습니다.
+</p>`;
 }
 
-/** 구간 경로를 평문으로 - 추가 폼의 선택 항목 라벨 (stepCaption 이 이미 이스케이프한다) */
-function pathText(sec) {
-    if (!sec.path.length) return '단독 업무';
-    return sec.path.map((n) => (n.sit ? esc(n.title) : stepCaption(n))).join(' › ');
-}
+/* ------------------------------ 우측 설명 표 ------------------------------ */
 
-/** 우측 체크리스트 등록 구역 */
-function sideHtml(gvm, users, state) {
-    const all = sideSections(gvm);
-    const sections = all.filter((s) => s.checks.length || s.path.length);
-    const rowsHtml = sections.map((sec) => {
-        const picked = sec.host.id === state.pick ? 'is-picked' : '';
-        if (!sec.checks.length) {
-            return `
-<tr class="${picked}" data-pick-row="${esc(sec.host.id)}">
-  <td class="pm-side__proc">${pathCell(sec)}</td>
-  <td class="pm-side__none" colspan="2">아직 없습니다</td>
-</tr>`;
-        }
-        return sec.checks.map((r, i) => `
-<tr class="${picked}" ${i ? '' : `data-pick-row="${esc(sec.host.id)}"`}>
-  ${i ? '' : `<td class="pm-side__proc" rowspan="${sec.checks.length}">${pathCell(sec)}</td>`}
-  <td class="pm-side__name">
-    <div class="pm-side__cell">
-      <input type="text" value="${esc(r.title)}" maxlength="100" data-ctitle="${esc(r.id)}"
-             aria-label="체크리스트 이름" class="${r.daily ? '' : 'is-skip'}"
-             title="${esc(r.daily ? cycleLabel(r) : `${cycleLabel(r)} · 일일 제외`)}">
-      ${openBtn(r, '체크항목')}
-    </div>
-  </td>
-  <td>${whoSelect(r, users)}</td>
-</tr>`).join('');
-    }).join('');
+/** 우측 구역 - 고른 단계의 설명 표가 들어갈 자리 */
+function sideHtml(gvm, state) {
+    if (!gvm) return '<aside class="pm-side"></aside>';
     return `
 <aside class="pm-side">
   <div class="pm-side__grip" role="separator" aria-orientation="vertical" tabindex="0"
-       aria-label="체크리스트 구역 너비 조절" title="끌어서 너비 조절 (← → 키도 됩니다)"></div>
+       aria-label="설명 구역 너비 조절" title="끌어서 너비 조절 (← → 키도 됩니다)"></div>
   <div class="pm-side__head">
-    ${icon('checklist', 'icon icon--sm')}<strong>체크리스트</strong>
-    <small>${esc(gvm.item.title)}</small>
+    ${icon('memo', 'icon icon--sm')}<strong>${esc(gvm.item.title)}</strong>
   </div>
-  <table class="pm-side__tbl">
-    <thead><tr><th>프로세스</th><th>체크리스트</th><th>담당자</th></tr></thead>
-    <tbody>${rowsHtml || '<tr><td colspan="3" class="pm-side__empty">프로세스를 먼저 등록하세요.</td></tr>'}</tbody>
-  </table>
-  ${addHtml(all, state)}
+  <p class="pm-side__empty">${state.pick
+        ? '설명 표는 다음 단계에서 붙입니다.'
+        : '가운데에서 단계를 고르면 그 단계의 설명이 여기 나옵니다.'}</p>
 </aside>`;
-}
-
-/**
- * 표 아래 추가 폼 - 어느 프로세스에 달지 고른 뒤 이름을 넣는다.
- * 고른 값은 state.pick 에 담아 중앙 도식의 강조와 같이 움직인다.
- */
-function addHtml(all, state) {
-    if (!all.length) return '';
-    const opts = all.map((s) => `
-    <option value="${esc(s.host.id)}" ${s.host.id === state.pick ? 'selected' : ''}>
-      ${pathText(s)}</option>`).join('');
-    return `
-<div class="pm-side__add">
-  <select data-cnew-proc aria-label="프로세스 선택">${opts}</select>
-  <div class="pm-side__addrow">
-    <input type="text" data-cnew-title maxlength="100" placeholder="체크리스트 이름"
-           aria-label="체크리스트 이름" autocomplete="off">
-    ${textBtn('plus', '추가', 'data-cnew-go', 'btn btn--sm btn--primary')}
-  </div>
-</div>`;
-}
-
-/**
- * 우측 표 편집 - 이름은 입력칸에서 바로, 담당자는 선택.
- * 추가는 표 아래 폼에서 프로세스를 고른 뒤 이름을 넣는다 (Enter 또는 추가 버튼).
- * 기존 db 함수만 쓴다 (체크항목 등록·수정은 createChecklistItem · updateChecklistItem).
- */
-function bindSide(body, state, user, reload) {
-    const side = body.querySelector('.pm-side');
-    if (!side) return;
-    // 실시간 갱신이 입력하던 값을 지우지 않게 표시해 둔다 (checklist.js 의 guarded)
-    side.addEventListener('input', (e) => {
-        if (e.target.matches('input')) e.target.classList.add('is-dirty');
-    });
-    side.querySelectorAll('[data-ctitle]').forEach((el) => {
-        el.addEventListener('change', async () => {
-            const title = el.value.trim();
-            if (!title) {
-                toast('이름을 입력하세요.', 'error');
-                await reload();
-                return;
-            }
-            try {
-                await db.updateChecklistItem(el.dataset.ctitle, { title }, user);
-                el.classList.remove('is-dirty');
-                await reload();
-            } catch (err) {
-                toast(err.message, 'error');
-            }
-        });
-    });
-    side.querySelectorAll('[data-cassignee]').forEach((el) => {
-        el.addEventListener('change', async () => {
-            try {
-                await db.updateChecklistItem(el.dataset.cassignee,
-                    { assignee_id: el.value || null }, user);
-                await reload();
-            } catch (err) {
-                toast(err.message, 'error');
-            }
-        });
-    });
-    const proc = side.querySelector('[data-cnew-proc]');
-    const title = side.querySelector('[data-cnew-title]');
-    if (!proc || !title) return;
-    // 고른 프로세스를 state.pick 에 담아 둔다 - 다시 그려도 선택이 풀리지 않는다
-    proc.addEventListener('change', () => { state.pick = proc.value; });
-    /** 고른 프로세스 아래에 체크항목을 만든다 */
-    const add = async () => {
-        const name = title.value.trim();
-        if (!name) {
-            title.focus();
-            return;
-        }
-        try {
-            await db.createChecklistItem({
-                kind: CHECK_KIND.CHECK, title: name, parent_id: proc.value, daily: true,
-            }, user);
-            title.value = '';
-            title.classList.remove('is-dirty');
-            toast(`「${name}」 을(를) 추가했습니다.`, 'success');
-            await reload();
-        } catch (err) {
-            toast(err.message, 'error');
-        }
-    };
-    side.querySelector('[data-cnew-go]')?.addEventListener('click', add);
-    title.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter') return;
-        e.preventDefault();
-        add();
-    });
 }
 
 /* ----------------------------- 우측 구역 너비 조절 ----------------------------- */
 
-/** 우측 체크리스트 구역이 가질 수 있는 너비 (px). 가운데 도식이 쓸모를 잃지 않을 만큼만 허용한다 */
+/** 우측 설명 구역이 가질 수 있는 너비 (px). 가운데 도식이 쓸모를 잃지 않을 만큼만 허용한다 */
 const SIDE_W = { min: 240, max: 640, nav: 230, flow: 420, step: 16 };
 
 /**
@@ -479,7 +361,6 @@ const SIDE_W = { min: 240, max: 640, nav: 230, flow: 420, step: 16 };
  * 정한 값은 state.sideW 에 남아 다른 화면에 다녀와도 유지된다.
  * 포인터는 손잡이에 가둬(setPointerCapture) window 리스너를 남기지 않는다.
  * @param {()=>void} done 너비가 정해진 뒤(끌기 종료·키 조작) 도식을 다시 배치한다.
- *   끄는 동안 매 프레임 다시 재지 않는다 - 카드 높이를 다시 재는 일이라 무겁다
  */
 function bindGrip(body, state, done) {
     const pm = body.querySelector('.pm');
@@ -523,6 +404,178 @@ function bindGrip(body, state, done) {
         e.preventDefault();
         apply(side.offsetWidth + (e.key === 'ArrowLeft' ? SIDE_W.step : -SIDE_W.step));
         done();
+    });
+}
+
+/* ------------------------------ 흐름 편집 (선 긋기) ------------------------------ */
+
+/**
+ * 카드 아래 ＋ - 다음 단계를 새로 만들어 잇는다.
+ * 🔑 **갈래는 따로 만들지 않는다** - 다음 단계가 이미 있는 카드에서 한 번 더 누르면
+ * 간선이 하나 더 생기고, 그것이 곧 갈래다 (db.addProcessEdge 가 순환만 막는다).
+ * 등록한 뒤에는 **새 카드로 입력칸을 옮겨** 사슬을 계속 이어 만들 수 있게 한다.
+ */
+function bindStep(body, state, group, user, reload) {
+    body.querySelectorAll('[data-next]').forEach((el) => {
+        el.addEventListener('click', () => {
+            state.step = { fromId: el.dataset.next };
+            state.quick = null;
+            reload();
+        });
+    });
+    const form = body.querySelector('[data-next-form]');
+    if (!form) return;
+    const input = form.elements.title;
+    input.focus();
+    input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        state.step = null;
+        reload();
+    });
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const title = input.value.trim();
+        if (!title) return;
+        try {
+            const made = await db.createChecklistItem({
+                kind: CHECK_KIND.PROCESS,
+                title,
+                parent_id: group.id,
+                from_id: form.dataset.nextForm,
+            }, user);
+            state.step = { fromId: made.id };
+            toast(`「${title}」 을(를) 이었습니다.`, 'success');
+            await reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
+}
+
+/**
+ * 연결 모드 - ↳ 를 누르면 대상을 고르는 모드로 들어간다 (Esc 로 취소).
+ * 고를 수 없는 카드는 `prepLink` 가 미리 흐리게 만들어 두었고, 그래도 눌리면 여기서 막는다.
+ */
+function bindLink(body, state, user, reload) {
+    body.querySelectorAll('[data-link]').forEach((el) => {
+        el.addEventListener('click', () => {
+            state.link = { fromId: el.dataset.link };
+            state.step = null;
+            state.quick = null;
+            reload();
+        });
+    });
+    if (!state.link) return;
+    const cancel = () => {
+        state.link = null;
+        reload();
+    };
+    body.querySelector('[data-link-cancel]')?.addEventListener('click', cancel);
+    const onKey = (e) => {
+        if (e.key === 'Escape') cancel();
+    };
+    document.addEventListener('keydown', onKey);
+    offEsc = () => document.removeEventListener('keydown', onKey);
+
+    body.querySelectorAll('[data-target]').forEach((el) => {
+        el.addEventListener('click', async (e) => {
+            if (e.target.closest('button')) return;      // ✎ 는 연결 모드에서도 속성 모달이다
+            const to = el.dataset.target;
+            if (state.link.block.has(to)) {
+                toast('그 단계로는 이을 수 없습니다 (흐름이 되돌아오거나 이미 이어져 있습니다).', 'error');
+                return;
+            }
+            try {
+                await db.addProcessEdge(state.link.fromId, to, {}, user);
+                state.link = null;
+                toast('이었습니다.', 'success');
+                await reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
+}
+
+/** 선 위 라벨 칩 - 조건 라벨 · 갈래 좌우 순서 · 연결 끊기 */
+function bindEdge(body, gvm, user, reload) {
+    const canvas = body.querySelector('.pm-canvas');
+    if (!canvas || !gvm) return;
+    // 칩은 배치할 때마다 다시 만들어지므로 위임으로 받는다 (리사이즈·인쇄에도 살아 있다)
+    canvas.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-edge]');
+        if (!chip) return;
+        e.stopPropagation();
+        openEdgePop(chip, gvm, user, reload);
+    });
+}
+
+/** 간선 팝오버 - 칩 자리에 띄운다. 바깥을 누르거나 Esc 로 닫힌다 */
+function openEdgePop(chip, gvm, user, reload) {
+    closePop?.();
+    const edge = gvm.edges.find((x) => x.id === chip.dataset.edge);
+    if (!edge) return;
+    const sibs = gvm.edges.filter((x) => x.from === edge.from)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    const at = sibs.findIndex((x) => x.id === edge.id);
+    const pop = document.createElement('div');
+    pop.className = 'pm-epop';
+    pop.style.left = chip.style.left;
+    pop.style.top = chip.style.top;
+    pop.innerHTML = `
+<input type="text" maxlength="40" value="${esc(edge.label)}" data-elabel
+       placeholder="조건 (예: 수출 건일 때)" aria-label="조건 라벨">
+<div class="pm-epop__row">
+  ${iconBtn('back', '갈래를 왼쪽으로', `data-ord="left" ${at <= 0 ? 'disabled' : ''}`)}
+  ${iconBtn('forward', '갈래를 오른쪽으로', `data-ord="right" ${at >= sibs.length - 1 ? 'disabled' : ''}`)}
+  <span class="toolbar__spacer"></span>
+  ${textBtn('close', '연결 끊기', 'data-cut', 'btn btn--sm btn--danger')}
+</div>`;
+    chip.parentElement.appendChild(pop);
+    const input = pop.querySelector('[data-elabel]');
+    input.focus();
+    input.select();
+
+    const shut = () => {
+        document.removeEventListener('pointerdown', onOut, true);
+        document.removeEventListener('keydown', onKey);
+        pop.remove();
+        closePop = null;
+    };
+    const onOut = (e) => {
+        if (!pop.contains(e.target)) shut();
+    };
+    const onKey = (e) => {
+        if (e.key === 'Escape') shut();
+    };
+    document.addEventListener('pointerdown', onOut, true);
+    document.addEventListener('keydown', onKey);
+    closePop = shut;
+
+    const run = async (fn) => {
+        try {
+            await fn();
+            shut();
+            await reload();
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    };
+    input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        run(() => db.setEdgeLabel(edge.id, input.value, user));
+    });
+    pop.querySelectorAll('[data-ord]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const to = el.dataset.ord === 'left' ? at - 1 : at + 1;
+            const ids = sibs.map((x) => x.to);
+            ids.splice(to, 0, ids.splice(at, 1)[0]);
+            run(() => db.reorderEdges(edge.from, ids, user));
+        });
+    });
+    pop.querySelector('[data-cut]').addEventListener('click', () => {
+        run(() => db.removeProcessEdge(edge.id, user));
     });
 }
 
@@ -583,6 +636,7 @@ function bindQuick(body, state, user, reload) {
 /**
  * 드래그 정렬 - 손잡이(pm-grip)를 잡아야 끌린다 (입력칸 글자 선택과 부딪히지 않게).
  * 같은 상위(data-parent)·같은 종류(data-kind) 사이에서만 놓을 수 있다.
+ * 🔑 **프로세스 단계는 대상이 아니다** - 순서는 간선이 정한다 (카드에 data-item 이 없다).
  */
 function bindDrag(body, user, reload) {
     let drag = null;
@@ -595,6 +649,7 @@ function bindDrag(body, user, reload) {
 
     body.querySelectorAll('.pm-grip').forEach((grip) => {
         const el = grip.closest('[data-item]');
+        if (!el) return;
         grip.addEventListener('mousedown', () => el.setAttribute('draggable', 'true'));
         grip.addEventListener('touchstart', () => el.setAttribute('draggable', 'true'),
             { passive: true });
