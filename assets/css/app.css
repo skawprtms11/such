@@ -1613,6 +1613,31 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 .cl-missed { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 
 
+/* ===== 체크리스트 등록 탭 (cl-reg) - 인라인 편집 표. 마지막 줄은 늘 빈 행이다 ===== */
+.cl-reg { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+.cl-reg th { padding: 6px 6px; border-bottom: 1px solid var(--gray-300); color: var(--gray-500); font-size: 11.5px; font-weight: 700; text-align: left; }
+.cl-reg th:first-child { width: 120px; }
+.cl-reg th:nth-child(3) { width: 84px; }
+.cl-reg th:nth-child(4) { width: 130px; }
+.cl-reg th:last-child { width: 86px; }
+.cl-reg td { padding: 2px 3px; border-bottom: 1px solid var(--gray-100); vertical-align: top; }
+.cl-reg input, .cl-reg textarea, .cl-reg select {
+    width: 100%; min-height: 30px; padding: 4px 6px;
+    border: 1px solid transparent; border-radius: 6px; background: transparent;
+    font: inherit; font-size: 13px; line-height: 1.5; resize: vertical;
+}
+.cl-reg select { border-color: var(--gray-200); background: #fff; }
+.cl-reg input:hover, .cl-reg textarea:hover { border-color: var(--gray-300); }
+.cl-reg input:focus, .cl-reg textarea:focus, .cl-reg select:focus { border-color: var(--blue); background: #fff; outline: none; }
+.cl-reg .is-dirty { border-color: var(--amber); background: var(--amber-soft); }
+.cl-reg__sub { display: block; padding: 0 6px; color: var(--gray-500); font-size: 11px; }
+.cl-reg__tools { display: flex; align-items: center; gap: 2px; padding-top: 6px !important; }
+.cl-reg tr.is-draft { background: var(--gray-100); }
+.cl-reg tr.is-off td:not(.cl-reg__tools) { opacity: .55; }
+.cl-reg tr.is-dragging { opacity: .35; }
+.cl-reg tr.is-drop-before > td { box-shadow: inset 0 3px 0 0 var(--blue); }
+.cl-reg tr.is-drop-after > td { box-shadow: inset 0 -3px 0 0 var(--blue); }
+
 /* ===== 일일체크리스트 (dq) - 계층 머리글 + 체크 줄 목록. 미완료 먼저, 완료는 접는다 ===== */
 .seg { display: inline-flex; border: 1px solid var(--gray-300); border-radius: 8px; overflow: hidden; }
 .seg__btn { height: 30px; padding: 0 12px; border: none; background: #fff; color: var(--gray-700); font: inherit; font-size: 12.5px; cursor: pointer; }

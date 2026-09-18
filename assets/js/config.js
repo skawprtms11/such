@@ -380,6 +380,17 @@ export const CHECK_CYCLES = {
     [CHECK_CYCLE.ADHOC]: '수시',
 };
 
+/**
+ * 등록 기준 표시 문구 🔑 - 독립 체크항목(일일체크리스트·등록 탭)이 쓰는 주기 3종.
+ * 수시(adhoc)는 없다 - 기간 개념이 없어 `db.checklistBoard` 가 다루지 않는다.
+ * 요일·일자를 붙이지 않는 것도 일부러다 - 독립 항목은 그 기간(주·달) 안이면 언제든 체크한다.
+ */
+export const BOARD_CYCLES = {
+    [CHECK_CYCLE.DAILY]: '일별',
+    [CHECK_CYCLE.WEEKLY]: '주차별',
+    [CHECK_CYCLE.MONTHLY]: '월별',
+};
+
 /** 요일 - 배열 순서가 Date.getDay() 값(0=일)과 같다 */
 export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
