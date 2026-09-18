@@ -107,6 +107,11 @@ export async function drawManage(ctx) {
         ?? allGroups.find((g) => g.id === id)
         ?? divisions.find((d) => d.id === id);
 
+    // 우측 설명 표 - 고른 단계(없으면 업무항목)의 표와 「구분」 자동완성 값
+    const target = sideTarget(gvm, state);
+    const notes = target ? await db.listChecklistNotes(target.item.id) : [];
+    const noteHints = group ? await db.noteLabels(group.id) : [];
+
     if (state.link) await prepLink(state, flow, group);
     if (state.step && !flow?.order.includes(state.step.fromId)) state.step = null;
 
@@ -163,7 +168,7 @@ export async function drawManage(ctx) {
     ${gvm ? canvasHtml(gvm, state) : ''}
     ${gvm && state.edit && !state.link ? quickBar(gvm.item, true) : ''}
   </section>
-  ${sideHtml(gvm, state)}
+  ${sideHtml(gvm, state, target, notes, noteHints)}
 </div>`;
 
     if (gvm) layoutCanvas(body, gvm, { edit: state.edit });
@@ -275,6 +280,7 @@ export async function drawManage(ctx) {
             }
         });
     });
+    bindNotes(body, state, target, user, reload);
     bindGrip(body, state, () => {
         if (gvm) layoutCanvas(body, gvm, { edit: state.edit });
     });
@@ -334,21 +340,193 @@ function guideHtml(state, group) {
 }
 
 /* ------------------------------ 우측 설명 표 ------------------------------ */
+/*
+ * 고른 단계의 **설명 표**(구분 · 내용 · 비고). 단계마다 붙는 자유 입력이라 흐름을 말로
+ * 설명하는 자리다 - 준비물·주의점·양식 같은 것을 적는다.
+ *
+ * 무엇을 보여 주는지는 `state.pick` 하나로 갈린다 - 프로세스면 그 단계, 상황이면 그 상황,
+ * 아무것도 고르지 않았으면 **업무항목**(개요 자리)이다. 대상 id 만 다르고 표는 똑같다
+ * (db.listChecklistNotes 는 프로세스·업무항목·상황을 모두 받는다).
+ */
 
-/** 우측 구역 - 고른 단계의 설명 표가 들어갈 자리 */
-function sideHtml(gvm, state) {
+/** 도식의 단계·상황을 평평하게 - 우측 표의 대상을 찾는 데 쓴다 */
+function walkSteps(gvm) {
+    const out = [];
+    const sit = (s) => {
+        out.push({ item: s.item, no: null, sit: true });
+        s.subs.forEach(chain);
+    };
+    const chain = (p) => {
+        out.push({ item: p.item, no: p.no, sit: false });
+        p.subs.forEach(chain);
+        p.situations.forEach(sit);
+    };
+    gvm.nodes.forEach((n) => {
+        out.push({ item: n.item, no: n.no, sit: false });
+        n.situations.forEach(sit);
+    });
+    return out;
+}
+
+/** 우측 표의 대상 - 고른 단계·상황, 없으면 업무항목(개요) */
+function sideTarget(gvm, state) {
+    if (!gvm) return null;
+    return walkSteps(gvm).find((x) => x.item.id === state.pick)
+        ?? { item: gvm.item, no: null, sit: false, group: true };
+}
+
+/** 설명 줄 한 개. id 가 빈 줄은 **빈 행**이다 - 값이 들어오면 그때 저장한다 */
+function noteRow(n) {
+    const id = n?.id ?? '';
+    return `
+<tr data-note="${esc(id)}" class="${id ? '' : 'is-draft'}">
+  <td><input type="text" list="pm-note-labels" maxlength="40" data-nf="label"
+             value="${esc(n?.label ?? '')}" placeholder="구분" aria-label="구분"></td>
+  <td><textarea rows="1" maxlength="500" data-nf="content"
+                placeholder="${id ? '' : '내용을 적으면 줄이 생깁니다'}" aria-label="내용"
+      >${esc(n?.content ?? '')}</textarea></td>
+  <td><input type="text" maxlength="60" data-nf="remark"
+             value="${esc(n?.remark ?? '')}" placeholder="비고" aria-label="비고"></td>
+  <td class="pm-note__tools">${id ? `
+    <span class="pm-grip" title="끌어서 순서 바꾸기">${icon('menu', 'icon icon--sm')}</span>
+    ${iconBtn('close', '이 줄 삭제', `data-ndel="${esc(id)}"`)}` : ''}</td>
+</tr>`;
+}
+
+/** 우측 구역 - 고른 단계의 이름(번호)과 설명 표 */
+function sideHtml(gvm, state, target, notes, labels) {
     if (!gvm) return '<aside class="pm-side"></aside>';
+    const head = target.group
+        ? `${icon('memo', 'icon icon--sm')}<strong>${esc(target.item.title)}</strong><small>업무항목 개요</small>`
+        : `${target.sit
+            ? `${icon('issues', 'icon icon--sm')}<strong class="is-sit">${esc(target.item.title)}</strong>`
+            : `${target.no == null ? '' : `<span class="pm-no">${esc(circled(target.no))}</span>`}
+               <strong>${esc(target.item.title)}</strong>`}`;
     return `
 <aside class="pm-side">
   <div class="pm-side__grip" role="separator" aria-orientation="vertical" tabindex="0"
        aria-label="설명 구역 너비 조절" title="끌어서 너비 조절 (← → 키도 됩니다)"></div>
   <div class="pm-side__head">
-    ${icon('memo', 'icon icon--sm')}<strong>${esc(gvm.item.title)}</strong>
+    ${head}
+    <span class="toolbar__spacer"></span>
+    ${textBtn('plus', '행 추가', 'data-nadd', 'btn btn--sm pm-add')}
   </div>
-  <p class="pm-side__empty">${state.pick
-        ? '설명 표는 다음 단계에서 붙입니다.'
-        : '가운데에서 단계를 고르면 그 단계의 설명이 여기 나옵니다.'}</p>
+  <table class="pm-note">
+    <thead><tr><th>구분</th><th>내용</th><th>비고</th><th></th></tr></thead>
+    <tbody>${notes.map(noteRow).join('')}${noteRow(null)}</tbody>
+  </table>
+  <datalist id="pm-note-labels">
+    ${labels.map((l) => `<option value="${esc(l)}"></option>`).join('')}
+  </datalist>
+  ${notes.length || state.pick ? '' : `
+  <p class="pm-side__empty">가운데에서 단계를 고르면 그 단계의 설명이 여기 나옵니다.</p>`}
 </aside>`;
+}
+
+/**
+ * 설명 표 편집 - 인라인 입력칸 + blur 저장.
+ * 빈 행은 값이 들어온 순간 등록되고, 저장이 실패하면 **값을 그대로 두고** 토스트만 띄운다
+ * (다시 그리면 사용자가 적은 것이 사라진다).
+ */
+function bindNotes(body, state, target, user, reload) {
+    const side = body.querySelector('.pm-side');
+    if (!side || !target) return;
+    // 실시간 갱신이 입력하던 값을 지우지 않게 표시해 둔다 (checklist.js 의 guarded)
+    side.addEventListener('input', (e) => {
+        if (e.target.matches('input, textarea')) e.target.classList.add('is-dirty');
+    });
+    side.querySelector('[data-nadd]')?.addEventListener('click', () => {
+        side.querySelector('tr.is-draft [data-nf="label"]')?.focus();
+    });
+
+    const valuesOf = (tr) => {
+        const get = (k) => tr.querySelector(`[data-nf="${k}"]`)?.value.trim() ?? '';
+        return { label: get('label'), content: get('content'), remark: get('remark') };
+    };
+    side.querySelectorAll('tr[data-note]').forEach((tr) => {
+        const id = tr.dataset.note;
+        tr.querySelectorAll('[data-nf]').forEach((el) => {
+            el.addEventListener('change', async () => {
+                const vals = valuesOf(tr);
+                // 빈 행은 아직 아무 값도 없으면 저장하지 않는다 (지나가며 누른 것일 수 있다)
+                if (!id && !vals.label && !vals.content && !vals.remark) return;
+                try {
+                    if (id) await db.updateChecklistNote(id, { [el.dataset.nf]: el.value }, user);
+                    else await db.createChecklistNote(target.item.id, vals, user);
+                    el.classList.remove('is-dirty');
+                    await reload();
+                } catch (err) {
+                    toast(err.message, 'error');
+                }
+            });
+        });
+    });
+    side.querySelectorAll('[data-ndel]').forEach((el) => {
+        el.addEventListener('click', async () => {
+            try {
+                await db.deleteChecklistNote(el.dataset.ndel, user);
+                await reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
+    bindNoteDrag(side, target, user, reload);
+}
+
+/** 설명 줄 순서 - 손잡이(≡)를 잡아야 끌린다 (입력칸 글자 선택과 부딪히지 않게) */
+function bindNoteDrag(side, target, user, reload) {
+    let drag = null;
+    const rows = () => [...side.querySelectorAll('tr[data-note]:not(.is-draft)')];
+    const clearMarks = () => rows()
+        .forEach((x) => x.classList.remove('is-drop-before', 'is-drop-after'));
+    side.querySelectorAll('.pm-grip').forEach((grip) => {
+        const tr = grip.closest('tr');
+        grip.addEventListener('mousedown', () => tr.setAttribute('draggable', 'true'));
+        grip.addEventListener('touchstart', () => tr.setAttribute('draggable', 'true'),
+            { passive: true });
+    });
+    rows().forEach((tr) => {
+        tr.addEventListener('dragstart', (e) => {
+            if (tr.getAttribute('draggable') !== 'true') return;
+            drag = tr.dataset.note;
+            tr.classList.add('is-dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', drag);
+        });
+        tr.addEventListener('dragend', () => {
+            tr.classList.remove('is-dragging');
+            tr.removeAttribute('draggable');
+            clearMarks();
+            drag = null;
+        });
+        const above = (e) => {
+            const r = tr.getBoundingClientRect();
+            return e.clientY < r.top + r.height / 2;
+        };
+        tr.addEventListener('dragover', (e) => {
+            if (!drag || drag === tr.dataset.note) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            clearMarks();
+            tr.classList.add(above(e) ? 'is-drop-before' : 'is-drop-after');
+        });
+        tr.addEventListener('drop', async (e) => {
+            if (!drag || drag === tr.dataset.note) return;
+            e.preventDefault();
+            const isBefore = above(e);
+            const ids = rows().map((x) => x.dataset.note).filter((id) => id !== drag);
+            const at = ids.indexOf(tr.dataset.note);
+            ids.splice(isBefore ? at : at + 1, 0, drag);
+            clearMarks();
+            try {
+                await db.reorderChecklistNotes(target.item.id, ids, user);
+                await reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
 }
 
 /* ----------------------------- 우측 구역 너비 조절 ----------------------------- */
