@@ -21,10 +21,7 @@ import { drawRegister } from './checklist/register.js';
 const state = {
     tab: 'today',
     date: today(),
-    assignee: 'me',                    // 'me' | 'all' | 사용자 id
-    scope: 'daily',                    // 탭1: 'daily' 그 날짜 대상만 | 'all' 확인내용 전부
-    showDone: false,                   // 탭1: 완료 줄을 펼쳐 보이기 (세그먼트 「전체」)
-    openDone: new Set(),               // 탭1: 「완료 N건 보기」 로 펼쳐 둔 업무항목 id
+    assignee: 'all',                   // 탭1 담당자 필터: 'all' | 'me' | 사용자 id (권한자만)
     division: null,                    // 탭2: 보고 있는 업무구분 id ('' = 미분류)
     group: null,                       // 탭2: 보고 있는 업무항목 id
     edit: false,                       // 탭2: 편집 모드 (도구 표시)

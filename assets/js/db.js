@@ -2503,7 +2503,7 @@ export function canManageChecklist(user) {
  * 이 항목을 체크(상황이면 발생 처리)할 수 있는지.
  * 정담당자 본인, 부담당자 중 한 명, 담당자 미지정(공통 업무), 그리고 항목 관리 권한자(대신 체크)만
  * 가능하다. 담당자는 상위에서 상속된 값(`assignee_eff_id` · `assignee_eff_subs`)을 본다 -
- * dailyFlow/dueItems 가 붙여 준다.
+ * checklistBoard 가 붙여 준다 (트리 항목은 effectiveAssignee 를 직접 부른다).
  * 🔑 웹·앱·서버 RLS(checklist_can_check) 가 모두 이 기준을 쓴다.
  */
 export function canCheckItem(user, item) {
@@ -2589,17 +2589,6 @@ export function checklistTree(rows) {
     };
     roots.forEach((n) => setDepth(n, 0));
     return roots;
-}
-
-/** 상위 항목 이름을 이어 붙인다 (예: `입고검수 > 입고수량오류`) */
-function pathOf(item, byId) {
-    const names = [];
-    let cur = byId.get(item.parent_id);
-    while (cur) {
-        names.unshift(cur.title);
-        cur = byId.get(cur.parent_id);
-    }
-    return names.join(' > ');
 }
 
 /**
@@ -2976,7 +2965,7 @@ export async function deleteChecklistItem(id, user) {
  * 소유와 흐름을 나눈다 🔑 (docs/checklist.md).
  *   parent_id · sort_order  소유 - 업무항목 소속 · 담당자 상속 · 삭제 전파 · RLS
  *   checklist_edges         흐름 - 단계 순서의 **유일한 출처**. 갈래·합류를 함께 푼다
- * 그래서 담당자 상속(effectiveAssignee)·체크 권한(canCheckItem)·일일 판정(isDueOn·passes)은
+ * 그래서 담당자 상속(effectiveAssignee)·체크 권한(canCheckItem)·주기 판정(isDueOn)은
  * 간선을 보지 않는다. 간선이 정하는 것은 **프로세스 번호(no)** 뿐이다.
  *
  * 흐름 한 벌의 경계는 업무항목(group) 하나다. 상황(situation) 아래 대응 프로세스는
@@ -3159,7 +3148,7 @@ function flowOf(nodes, edges) {
 }
 
 /**
- * 저장 데이터에서 흐름을 만든다 (processFlow · dailyFlow 공용).
+ * 저장 데이터에서 흐름을 만든다 (processFlow 가 쓴다).
  * @param {{includeInactive?:boolean}} opt 업무프로세스 탭은 비활성 단계까지 본다.
  *   비활성을 뺄 때는 **간선을 이어 준다**(contractEdges) - 끊으면 뒷 단계가 1층으로 튄다
  */
@@ -3541,443 +3530,6 @@ function isDueOn(item, date) {
     return false;
 }
 
-/** 프로세스 줄에서 하위 프로세스를 가려낸다 (체크항목·상황은 도식 노드가 아니다) */
-function isStepKind(item) {
-    return item.kind !== CHECK_KIND.CHECK && item.kind !== CHECK_KIND.SITUATION;
-}
-
-/**
- * 프로세스 줄의 번호 🔑 - 채번은 `processFlow` 의 층 번호 하나다 (갈래·중첩을 함께 푼다).
- * 흐름(간선) 밖의 단계 - **상황 아래 대응 프로세스**는 형제 순번으로 매긴다 (종전 규칙).
- * **대상 판정과 무관한 캡션용 값**이라 걸러내기 전 원본 줄로 매긴다 (그 날짜에 안 나오는
- * 단계가 있어도 번호가 흔들리지 않는다).
- * 🔑 불변식: 결과 배열의 길이와 순서는 입력과 같다 (걸러내지도, 섞지도 않는다).
- * @param {Array} steps 프로세스 줄 (원본 순서)
- * @param {{no:Object<string, number|string>}|null} flow processFlow 결과
- */
-function stepNosOf(steps, flow) {
-    return steps.map((c, i) => flow?.no?.[c.id] ?? i + 1);
-}
-
-/**
- * 체크리스트 트리 전처리 🔑 - dailyFlow() · catalogTable() 이 함께 쓴다.
- * 두 뷰모델이 **같은 트리 · 같은 담당자 판정**을 보도록 한 곳에서만 만든다
- * (따로 적으면 한쪽만 고쳐져 같은 항목이 탭마다 다르게 보인다).
- * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f
- * 프로세스 번호(`flowFor`)도 여기서 내준다 - 두 탭이 같은 번호를 봐야 한다.
- * @returns {Promise<{day, byId, kids, checks, checkOf, childrenOf, passes, flowFor}>}
- */
-async function checklistContext(date, f = {}) {
-    const db = (await load());
-    const day = String(date || today()).slice(0, 10);
-    const alive = aliveItems(db).filter((i) => i.active);
-    const byId = new Map(alive.map((i) => [i.id, i]));
-    const kids = new Map();
-    alive.forEach((i) => {
-        const k = i.parent_id ?? null;
-        if (!kids.has(k)) kids.set(k, []);
-        kids.get(k).push(i);
-    });
-    kids.forEach((v, k) => kids.set(k, sortChecklist(v)));
-    const checks = db.checklistChecks.filter((c) => c.check_date === day);
-    const checkOf = (id) => checks.find((c) => c.item_id === id) ?? null;
-    const childrenOf = (id, kind) => (kids.get(id) ?? []).filter((c) => c.kind === kind);
-
-    /** 담당자 필터 - 상속 담당자로 판정한다. 담당자 없는 공통 업무는 누구의 목록에나 든다 */
-    const passes = (item) => {
-        if (!f.assignee) return true;
-        const eff = effectiveAssignee(item, byId);
-        if (!eff.id && !eff.subs.length) return true;
-        return eff.id === f.assignee || eff.subs.some((s) => s.id === f.assignee);
-    };
-    /** 업무항목의 흐름 (번호 채번) - 같은 조회 안에서는 한 번만 계산한다 */
-    const flows = new Map();
-    const flowFor = (groupId) => {
-        if (!flows.has(groupId)) flows.set(groupId, flowFromDb(db, groupId));
-        return flows.get(groupId);
-    };
-    return { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor };
-}
-
-/** 업무구분 → 업무항목 짝. 업무구분 없는 옛 업무항목은 「미분류」 로 뒤에 붙인다 */
-function divisionPairs(childrenOf) {
-    const UNSORTED = { id: null, title: '미분류', kind: CHECK_KIND.DIVISION };
-    const pairs = [];
-    childrenOf(null, CHECK_KIND.DIVISION).forEach((d) => {
-        childrenOf(d.id, CHECK_KIND.GROUP).forEach((g) => pairs.push([d, g]));
-    });
-    childrenOf(null, CHECK_KIND.GROUP).forEach((g) => pairs.push([UNSORTED, g]));
-    return pairs;
-}
-
-/** 업무항목 묶음을 업무구분으로 굴린다 (표의 첫 컬럼) */
-function rollupDivisions(groups) {
-    const divisions = [];
-    groups.forEach((g) => {
-        let d = divisions.find((x) => x.item.id === g.division.id);
-        if (!d) {
-            d = { item: g.division, name: g.division.title, done: 0, total: 0, groups: [] };
-            divisions.push(d);
-        }
-        d.groups.push(g);
-        d.done += g.done;
-        d.total += g.total;
-    });
-    return divisions;
-}
-
-/** 전날에도 대상이었는데 체크하지 않은 항목 id (수시 제외) - 줄의 「어제 미체크」 표시 */
-async function lateIdSet(date, f = {}) {
-    const prev = await dueItems(addDays(date, -1), f);
-    return new Set(prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC).map((r) => r.id));
-}
-
-/**
- * 날짜별 판정 뷰모델 🔑 - dailyTable()·dueItems() 가 이것을 편다. 주기·상속·발생 판정은 여기서 끝난다.
- *
- * 체크 대상(row)은 ① `check` 항목과 ② 체크항목·하위 프로세스가 없는 `process`(그 단계
- * 자체를 체크한다. 상황만 달려 있어도 마찬가지)다. 둘 다 **일일체크리스트 포함(`daily`)**
- * 으로 체크한 것만 대상이다 - 업무프로세스 탭에서 고른다. 상위에 상황(situation)이 있으면 그 상황이 **그 날짜에 발생
- * 처리된 경우에만** 대상에 든다. 발생 안 된 상황은 프로세스 밑에 「상황 발생 시」
- * 후보(chip)로만 나온다.
- *
- * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f assignee 를 주면 상속 담당자가 그 사람인 항목만
- * @returns {Promise<{date, done, total, raised, groups:Array}>}
- *   groups[]     = { item, name, division, done, total, processes: ProcessVM[], loose: Row[] }
- *   division     = 업무구분 항목. 옛 최상위 업무항목(업무구분 없음)은 이름 `미분류` 의 가상 항목
- *   ProcessVM    = { item, no, done, total, rows: Row[], subs: ProcessVM[],
- *                    situations: SituationVM[], self: Row|null }
- *   SituationVM  = { item, active: check|null, canRaise: (user)=>bool, rows, subs, done, total }
- *   Row          = 항목 + { path, check, assignee_eff_id, assignee_eff_name, process_id }
- */
-export async function dailyFlow(date, f = {}) {
-    const { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor } =
-        await checklistContext(date, f);
-
-    /** 체크 대상 한 줄 */
-    const rowOf = (item, processId) => {
-        const eff = effectiveAssignee(item, byId);
-        return {
-            ...item,
-            path: pathOf(item, byId),
-            check: checkOf(item.id),
-            assignee_eff_id: eff.id,
-            assignee_eff_name: eff.name,
-            assignee_eff_subs: eff.subs,
-            process_id: processId,
-        };
-    };
-
-    /** 프로세스 한 단계 (하위 프로세스·상황·체크항목을 재귀로 모은다) */
-    const buildProcess = (item, no, flow) => {
-        const children = kids.get(item.id) ?? [];
-        const vm = {
-            item, no, rows: [], subs: [], situations: [], self: null, done: 0, total: 0,
-        };
-        // 체크항목·하위 프로세스가 없는 단계는 단계 자체가 체크 대상이다 (상황만 달려 있어도)
-        // 🔑 일일체크리스트 포함(daily)으로 체크한 것만 대상이다
-        const leaf = !children.some((c) => c.kind !== CHECK_KIND.SITUATION);
-        if (leaf && item.daily && isDueOn(item, day) && passes(item)) {
-            vm.self = rowOf(item, item.parent_id);
-        }
-        // 번호는 흐름(간선)의 층에서 온다 - 갈래·중첩을 함께 푼다 (stepNosOf)
-        const nos = stepNosOf(children.filter(isStepKind), flow);
-        let at = 0;
-        children.forEach((c) => {
-            if (c.kind === CHECK_KIND.CHECK) {
-                if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.id));
-            } else if (c.kind === CHECK_KIND.SITUATION) {
-                const s = buildSituation(c, flow);
-                if (s) vm.situations.push(s);
-            } else {
-                const p = buildProcess(c, nos[at], flow);
-                at += 1;
-                if (p) vm.subs.push(p);
-            }
-        });
-        const own = [vm.self, ...vm.rows].filter(Boolean);
-        vm.total = own.length + vm.subs.reduce((n, p) => n + p.total, 0)
-            + vm.situations.reduce((n, s) => n + s.total, 0);
-        vm.done = own.filter((r) => r.check).length + vm.subs.reduce((n, p) => n + p.done, 0)
-            + vm.situations.reduce((n, s) => n + s.done, 0);
-        const visible = own.length || vm.subs.length || vm.situations.length;
-        return visible ? vm : null;
-    };
-
-    /** 상황 - 발생 처리(그 날짜의 체크 기록)된 경우에만 하위가 집계에 든다 */
-    const buildSituation = (item, flow) => {
-        const active = checkOf(item.id);
-        const eff = effectiveAssignee(item, byId);
-        const vm = {
-            item: { ...item, assignee_eff_id: eff.id, assignee_eff_name: eff.name,
-                assignee_eff_subs: eff.subs, path: pathOf(item, byId) },
-            active,
-            rows: [],
-            subs: [],
-            done: 0,
-            total: 0,
-        };
-        const children = kids.get(item.id) ?? [];
-        // 상황에는 번호가 없다 - 대응 단계는 ①②③ 부터 (간선에 넣지 않으므로 형제 순번이다)
-        const nos = stepNosOf(children.filter((c) => c.kind === CHECK_KIND.PROCESS), null);
-        let at = 0;
-        children.forEach((c) => {
-            if (c.kind === CHECK_KIND.CHECK) {
-                if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.parent_id));
-            } else if (c.kind === CHECK_KIND.PROCESS) {
-                const p = buildProcess(c, nos[at], flow);
-                at += 1;
-                if (p) vm.subs.push(p);
-            }
-            // 상황 아래 상황은 두지 않는다 (allowedChildKinds) - 있어도 무시한다
-        });
-        // 담당자 필터가 있으면 내 일이 하나도 없는 상황은 후보에도 안 보인다
-        if (f.assignee && !vm.rows.length && !vm.subs.length && !passes(item)) return null;
-        if (active) {
-            vm.total = vm.rows.length + vm.subs.reduce((n, p) => n + p.total, 0);
-            vm.done = vm.rows.filter((r) => r.check).length
-                + vm.subs.reduce((n, p) => n + p.done, 0);
-        }
-        return vm;
-    };
-
-    // 업무구분 순서 → 그 안의 업무항목 순서
-    const groups = divisionPairs(childrenOf).map(([division, g]) => {
-        const roots = kids.get(g.id) ?? [];
-        const processes = [];
-        const loose = [];      // 업무항목에 바로 둔 체크항목 (흐름 없는 단독 업무)
-        const flow = flowFor(g.id);
-        const nos = stepNosOf(roots.filter((r) => r.kind === CHECK_KIND.PROCESS), flow);
-        let at = 0;
-        roots.forEach((r) => {
-            if (r.kind === CHECK_KIND.CHECK) {
-                if (r.daily && isDueOn(r, day) && passes(r)) loose.push(rowOf(r, null));
-            } else if (r.kind === CHECK_KIND.PROCESS) {
-                const p = buildProcess(r, nos[at], flow);
-                at += 1;
-                if (p) processes.push(p);
-            }
-        });
-        const total = processes.reduce((n, p) => n + p.total, 0) + loose.length;
-        const done = processes.reduce((n, p) => n + p.done, 0)
-            + loose.filter((r) => r.check).length;
-        return { item: g, name: g.title, division, processes, loose, done, total };
-    }).filter((c) => c.processes.length || c.loose.length);
-
-    return {
-        date: day,
-        groups,
-        total: groups.reduce((n, c) => n + c.total, 0),
-        done: groups.reduce((n, c) => n + c.done, 0),
-        raised: checks.filter((c) => byId.get(c.item_id)?.kind === CHECK_KIND.SITUATION).length,
-    };
-}
-
-/**
- * 일일체크리스트 표 뷰모델 🔑 - dailyFlow 를 **프로세스 단위 구간(section)** 으로 편다.
- * 화면은 업무구분 · 업무항목 · 프로세스 · 체크리스트 네 컬럼으로 그린다.
- *
- *   divisions[] = { item, name, done, total, groups: Group[] }   업무구분 묶음 (표의 첫 컬럼)
- *   groups[]    = Group[] 를 평평하게 (앱·집계용)
- *   Group       = { item, name, division, done, total, sections: Section[] }
- *   Section    = { key, path: PathNode[], sit: item|null, rows: Row[], situations: SituationVM[] }
- *     path       프로세스 경로 `[{title, no, sit}]` (하위·대응 프로세스는 상위부터. 상황이면 sit=true, no=null)
- *     sit        이 구간이 발생한 상황 아래 있으면 그 상황 (화면이 주황으로 표시한다)
- *     rows       그 구간에서 체크할 항목 (단계 자체 체크 포함). `late` = 전날에도 대상이었는데
- *                체크하지 않은 항목 (수시 제외) - 화면이 줄 안에 「어제 미체크」 로 표시한다
- *     situations 그 프로세스에 직접 달린 상황 - 발생 전이면 후보, 발생했으면 해제·내용 수정용
- * 발생 안 된 상황의 하위 구간은 나오지 않는다. 구간 순서 = 업무 순서다.
- */
-export async function dailyTable(date, f = {}) {
-    const flow = await dailyFlow(date, f);
-    const late = await lateIdSet(flow.date, f);
-    // due = 그 날짜의 체크 대상. dailyTable 의 줄은 모두 대상이다 (전체 표와 모양을 맞춘다)
-    const mark = (rows) => rows.map((r) => ({ ...r, late: late.has(r.id), due: true }));
-    const groups = flow.groups.map((g) => {
-        const sections = [];
-        const walkP = (p, path, sit) => {
-            const here = [...path, { title: p.item.title, no: p.no, sit: false }];
-            const rows = mark([p.self, ...p.rows].filter(Boolean));
-            if (rows.length || p.situations.length) {
-                sections.push({ key: p.item.id, path: here, sit, rows, situations: p.situations });
-            }
-            p.subs.forEach((s) => walkP(s, here, sit));
-            p.situations.filter((s) => s.active).forEach((s) => {
-                const sPath = [...here, { title: s.item.title, no: null, sit: true }];
-                if (s.rows.length) {
-                    sections.push({
-                        key: s.item.id,
-                        path: sPath,
-                        sit: s.item,
-                        rows: mark(s.rows),
-                        situations: [],
-                    });
-                }
-                s.subs.forEach((sp) => walkP(sp, sPath, s.item));
-            });
-        };
-        g.processes.forEach((p) => walkP(p, [], null));
-        if (g.loose.length) {
-            sections.push({
-                key: `loose-${g.item.id}`, path: [], sit: null, rows: mark(g.loose), situations: [],
-            });
-        }
-        return {
-            item: g.item,
-            name: g.name,
-            division: g.division,
-            done: g.done,
-            total: g.total,
-            sections,
-        };
-    });
-    const divisions = rollupDivisions(groups);
-    return {
-        date: flow.date, done: flow.done, total: flow.total, raised: flow.raised, groups, divisions,
-    };
-}
-
-/**
- * 업무체크리스트 탭의 표 뷰모델 🔑 - 세그먼트(`일일` / `전체`)를 한 함수로 가른다.
- *
- *   scope 'daily' (기본) : dailyTable() 그대로 - 그 날짜에 해야 하는 항목만
- *   scope 'all'          : 주기·일일 포함 판정을 건너뛴 **전체 확인내용 목록**
- *
- * 두 결과의 모양(divisions → groups → sections → rows)이 같아 화면이 하나로 그린다.
- * 🔑 줄의 `due` 가 **그 날짜의 체크 대상인지**다. 전체 표에서 `due` 가 false 인 줄은
- * 조회 전용이다 - 주기 밖 날짜에 체크 기록이 들어가면 `late`·checklistSummary 집계가 어긋난다.
- * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string, scope?:'daily'|'all'}} f
- */
-export async function checklistTable(date, f = {}) {
-    if (f.scope !== 'all') return dailyTable(date, f);
-    return catalogTable(date, f);
-}
-
-/**
- * 전체 확인내용 표 - 활성 체크항목 전부(+ 단계 자체를 체크하는 잎 프로세스)를 업무 순서대로 편다.
- * 주기·상황 발생과 무관하게 목록에 올리되, 그 날짜의 체크 대상만 `due: true` 로 표시한다.
- */
-async function catalogTable(date, f = {}) {
-    const { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor } =
-        await checklistContext(date, f);
-    const late = await lateIdSet(day, f);
-
-    const rowOf = (item) => {
-        const eff = effectiveAssignee(item, byId);
-        const sits = situationAncestors(item, byId);
-        return {
-            ...item,
-            path: pathOf(item, byId),
-            check: checkOf(item.id),
-            assignee_eff_id: eff.id,
-            assignee_eff_name: eff.name,
-            assignee_eff_subs: eff.subs,
-            // 「일일」 표와 같은 기준이어야 한 항목이 탭마다 다르게 보이지 않는다
-            late: late.has(item.id),
-            // 상위 상황이 발생하지 않은 날에는 체크할 수 없다 (setCheck 와 같은 기준)
-            due: !!item.daily && isDueOn(item, day) && sits.every((id) => !!checkOf(id)),
-        };
-    };
-
-    /** 프로세스 한 단계를 구간(section)으로 편다 (하위 프로세스·상황까지 재귀) */
-    const walk = (item, no, parentPath, sit, out, flow) => {
-        const here = [...parentPath, { title: item.title, no, sit: false }];
-        const children = kids.get(item.id) ?? [];
-        const rows = [];
-        // 전체 표는 일일체크리스트 포함(daily) 여부와 무관하게 모두 올린다
-        // (대상이 아닌 줄은 due:false 로 나가 화면에서 잠긴다)
-        const leaf = !children.some((c) => c.kind !== CHECK_KIND.SITUATION);
-        if (leaf && passes(item)) rows.push(rowOf(item));
-        childrenOf(item.id, CHECK_KIND.CHECK).forEach((c) => {
-            if (passes(c)) rows.push(rowOf(c));
-        });
-        if (rows.length) out.push({ key: item.id, path: here, sit, rows, situations: [] });
-
-        const steps = childrenOf(item.id, CHECK_KIND.PROCESS);
-        const nos = stepNosOf(steps, flow);
-        steps.forEach((c, i) => walk(c, nos[i], here, sit, out, flow));
-        childrenOf(item.id, CHECK_KIND.SITUATION).forEach((s) => {
-            const sPath = [...here, { title: s.title, no: null, sit: true }];
-            const sRows = childrenOf(s.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
-            if (sRows.length) {
-                out.push({ key: s.id, path: sPath, sit: s, rows: sRows, situations: [] });
-            }
-            // 상황 아래 대응 프로세스는 간선에 넣지 않는다 - 형제 순번으로 매긴다
-            const sSteps = childrenOf(s.id, CHECK_KIND.PROCESS);
-            const sNos = stepNosOf(sSteps, null);
-            sSteps.forEach((sp, i) => walk(sp, sNos[i], sPath, s, out, flow));
-        });
-    };
-
-    // 업무구분 → 업무항목 짝 (dailyFlow 와 같은 순서)
-    const groups = divisionPairs(childrenOf).map(([division, g]) => {
-        const sections = [];
-        const flow = flowFor(g.id);
-        const steps = childrenOf(g.id, CHECK_KIND.PROCESS);
-        const nos = stepNosOf(steps, flow);
-        steps.forEach((p, i) => walk(p, nos[i], [], null, sections, flow));
-        const loose = childrenOf(g.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
-        if (loose.length) {
-            sections.push({
-                key: `loose-${g.id}`, path: [], sit: null, rows: loose, situations: [],
-            });
-        }
-        const rows = sections.flatMap((s) => s.rows);
-        return {
-            item: g,
-            name: g.title,
-            division,
-            // 진행 숫자는 그 날짜의 대상(due)만 센다 - 일일 표와 같은 값이어야 한다
-            done: rows.filter((r) => r.due && r.check).length,
-            total: rows.filter((r) => r.due).length,
-            sections,
-        };
-    }).filter((g) => g.sections.length);
-
-    const divisions = rollupDivisions(groups);
-    return {
-        date: day,
-        done: groups.reduce((n, g) => n + g.done, 0),
-        total: groups.reduce((n, g) => n + g.total, 0),
-        raised: checks.filter((c) => byId.get(c.item_id)?.kind === CHECK_KIND.SITUATION).length,
-        groups,
-        divisions,
-    };
-}
-
-/** dailyFlow 결과에서 체크 대상 줄만 평평하게 뽑는다 (발생 안 된 상황의 하위는 뺀다) */
-function flattenFlow(flow) {
-    const out = [];
-    const walkP = (p) => {
-        if (p.self) out.push(p.self);
-        out.push(...p.rows);
-        p.subs.forEach(walkP);
-        p.situations.forEach((s) => {
-            if (!s.active) return;
-            out.push(...s.rows);
-            s.subs.forEach(walkP);
-        });
-    };
-    flow.groups.forEach((c) => {
-        c.processes.forEach(walkP);
-        out.push(...c.loose);
-    });
-    return out;
-}
-
-/**
- * 그 날짜에 체크해야 할 항목 목록 (평평한 형태 - 집계·호환용).
- * dailyFlow() 와 같은 판정이라 두 화면의 숫자가 어긋나지 않는다.
- * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f
- */
-export async function dueItems(date, f = {}) {
-    return flattenFlow(await dailyFlow(date, f));
-}
-
 /** 그 날짜의 체크 기록 (항목별 1건) */
 export async function listChecks(date) {
     return (await load()).checklistChecks.filter((c) => c.check_date === date);
@@ -3991,7 +3543,7 @@ export async function listChecks(date) {
  * 체크 기록도 같은 날짜 것은 함께 지운다 (끼어들었던 단계가 통째로 빠진다).
  * 상위 상황이 발생 처리되지 않은 항목은 체크할 수 없다.
  * 🔑 **주기(`isDueOn`) 밖 날짜에는 체크할 수 없다** - 주기 밖 기록이 들어가면
- * `late`·`checklistSummary` 집계가 어긋난다. **독립 항목(부모 없음)은 이 가드를 받지 않는다** -
+ * 지난 기간 미체크(`late`) 집계가 어긋난다. **독립 항목(부모 없음)은 이 가드를 받지 않는다** -
  * 일일체크리스트는 기간(오늘 속한 주·달) 안에서 노출하는 것으로 대신한다. 해제는 막지 않는다
  * (잘못 들어간 기록 정리).
  * 해제 시 메모가 남아 있으면 행을 지우지 않고 `checked_at`·`checked_by`만 비운다(메모까지 비면 삭제).
@@ -4118,7 +3670,7 @@ export async function checklistCategories() {
 
 /**
  * 일일체크리스트 보드 🔑 - 독립 체크항목(트리가 아니라 parent_id 없는 kind='check')을 주기별로
- * 묶은 데이터. 트리 판정(`checklistContext`·`dailyFlow`·`isDueOn`)은 쓰지 않는다 - 노출 규칙이
+ * 묶은 데이터. 트리 판정(`isDueOn`)은 쓰지 않는다 - 노출 규칙이
  * 아예 다르다(그 날짜에만 나오는 것이 아니라 **기간 전체에 걸쳐** 나온다).
  * @param {string} dateStr YYYY-MM-DD - 그 날짜가 속한 기간(주·달)을 본다
  * @param {{assignee?:string, user?:object}} [f]
@@ -4176,26 +3728,6 @@ export async function checklistBoard(dateStr, f = {}) {
         });
     });
     return board;
-}
-
-/**
- * 그 날짜의 진행 요약.
- * `missed` 는 **전날 미체크 건수**다 - 수시(adhoc)는 날짜 개념이 없어 세지 않는다.
- * `raised` 는 그 날짜에 발생 처리된 상황 수다.
- * @param {string} date YYYY-MM-DD
- * @param {{assignee?:string}} f 일일체크리스트 탭의 담당자 필터와 같은 조건
- */
-export async function checklistSummary(date, f = {}) {
-    const flow = await dailyFlow(date, f);
-    const prevDate = addDays(date, -1);
-    const prev = await dueItems(prevDate, f);
-    return {
-        total: flow.total,
-        done: flow.done,
-        raised: flow.raised,
-        missed: prev.filter((r) => !r.check && r.cycle !== CHECK_CYCLE.ADHOC).length,
-        prevDate,
-    };
 }
 
 /* --------------------------------- 실시간 구독 -------------------------------- */
