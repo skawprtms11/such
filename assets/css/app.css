@@ -1882,6 +1882,11 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
 .pm-sit__merge b { font-weight: 700; }
 
 /* 빠른 추가 - 「+ 체크항목」 → 입력칸 (Enter 로 등록, 연속 입력) */
+.pm-pnote { width: 100%; margin: 0 0 6px; border-collapse: collapse; font-size: 10.5px; }
+.pm-pnote th, .pm-pnote td { padding: 2px 5px; border: 1px solid var(--gray-300); text-align: left; vertical-align: top; }
+.pm-pnote th { width: 62px; color: var(--gray-500); font-weight: 700; }
+.pm-pnote th:nth-child(2) { width: auto; }
+
 .pm-quick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px 8px; }
 .pm-quick--main { margin: 14px 0 0 46px; padding: 8px 10px; border: 1.5px dashed var(--gray-300); border-radius: 10px; }
 .pm-quick__form { display: flex; align-items: center; gap: 6px; flex: 1 1 100%; }
@@ -1952,5 +1957,7 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
     body.cl-printing .pm { display: block; overflow: visible; }
     body.cl-printing .pm-main { padding-left: 0; }
     body.cl-printing .pm-canvas { overflow: visible; }
-    body.cl-printing .pm-step, body.cl-printing .pm-sit { break-inside: avoid; }
+    body.cl-printing .pm-node, body.cl-printing .pm-step,
+    body.cl-printing .pm-sit, body.cl-printing .pm-pnote { break-inside: avoid; }
+    body.cl-printing .pm-port, body.cl-printing .pm-status { display: none !important; }
 }

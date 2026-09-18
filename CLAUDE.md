@@ -69,7 +69,7 @@ npm run dev:https  HTTPS 개발 서버 (휴대폰 카메라 스캔 테스트용)
 npm run build      프로덕션 빌드 → dist/
 npm run preview    빌드 결과물 확인 (http://localhost:4173)
 npm run lint       코드 검사  /  npm run lint:fix  자동 수정
-npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 트리 · docs/checklist.md)
+npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 DAG · docs/checklist.md)
 ```
 
 ⚠️ **카메라는 HTTPS 또는 localhost 에서만 동작한다.**
@@ -398,8 +398,10 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 | `notices` | 공지사항 | `title` `content` `important`(중요공지 - 목록 상단 고정) `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제 - soft delete) |
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
-| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(하위 프로세스 연결 - seq 순차 ①②③ / fork 갈래 / join 갈래→합류) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order` `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
+| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(옛 흐름 모델 · **쓰지 않는다**) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order`(소유 순서 · **흐름 순서는 `checklist_edges`**) `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
 | `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
+| `checklist_edges` | 업무 흐름 간선 (업무프로세스 단계 순서의 **유일한 출처** · 갈래·합류) | `group_id`(업무항목) `from_id`(null=흐름의 시작) `to_id` `label`(조건) `sort_order`(갈래 좌→우) |
+| `checklist_notes` | 단계 설명 표 (구분·내용·비고) | `item_id`(프로세스·업무항목·상황) `label` `content` `remark` `sort_order` · ⚠️ 하드 삭제 |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의
 검수작업 탭에서 검수완료 시 수기로 입력**한다 ([docs/shipping.md](docs/shipping.md) 참고).

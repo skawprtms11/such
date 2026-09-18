@@ -445,37 +445,6 @@ export const CHECK_KIND_CHILDREN = {
 };
 
 /**
- * @deprecated 흐름은 간선 테이블(checklist_edges)이 유일한 출처다 - `child_flow` 는 쓰지 않는다.
- * 컬럼과 상수는 되돌리기 안전판으로 남겨 두었고, 화면에서 참조를 걷어낸 뒤 지운다.
- *
- * 하위 프로세스를 잇는 방식 - 저장값 (checklist_items.child_flow) 🔑
- * **부모 노드에 붙는다.** "내 하위 프로세스들을 순차로 볼지 갈래로 볼지" 를 정한다.
- *   seq  : 순차 - ①②③ 번호를 매겨 한 줄기로 잇는다 (기본값 · 지금까지의 모양)
- *   fork : 갈래 - 번호 없이 갈래 이름으로 나란히 벌린다 (조건에 따라 한 갈래만 탄다)
- *   join : 갈래 + 합류 - 벌린 갈래들이 **자기 다음 형제** 한 단계로 다시 모인다
- * 하위 프로세스를 둘 수 있는 업무항목·프로세스에만 뜻이 있다 (체크항목·상황은 현행 그대로).
- */
-export const CHECK_FLOW = {
-    SEQ: 'seq',
-    FORK: 'fork',
-    JOIN: 'join',
-};
-
-/**
- * @deprecated 갈래는 `from` 하나에 나가는 간선이 여럿인 것으로 표현한다 (db.processFlow).
- *
- * 하위 프로세스를 갈래로 벌리는 부모인가 (갈래면 번호 대신 갈래 이름을 쓴다).
- */
-export function isFork(item) {
-    return !!item?.child_flow && item.child_flow !== CHECK_FLOW.SEQ;
-}
-
-/** @deprecated 갈래를 다음 형제 한 단계로 다시 모으는 부모인가 (간선 테이블로 대체) */
-export function isJoin(item) {
-    return item?.child_flow === CHECK_FLOW.JOIN;
-}
-
-/**
  * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 **보고 있는 업무구분 아래에** 같은 이름의
  * 업무항목을 만들고 흐름을 한 번에 등록한다 (db.seedChecklistTemplate). 그 업무구분에 같은 이름이
  * 이미 있으면 거부한다.

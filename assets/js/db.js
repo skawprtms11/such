@@ -4,7 +4,7 @@
  * Supabase 구축 후에는 supabase-adapter.js 를 채우고 config.DATA_SOURCE 만 바꾸면 된다.
  */
 import {
-    CHECK_CYCLE, CHECK_FLOW, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
+    CHECK_CYCLE, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
@@ -35,7 +35,6 @@ function normalize(db) {
         i.parent_id = i.parent_id ?? null;
         i.kind = i.kind ?? (hasKid.has(i.id) ? CHECK_KIND.PROCESS : CHECK_KIND.CHECK);
         // 하위 프로세스 연결 방식이 없던 옛 항목은 순차(seq) - 지금까지의 모양 그대로다
-        i.child_flow = i.child_flow ?? CHECK_FLOW.SEQ;
         i.category = i.category ?? '';
         i.daily = i.daily ?? true;       // 포함 여부 컬럼이 없던 옛 항목은 포함으로 본다
         i.description = i.description ?? '';
@@ -2698,19 +2697,11 @@ function checkItemInput(patch, base, db, parent, relation = true) {
         subs.push({ id: u.id, name: u.name });
     });
 
-    // 하위 프로세스 연결 방식 - 업무항목·프로세스만 뜻이 있다. 나머지는 기본값(순차)으로 둔다
-    const wantFlow = patch.child_flow ?? base.child_flow ?? CHECK_FLOW.SEQ;
-    const canFork = kind === CHECK_KIND.GROUP || kind === CHECK_KIND.PROCESS;
-    if (!Object.values(CHECK_FLOW).includes(wantFlow)) {
-        throw new Error('하위 프로세스 연결 방식이 올바르지 않습니다.');
-    }
-
     return {
         title,
         description: String(patch.description ?? base.description ?? '').trim(),
         category,
         kind,
-        child_flow: canFork ? wantFlow : CHECK_FLOW.SEQ,
         cycle,
         weekday,
         monthday,
@@ -2830,7 +2821,6 @@ export async function duplicateChecklistGroup(id, user) {
         const row = insertChecklistItem(db, {
             parent_id: parentId,
             kind: item.kind,
-            child_flow: item.child_flow,
             title: newTitle ?? item.title,
             description: item.description,
             cycle: item.cycle,

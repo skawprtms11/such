@@ -17,53 +17,6 @@
  * 써야 해서다. steps.js 와 같은 순수 함수 층이라 웹·앱 어느 쪽에서도 쓸 수 있다.
  */
 
-/* ------------------------------ 번호 채번 (공용) ------------------------------ */
-
-/**
- * @deprecated 트리 전제 - `flowNos` 가 간선 목록으로 층·번호를 낸다. 화면이 참조를 걷어내면 지운다.
- * 형제 프로세스 줄의 번호 🔑 (순수 함수 · 웹·앱 공용).
- *
- * 형제 줄마다 **정수 슬롯** 1,2,3… 을 매기되 **갈래 부모는 슬롯 2칸을 쓴다** - 자기(N)와
- * 갈래 줄(N+1). 그래서 갈래 하위가 `4.1` `4.2` 로 읽힌다 - 3번 안의 하위가 아니라
- * **다음 단계가 유형별로 쪼개진 것**이다. 갈래 부모의 다음 형제는 합류든 아니든 `N+2` 라
- * 갈래(fork) ↔ 합류(join) 를 토글해도 번호가 흔들리지 않는다.
- *
- * 🔑 **불변식: 결과 배열의 길이와 순서는 입력과 같다** (걸러내지도, 섞지도 않는다).
- * 번호는 경로 캡션 전용이고 체크 대상 판정(`daily`·`isDueOn`·`passes`)·집계와 무관하다.
- *
- * @param {Array} children 형제 프로세스 (원본 순서)
- * @param {{fork?:boolean, base?:string|number, isBranch?:(node)=>boolean}} [opts]
- *   fork     이 줄이 갈래 줄인가 (부모의 `child_flow` 가 `seq` 가 아닌가)
- *   base     갈래 줄의 앞자리. `forkBase(부모 번호)` 로 만든다 (없으면 1)
- *   isBranch 그 형제가 **갈래 부모**인가 - 슬롯을 2칸 쓴다. 순차 줄에서만 본다
- * @returns {Array<number|string>} 정수(순차 `①②③`) 또는 `4.1` 꼴 문자열(갈래)
- */
-export function rowNos(children, opts = {}) {
-    if (opts.fork) {
-        const base = opts.base ?? 1;
-        return children.map((_, i) => `${base}.${i + 1}`);
-    }
-    const isBranch = opts.isBranch ?? ((n) => !!n?.fork);
-    let slot = 1;
-    return children.map((node) => {
-        const no = slot;
-        slot += isBranch(node) ? 2 : 1;   // 갈래 부모는 갈래 줄 몫으로 한 칸 더 먹는다
-        return no;
-    });
-}
-
-/**
- * @deprecated 트리 전제 - `flowNos` 의 `층.k` 번호가 앞자리를 따로 만들지 않는다. 화면이 참조를 걷어내면 지운다.
- * 갈래 줄의 앞자리 🔑 - 부모 번호에서 만든다.
- * 정수 슬롯 N 은 **다음 슬롯**(`N+1`)을 갈래 줄에 내주고, 이미 점 번호인 부모(`4.2` -
- * 갈래 안의 갈래)는 자기 번호 뒤에 한 겹을 더한다(`4.2.1`). 번호가 없는 부모
- * (업무항목·상황)는 1 이라 `1.1` `1.2` 가 된다.
- */
-export function forkBase(no) {
-    if (no == null) return 1;
-    return typeof no === 'number' ? no + 1 : String(no);
-}
-
 /* ------------------------------ 좌표 (웹 도식 전용) ------------------------------ */
 
 /**

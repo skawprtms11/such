@@ -220,11 +220,18 @@ export async function drawManage(ctx) {
             reload();
         });
     });
-    /** 인쇄는 상세를 모두 펼친 매뉴얼로 - 끝나면 원래 펼침 상태로 돌린다 */
+    /**
+     * 인쇄는 상세를 모두 펼친 매뉴얼로 - 끝나면 원래 펼침 상태로 돌린다.
+     * 🔑 설명 표를 카드 아래에 붙인 **뒤에** 배치한다 - 카드 높이가 달라지므로 순서를
+     * 어기면 선이 카드에서 떨어진다.
+     */
     body.querySelector('#btn-print')?.addEventListener('click', async () => {
         const prev = new Set(state.open);
         rows.forEach((r) => state.open.add(r.id));
+        state.link = null;
+        state.step = null;
         await reload();
+        if (gvm) await printNotes(body, gvm);
         // 인쇄는 화면 폭이 아니라 A4 폭에 맞춰 다시 배치한다 (열이 화면보다 좁아진다)
         if (shown) layoutCanvas(shown.body, shown.gvm, { width: PRINT_W, edit: false });
         document.body.classList.add('cl-printing');
@@ -337,6 +344,26 @@ function guideHtml(state, group) {
   이미 있는 단계에 잇습니다 (<b>합류</b>).
   선 위 칩을 누르면 조건·갈래 순서·연결 끊기를 할 수 있습니다.
 </p>`;
+}
+
+/**
+ * 인쇄용 설명 표 🔑 - 단계 카드 아래에 작은 표로 붙인다 (화면에는 우측 한 곳에만 있다).
+ * 인쇄가 끝나면 화면을 다시 그리므로 따로 걷어내지 않는다.
+ */
+async function printNotes(body, gvm) {
+    const steps = gvm.nodes.map((n) => n.item);
+    const all = await Promise.all(steps.map((it) => db.listChecklistNotes(it.id)));
+    steps.forEach((it, i) => {
+        if (!all[i].length) return;
+        const card = body.querySelector(`.pm-node[data-node="${CSS.escape(it.id)}"] .pm-card`);
+        if (!card) return;
+        card.insertAdjacentHTML('beforeend', `
+<table class="pm-pnote">
+  <thead><tr><th>구분</th><th>내용</th><th>비고</th></tr></thead>
+  <tbody>${all[i].map((n) => `
+  <tr><td>${esc(n.label)}</td><td>${esc(n.content)}</td><td>${esc(n.remark)}</td></tr>`).join('')}</tbody>
+</table>`);
+    });
 }
 
 /* ------------------------------ 우측 설명 표 ------------------------------ */

@@ -1640,8 +1640,6 @@ button.m-pallet:disabled { cursor: default; }
 .m-fc__text { flex: 1; min-width: 0; }
 .m-fc__title { font-size: 15px; font-weight: 700; }
 .m-fc__desc { font-size: 12.5px; color: var(--m-gray-500); }
-.m-fc__items { margin: 4px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--m-gray-700); }
-.m-fc__items li::before { content: '☐ '; color: var(--m-gray-500); }
 .m-fc__sub { margin: 6px 0 0 6px; padding-left: 10px; border-left: 2px solid var(--m-gray-200); }
 .m-fc__sub .m-fc__step { border-width: 1px; border-color: var(--m-gray-300); padding: 6px 8px; }
 .m-fc__sub .m-fc__no { width: 20px; height: 20px; font-size: 11px; background: #fff; color: var(--m-blue); border: 1.5px solid var(--m-blue); }
@@ -1653,7 +1651,6 @@ button.m-pallet:disabled { cursor: default; }
 .m-fc__sit .m-fc__no { background: var(--m-amber); }
 .m-fc__sit .m-fc__line { border-color: var(--m-amber); }
 .m-fc__merge { font-size: 12.5px; color: var(--m-amber); font-weight: 600; margin-top: 6px; }
-.m-fc__loose { border-style: dashed; }
 /* 갈래(fork) - 번호 대신 갈래 이름이 붙은 하위 스테퍼로 편다 */
 .m-fc__fork { margin: 6px 0 0 6px; padding-left: 10px; border-left: 2px dashed var(--m-blue); }
 .m-fc__fork-head { margin: 8px 0 2px; font-size: 12px; font-weight: 700; color: var(--m-blue); }
