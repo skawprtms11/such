@@ -7,10 +7,9 @@ import {
     CHECK_CYCLE, CHECK_FLOW, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
-    adjustCategory, formatLocation, isFork, isValidLocation, stowStatus,
+    adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
-import { forkBase, rowNos } from './checkflow.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
 } from './store.js';
@@ -28,6 +27,8 @@ function normalize(db) {
     db.noticeComments = db.noticeComments ?? [];
     db.checklistItems = db.checklistItems ?? [];
     db.checklistChecks = db.checklistChecks ?? [];
+    db.checklistEdges = db.checklistEdges ?? [];
+    db.checklistNotes = db.checklistNotes ?? [];
     // 종류(kind)가 없는 옛 항목 - 하위가 있으면 프로세스, 없으면 체크항목으로 본다
     const hasKid = new Set(db.checklistItems.map((i) => i.parent_id).filter(Boolean));
     db.checklistItems.forEach((i) => {
@@ -2737,15 +2738,21 @@ export async function createChecklistItem(payload, user) {
     return row;
 }
 
-/** 등록 한 건을 메모리에 넣는다 (createChecklistItem · seedChecklistTemplate 공용) */
-function insertChecklistItem(db, payload, user) {
+/**
+ * 등록 한 건을 메모리에 넣는다 (createChecklistItem · seedChecklistTemplate 공용).
+ * @param {{edge?:boolean, relation?:boolean}} [opt]
+ *   edge:false     흐름 간선을 만들지 않는다 (복제는 원본 간선을 그대로 옮긴다)
+ *   relation:false 상위-종류 관계 검사를 건너뛴다. 🔑 **복제만** 쓴다 - 이미 저장된
+ *                  옛 중첩 프로세스(프로세스 아래 프로세스)를 그대로 옮겨야 하기 때문이다
+ */
+function insertChecklistItem(db, payload, user, opt = {}) {
     const parentId = payload.parent_id || null;
     const parent = parentId
         ? aliveItems(db).find((x) => x.id === parentId)
         : null;
     if (parentId && !parent) throw new Error('상위 항목을 찾을 수 없습니다.');
 
-    const v = checkItemInput(payload, {}, db, parent);
+    const v = checkItemInput(payload, {}, db, parent, opt.relation !== false);
     const last = siblingsOf(db, parentId).at(-1);
     const row = {
         id: uid('ci'),
@@ -2759,6 +2766,9 @@ function insertChecklistItem(db, payload, user) {
         deleted_at: null,
     };
     db.checklistItems.push(row);
+    // 🔑 프로세스는 흐름(간선)에도 넣는다 - 간선이 없으면 그 단계가 흐름의 시작이 되어
+    // 같은 층에 여러 개가 서고 번호가 `1.1` `1.2` 로 갈린다
+    if (opt.edge !== false) linkNewStep(db, row, payload, user);
     return row;
 }
 
@@ -2815,6 +2825,7 @@ export async function duplicateChecklistGroup(id, user) {
     for (let n = 2; siblings.includes(title); n += 1) title = `${src.title} 복사 ${n}`;
 
     let count = 0;
+    const map = new Map();          // 원본 id → 복사본 id (간선을 옮길 때 쓴다)
     const copy = (item, parentId, newTitle) => {
         const row = insertChecklistItem(db, {
             parent_id: parentId,
@@ -2829,13 +2840,25 @@ export async function duplicateChecklistGroup(id, user) {
             sub_assignee_ids: (item.sub_assignees ?? []).map((s) => s.id),
             active: item.active,
             daily: item.daily,
-        }, user);
+        }, user, { edge: false, relation: false });
         count += 1;
+        map.set(item.id, row.id);
         sortChecklist(alive.filter((c) => c.parent_id === item.id))
             .forEach((c) => copy(c, row.id));
         return row;
     };
     const group = copy(src, src.parent_id, title);
+    // 🔑 흐름 간선도 함께 옮긴다 - 간선을 빼먹으면 복사본의 단계가 전부 시작 노드가 된다
+    sortEdges(db.checklistEdges.filter((e) => e.group_id === id)).forEach((e) => {
+        if (!map.has(e.to_id) || (e.from_id && !map.has(e.from_id))) return;
+        pushEdge(db, {
+            groupId: group.id,
+            fromId: e.from_id ? map.get(e.from_id) : null,
+            toId: map.get(e.to_id),
+            label: e.label,
+            sortOrder: e.sort_order,
+        }, user);
+    });
     await save(db);
     return { group, count };
 }
@@ -2936,16 +2959,520 @@ export async function reorderChecklistItems(parentId, orderedIds, user) {
 /**
  * 항목 삭제 - 하위 항목까지 함께 지운다.
  * 체크 기록을 남겨 두려고 행을 지우지 않고 deleted_at 만 찍는다(soft delete).
+ * 🔑 단계(프로세스)를 지우면 **흐름을 먼저 잇는다** - 앞뒤를 잇지 않으면 뒷 단계가
+ * 시작 노드가 되어 1층으로 튄다 (bridgeEdges · 확인 문구는 bridgeInfo).
  */
 export async function deleteChecklistItem(id, user) {
     if (!canManageChecklist(user)) throw new Error('체크리스트 항목을 삭제할 권한이 없습니다.');
     const db = (await load());
-    const targets = withDescendants(aliveItems(db), id);
+    const alive = aliveItems(db);
+    const targets = withDescendants(alive, id);
     if (!targets.length) throw new Error('체크리스트 항목을 찾을 수 없습니다.');
     const now = new Date().toISOString();
+    bridgeEdges(db, targets, new Map(alive.map((i) => [i.id, i])), user);
     targets.forEach((x) => { x.deleted_at = now; });
     await save(db);
     return targets.length;
+}
+
+/* ----------------------------- 업무 흐름 간선 (DAG) ----------------------------- */
+/*
+ * 소유와 흐름을 나눈다 🔑 (docs/checklist.md).
+ *   parent_id · sort_order  소유 - 업무항목 소속 · 담당자 상속 · 삭제 전파 · RLS
+ *   checklist_edges         흐름 - 단계 순서의 **유일한 출처**. 갈래·합류를 함께 푼다
+ * 그래서 담당자 상속(effectiveAssignee)·체크 권한(canCheckItem)·일일 판정(isDueOn·passes)은
+ * 간선을 보지 않는다. 간선이 정하는 것은 **프로세스 번호(no)** 뿐이다.
+ *
+ * 흐름 한 벌의 경계는 업무항목(group) 하나다. 상황(situation) 아래 대응 프로세스는
+ * 간선에 넣지 않는다 - 갈래는 「늘 있는 경로」, 상황은 「그날 생긴 일」이라 층이 다르다.
+ */
+
+/** 간선 순서 - 같은 from 에서 갈라진 갈래의 좌→우 (sort_order → 등록순 → id) */
+function sortEdges(rows) {
+    return rows.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
+        || String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''))
+        || String(a.id).localeCompare(String(b.id)));
+}
+
+/**
+ * 그 항목이 속한 흐름의 경계(업무항목 id). **흐름 노드가 아니면 null** 이다.
+ * 프로세스만 흐름에 들고, 상황 아래 대응 프로세스는 빠진다 (트리 + sort_order 로 남는다).
+ */
+function flowGroupOf(item, byId) {
+    if (!item || item.kind !== CHECK_KIND.PROCESS) return null;
+    if (situationAncestors(item, byId).length) return null;
+    let cur = byId.get(item.parent_id);
+    while (cur) {
+        if (cur.kind === CHECK_KIND.GROUP) return cur.id;
+        cur = byId.get(cur.parent_id);
+    }
+    return null;
+}
+
+/** 그 업무항목의 흐름 노드 (프로세스 · 상황 아래 제외) */
+function flowNodesOf(items, byId, groupId) {
+    return sortChecklist(items.filter((i) => flowGroupOf(i, byId) === groupId));
+}
+
+/** 그 업무항목의 간선 (양 끝이 흐름 노드인 것만 · 순서 정렬) */
+function edgesOfGroup(db, groupId, byId) {
+    const ids = new Set(flowNodesOf(aliveItems(db), byId, groupId).map((i) => i.id));
+    return sortEdges(db.checklistEdges.filter((e) => ids.has(e.to_id)
+        && (!e.from_id || ids.has(e.from_id))));
+}
+
+/**
+ * 빠진 노드를 건너뛰어 간선을 잇는다 (비활성 노드를 뺄 때 · 순수 함수).
+ * 잇지 않으면 사슬이 끊겨 뒷 단계가 1층으로 올라간다 - 옛 sort_order 채번과 달라진다.
+ * @param {Array} edges 간선 전부
+ * @param {Set<string>} keep 남길 노드 id
+ */
+function contractEdges(edges, keep) {
+    const byFrom = new Map();
+    sortEdges(edges).forEach((e) => {
+        const k = e.from_id ?? '';
+        if (!byFrom.has(k)) byFrom.set(k, []);
+        byFrom.get(k).push(e);
+    });
+    const out = [];
+    const added = new Set();
+    /** 도착이 빠진 노드면 그 뒤로 계속 내려가 처음 만나는 남긴 노드까지 잇는다 */
+    const relay = (src, e, hops) => {
+        if (keep.has(e.to_id)) {
+            const key = `${src ?? ''}>${e.to_id}`;
+            if (added.has(key)) return;
+            added.add(key);
+            out.push((e.from_id ?? null) === src ? e : { ...e, id: null, from_id: src });
+            return;
+        }
+        if (hops.has(e.to_id)) return;              // 순환 방어
+        hops.add(e.to_id);
+        (byFrom.get(e.to_id) ?? []).forEach((n) => relay(src, n, hops));
+    };
+    [...byFrom.keys()].forEach((k) => {
+        if (k !== '' && !keep.has(k)) return;       // 빠진 노드에서 나가는 간선은 위에서 이어 준다
+        byFrom.get(k).forEach((e) => relay(k === '' ? null : k, e, new Set()));
+    });
+    return out;
+}
+
+/** startId 에서 간선을 따라 닿는 노드 id (reverse 면 거꾸로 - 나를 가리키는 쪽) */
+function reachOf(edges, startId, reverse = false) {
+    const next = new Map();
+    edges.forEach((e) => {
+        if (!e.from_id) return;
+        const [a, b] = reverse ? [e.to_id, e.from_id] : [e.from_id, e.to_id];
+        if (!next.has(a)) next.set(a, []);
+        next.get(a).push(b);
+    });
+    const out = new Set();
+    const stack = [startId];
+    while (stack.length) {
+        (next.get(stack.pop()) ?? []).forEach((id) => {
+            if (out.has(id)) return;
+            out.add(id);
+            stack.push(id);
+        });
+    }
+    return out;
+}
+
+/**
+ * 흐름의 층·번호 🔑 (순수 함수 · **판정은 이 함수 한 곳**).
+ * 캡션·앱·인쇄·도식이 모두 이 결과만 읽는다.
+ *
+ *   층      `layer(v) = 1 + max(layer(선행자))` · 시작 노드는 1 (Kahn 위상정렬 · 최장경로)
+ *   번호    층에 노드가 하나면 **정수**(캡션이 ①②③ 로 그린다), 둘 이상이면 **`층.k`**
+ *           (`4.1` `4.2` · k = 층 안의 좌→우 = 들어오는 간선의 sort_order 순)
+ *   순환    넣을 때 막지만(addProcessEdge), 남아 있으면 마지막 층으로 격리하고 `cyclic` 로 알린다
+ *
+ * 번호는 저장하지 않는다 - 간선이 바뀌면 그때그때 다시 계산한다.
+ * @returns {{nodes, edges, layer, no, order, nexts, entries, exits, cyclic}}
+ *   nodes   흐름 순서(층 → 좌→우)로 놓인 노드
+ *   order   같은 순서의 id 배열 · nexts[id] 나가는 간선의 to_id (sort_order 순)
+ *   entries 들어오는 간선이 없는 노드 · exits 나가는 간선이 없는 노드
+ */
+function flowOf(nodes, edges) {
+    const pos = new Map(nodes.map((n, i) => [n.id, i]));
+    const rows = sortEdges(edges).filter((e) => pos.has(e.to_id)
+        && (!e.from_id || pos.has(e.from_id)));
+    const preds = {};
+    const nexts = {};
+    const inSort = {};
+    nodes.forEach((n) => { preds[n.id] = []; nexts[n.id] = []; });
+    rows.forEach((e) => {
+        inSort[e.to_id] = Math.min(inSort[e.to_id] ?? Infinity, e.sort_order ?? 0);
+        if (!e.from_id) return;                     // 시작 간선은 선행자가 아니다
+        nexts[e.from_id].push(e.to_id);
+        preds[e.to_id].push(e.from_id);
+    });
+
+    const layer = {};
+    const indeg = {};
+    const seq = {};
+    nodes.forEach((n) => { layer[n.id] = 1; indeg[n.id] = preds[n.id].length; });
+    const queue = nodes.filter((n) => !indeg[n.id]).map((n) => n.id);
+    for (let at = 0; at < queue.length; at += 1) {
+        const v = queue[at];
+        seq[v] = at;
+        nexts[v].forEach((w) => {
+            layer[w] = Math.max(layer[w], layer[v] + 1);
+            indeg[w] -= 1;
+            if (!indeg[w]) queue.push(w);
+        });
+    }
+    // 순환에 걸려 위상정렬에서 빠진 노드는 마지막 층으로 몰아 둔다 (화면이 통째로 비지 않게)
+    const cyclic = queue.length < nodes.length;
+    if (cyclic) {
+        const last = Math.max(1, ...Object.values(layer)) + 1;
+        nodes.filter((n) => seq[n.id] === undefined).forEach((n) => {
+            layer[n.id] = last;
+            seq[n.id] = queue.length + pos.get(n.id);
+        });
+    }
+
+    const byLayer = new Map();
+    nodes.forEach((n) => {
+        if (!byLayer.has(layer[n.id])) byLayer.set(layer[n.id], []);
+        byLayer.get(layer[n.id]).push(n.id);
+    });
+    const no = {};
+    const order = [];
+    [...byLayer.keys()].sort((a, b) => a - b).forEach((lv) => {
+        const members = byLayer.get(lv).sort((a, b) => (inSort[a] ?? 0) - (inSort[b] ?? 0)
+            || seq[a] - seq[b] || pos.get(a) - pos.get(b));
+        if (members.length === 1) no[members[0]] = lv;
+        else members.forEach((id, k) => { no[id] = `${lv}.${k + 1}`; });
+        order.push(...members);
+    });
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    return {
+        nodes: order.map((id) => byId.get(id)),
+        edges: rows,
+        layer,
+        no,
+        order,
+        nexts,
+        entries: nodes.filter((n) => !preds[n.id].length).map((n) => n.id),
+        exits: nodes.filter((n) => !nexts[n.id].length).map((n) => n.id),
+        cyclic,
+    };
+}
+
+/**
+ * 저장 데이터에서 흐름을 만든다 (processFlow · dailyFlow 공용).
+ * @param {{includeInactive?:boolean}} opt 업무프로세스 탭은 비활성 단계까지 본다.
+ *   비활성을 뺄 때는 **간선을 이어 준다**(contractEdges) - 끊으면 뒷 단계가 1층으로 튄다
+ */
+function flowFromDb(db, groupId, opt = {}) {
+    const alive = aliveItems(db);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const all = flowNodesOf(alive, byId, groupId);
+    const nodes = opt.includeInactive ? all : all.filter((n) => n.active);
+    const ids = new Set(all.map((n) => n.id));
+    const edges = db.checklistEdges.filter((e) => ids.has(e.to_id)
+        && (!e.from_id || ids.has(e.from_id)));
+    return flowOf(nodes, contractEdges(edges, new Set(nodes.map((n) => n.id))));
+}
+
+/**
+ * 업무항목 하나의 흐름 🔑 - 캡션·앱·인쇄·도식이 모두 이것만 읽는다 (flowOf 참고).
+ * 조회 함수라 권한 가드를 두지 않는다 - 현장작업자도 흐름을 읽어야 한다 (편집만 가드).
+ * @param {string} groupId 업무항목 id
+ * @param {{includeInactive?:boolean}} [opt] 업무프로세스 탭은 `true`
+ */
+export async function processFlow(groupId, opt = {}) {
+    return flowFromDb(await load(), groupId, opt);
+}
+
+/**
+ * 그 단계에서 간선을 따라 닿는 단계 id 목록.
+ * 🔑 **연결 모드에서 순환이 되는 후보는 `{reverse: true}` 다** - `from → to` 를 새로 잇는 것이
+ * 순환이 되는 조건은 「to 에서 from 으로 닿는다」 = from 의 선행자들이다.
+ * @param {{reverse?:boolean}} [opt] reverse 면 거꾸로 (나를 가리키는 쪽)
+ */
+export async function reachableFrom(groupId, fromId, opt = {}) {
+    const db = (await load());
+    const byId = new Map(aliveItems(db).map((i) => [i.id, i]));
+    return [...reachOf(edgesOfGroup(db, groupId, byId), fromId, !!opt.reverse)];
+}
+
+/** 간선 한 줄을 메모리에 넣는다 (중복·시작 간선 중복이면 null) */
+function pushEdge(db, e, user) {
+    const same = db.checklistEdges.some((x) => (x.from_id ?? null) === (e.fromId ?? null)
+        && x.to_id === e.toId);
+    // 시작 간선은 to 마다 하나만 둔다 (스키마의 부분 unique 와 같은 규칙)
+    const entryDup = !e.fromId && db.checklistEdges.some((x) => !x.from_id && x.to_id === e.toId);
+    if (same || entryDup) return null;
+    const mine = sortEdges(db.checklistEdges
+        .filter((x) => (x.from_id ?? null) === (e.fromId ?? null)));
+    const row = {
+        id: uid('ce'),
+        group_id: e.groupId,
+        from_id: e.fromId ?? null,
+        to_id: e.toId,
+        label: String(e.label ?? '').trim(),
+        sort_order: Number.isFinite(e.sortOrder)
+            ? Number(e.sortOrder)
+            : (mine.at(-1)?.sort_order ?? 0) + 1,
+        created_by: user?.id ?? null,
+        created_by_name: user?.name ?? '',
+        created_at: new Date().toISOString(),
+    };
+    db.checklistEdges.push(row);
+    return row;
+}
+
+/**
+ * 단계를 잇는다 🔑 - 넣기 전에 순환·자기참조·중복·다른 업무항목을 거부한다.
+ * @param {string|null} fromId 출발 단계. **null 이면 흐름의 시작(entry)**
+ * @param {string} toId 도착 단계
+ * @param {{label?:string, sortOrder?:number}} [patch] label 조건 라벨 · sortOrder 갈래 좌→우
+ */
+export async function addProcessEdge(fromId, toId, patch = {}, user) {
+    if (!canManageChecklist(user)) throw new Error('업무 흐름을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const byId = new Map(aliveItems(db).map((i) => [i.id, i]));
+    const to = byId.get(toId);
+    if (!to) throw new Error('이을 단계를 찾을 수 없습니다.');
+    if (fromId && !byId.get(fromId)) throw new Error('출발 단계를 찾을 수 없습니다.');
+    if (fromId && fromId === toId) throw new Error('같은 단계끼리는 이을 수 없습니다.');
+    const groupId = flowGroupOf(to, byId);
+    if (!groupId) throw new Error('흐름에 넣을 수 없는 단계입니다 (프로세스만 · 상황 아래 제외).');
+    if (fromId && flowGroupOf(byId.get(fromId), byId) !== groupId) {
+        throw new Error('같은 업무항목 안의 단계끼리만 이을 수 있습니다.');
+    }
+    const edges = edgesOfGroup(db, groupId, byId);
+    if (!fromId && edges.some((e) => !e.from_id && e.to_id === toId)) {
+        throw new Error('이미 흐름의 시작인 단계입니다.');
+    }
+    if (edges.some((e) => (e.from_id ?? null) === (fromId ?? null) && e.to_id === toId)) {
+        throw new Error('이미 이어진 연결입니다.');
+    }
+    if (fromId && reachOf(edges, toId).has(fromId)) {
+        throw new Error('흐름이 되돌아가는 연결입니다 (순환).');
+    }
+    const row = pushEdge(db, {
+        groupId, fromId: fromId || null, toId, label: patch.label, sortOrder: patch.sortOrder,
+    }, user);
+    await save(db);
+    return row;
+}
+
+/** 연결을 지운다. 간선은 soft delete 가 아니다 - 남겨 두면 층 계산이 틀린다 */
+export async function removeProcessEdge(edgeId, user) {
+    if (!canManageChecklist(user)) throw new Error('업무 흐름을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const at = db.checklistEdges.findIndex((e) => e.id === edgeId);
+    if (at < 0) throw new Error('연결을 찾을 수 없습니다.');
+    const [gone] = db.checklistEdges.splice(at, 1);
+    await save(db);
+    return gone;
+}
+
+/** 조건 라벨 (「국내」 「수량 오류 시」) */
+export async function setEdgeLabel(edgeId, label, user) {
+    if (!canManageChecklist(user)) throw new Error('업무 흐름을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const edge = db.checklistEdges.find((e) => e.id === edgeId);
+    if (!edge) throw new Error('연결을 찾을 수 없습니다.');
+    edge.label = String(label ?? '').trim();
+    await save(db);
+    return edge;
+}
+
+/**
+ * 같은 단계에서 갈라진 갈래의 좌→우 순서를 한 번에 정한다.
+ * @param {string|null} fromId 출발 단계 (null 이면 흐름의 시작들)
+ * @param {string[]} orderedToIds 새 순서의 도착 단계 id
+ */
+export async function reorderEdges(fromId, orderedToIds, user) {
+    if (!canManageChecklist(user)) throw new Error('업무 흐름을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const rows = sortEdges(db.checklistEdges
+        .filter((e) => (e.from_id ?? null) === (fromId || null)));
+    const ids = [...new Set(orderedToIds)];
+    if (ids.some((id) => !rows.some((r) => r.to_id === id))) {
+        throw new Error('같은 단계에서 갈라진 연결끼리만 순서를 바꿀 수 있습니다.');
+    }
+    ids.forEach((id, i) => { rows.find((r) => r.to_id === id).sort_order = i + 1; });
+    rows.filter((r) => !ids.includes(r.to_id))
+        .forEach((r, i) => { r.sort_order = ids.length + i + 1; });
+    await save(db);
+}
+
+/**
+ * 지울 대상의 앞뒤를 가린다 (브릿지 계획).
+ * 지우는 범위는 항목과 하위 전부(soft delete 와 같은 범위)라 **묶음 밖의** 앞뒤만 본다.
+ * prev 의 id 가 null 이면 흐름의 시작이다.
+ */
+function bridgePlan(db, targets) {
+    const tset = new Set(targets.map((t) => t.id));
+    const edges = sortEdges(db.checklistEdges);
+    const prev = [];
+    edges.filter((e) => tset.has(e.to_id) && !tset.has(e.from_id ?? '')).forEach((e) => {
+        const id = e.from_id ?? null;
+        if (!prev.some((x) => x.id === id)) {
+            prev.push({ id, label: e.label ?? '', sort: e.sort_order ?? 0 });
+        }
+    });
+    const next = [];
+    edges.filter((e) => e.from_id && tset.has(e.from_id) && !tset.has(e.to_id)).forEach((e) => {
+        if (!next.includes(e.to_id)) next.push(e.to_id);
+    });
+    return { tset, prev, next };
+}
+
+/**
+ * 지운 단계의 앞뒤를 잇는다 🔑 - `{a→x}` `{x→b}` 를 지우고 **데카르트곱 `a→b`** 를 만든다.
+ * 라벨은 `a→x` 의 것을 물려받고, 중복은 만들지 않는다 (스키마의 unique 와 같은 규칙).
+ */
+function bridgeEdges(db, targets, byId, user) {
+    const { tset, prev, next } = bridgePlan(db, targets);
+    db.checklistEdges = db.checklistEdges
+        .filter((e) => !tset.has(e.to_id) && !tset.has(e.from_id ?? ''));
+    if (!prev.length || !next.length) return;
+    prev.forEach((p) => {
+        next.forEach((toId) => {
+            pushEdge(db, {
+                groupId: flowGroupOf(byId.get(toId), byId),
+                fromId: p.id,
+                toId,
+                label: p.label,
+                sortOrder: p.sort,
+            }, user);
+        });
+    });
+}
+
+/**
+ * 단계를 지우면 어디가 이어지는지 (확인 문구용) 🔑 - 화면이 「③ 와 ⑤ 를 잇습니다」 를 띄운다.
+ * @returns {Promise<{prev:Array, next:Array}>} `{id, title, no}` · prev 의 id 가 null 이면 시작
+ */
+export async function bridgeInfo(id) {
+    const db = (await load());
+    const alive = aliveItems(db);
+    const byId = new Map(alive.map((i) => [i.id, i]));
+    const targets = withDescendants(alive, id);
+    const node = targets.find((t) => flowGroupOf(t, byId));
+    if (!node) return { prev: [], next: [] };
+    const flow = flowFromDb(db, flowGroupOf(node, byId), { includeInactive: true });
+    const { prev, next } = bridgePlan(db, targets);
+    const info = (nid) => (nid
+        ? { id: nid, title: byId.get(nid)?.title ?? '', no: flow.no[nid] ?? null }
+        : { id: null, title: '시작', no: null });
+    return { prev: prev.map((p) => info(p.id)), next: next.map((n) => info(n)) };
+}
+
+/**
+ * 새 프로세스를 흐름에 잇는다 🔑 (등록·견본 공용).
+ * 흐름 순서는 간선이 유일한 출처라 **단계를 만들 때 간선도 함께** 만들어야 사슬이 끊기지 않는다.
+ * `payload.from_id` 를 주면 그 단계 뒤에, `null` 이면 흐름의 시작으로, 주지 않으면 맨 뒤에 붙인다
+ * (종전의 「형제 맨 뒤」 와 같은 자리다).
+ */
+function linkNewStep(db, row, payload, user) {
+    const byId = new Map(aliveItems(db).map((i) => [i.id, i]));
+    const groupId = flowGroupOf(row, byId);
+    if (!groupId) return;                    // 상황 아래 대응 프로세스는 트리로 남는다
+    const flow = flowFromDb(db, groupId, { includeInactive: true });
+    const before = flow.order.filter((x) => x !== row.id);
+    const fromId = payload.from_id === undefined
+        ? (before.at(-1) ?? null)
+        : (payload.from_id || null);
+    if (fromId && !before.includes(fromId)) throw new Error('앞에 둘 단계를 찾을 수 없습니다.');
+    pushEdge(db, { groupId, fromId, toId: row.id, label: payload.edge_label }, user);
+}
+
+/* --------------------------- 프로세스 설명 표 (구분·내용·비고) --------------------------- */
+/*
+ * 단계 하나에 붙는 설명 표. item_id 는 프로세스·업무항목·상황 어느 것이든 된다 (같은 표가 붙는다).
+ * ⚠️ 체크리스트에서 **유일하게 하드 삭제**다 - 체크 기록과 이어지지 않아 되살릴 이유가 없다.
+ */
+
+/** 설명 줄 순서 (sort_order → 등록순) */
+function sortNotes(rows) {
+    return rows.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
+        || String(a.created_at ?? '').localeCompare(String(b.created_at ?? '')));
+}
+
+/** 그 항목의 설명 표 */
+export async function listChecklistNotes(itemId) {
+    return sortNotes((await load()).checklistNotes.filter((n) => n.item_id === itemId));
+}
+
+/** 설명 줄 추가 (맨 뒤) */
+export async function createChecklistNote(itemId, patch = {}, user) {
+    if (!canManageChecklist(user)) throw new Error('설명을 편집할 권한이 없습니다.');
+    const db = (await load());
+    if (!aliveItems(db).some((x) => x.id === itemId)) {
+        throw new Error('설명을 붙일 항목을 찾을 수 없습니다.');
+    }
+    const last = sortNotes(db.checklistNotes.filter((n) => n.item_id === itemId)).at(-1);
+    const row = {
+        id: uid('cn'),
+        item_id: itemId,
+        label: String(patch.label ?? '').trim(),
+        content: String(patch.content ?? '').trim(),
+        remark: String(patch.remark ?? '').trim(),
+        sort_order: (last?.sort_order ?? 0) + 1,
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+    };
+    db.checklistNotes.push(row);
+    await save(db);
+    return row;
+}
+
+/** 설명 줄 수정 (구분·내용·비고만) */
+export async function updateChecklistNote(id, patch = {}, user) {
+    if (!canManageChecklist(user)) throw new Error('설명을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const note = db.checklistNotes.find((n) => n.id === id);
+    if (!note) throw new Error('설명 줄을 찾을 수 없습니다.');
+    ['label', 'content', 'remark'].forEach((k) => {
+        if (patch[k] !== undefined) note[k] = String(patch[k]).trim();
+    });
+    note.updated_at = new Date().toISOString();
+    await save(db);
+    return note;
+}
+
+/** 설명 줄 삭제 - ⚠️ 하드 삭제다 */
+export async function deleteChecklistNote(id, user) {
+    if (!canManageChecklist(user)) throw new Error('설명을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const at = db.checklistNotes.findIndex((n) => n.id === id);
+    if (at < 0) throw new Error('설명 줄을 찾을 수 없습니다.');
+    const [gone] = db.checklistNotes.splice(at, 1);
+    await save(db);
+    return gone;
+}
+
+/** 설명 줄 순서 (드래그 정렬) */
+export async function reorderChecklistNotes(itemId, orderedIds, user) {
+    if (!canManageChecklist(user)) throw new Error('설명을 편집할 권한이 없습니다.');
+    const db = (await load());
+    const rows = sortNotes(db.checklistNotes.filter((n) => n.item_id === itemId));
+    const ids = [...new Set(orderedIds)];
+    if (ids.some((id) => !rows.some((r) => r.id === id))) {
+        throw new Error('같은 항목의 설명끼리만 순서를 바꿀 수 있습니다.');
+    }
+    ids.forEach((id, i) => { rows.find((r) => r.id === id).sort_order = i + 1; });
+    rows.filter((r) => !ids.includes(r.id))
+        .forEach((r, i) => { r.sort_order = ids.length + i + 1; });
+    await save(db);
+}
+
+/** 그 업무항목에서 이미 쓴 `구분` 값 (화면의 자동완성용 · 중복 제거) */
+export async function noteLabels(groupId) {
+    const db = (await load());
+    const ids = new Set(withDescendants(aliveItems(db), groupId).map((i) => i.id));
+    const labels = db.checklistNotes
+        .filter((n) => ids.has(n.item_id) && n.label)
+        .map((n) => n.label);
+    return [...new Set(labels)].sort((a, b) => a.localeCompare(b, 'ko'));
 }
 
 /**
@@ -2973,19 +3500,16 @@ function isStepKind(item) {
 }
 
 /**
- * 형제 프로세스 줄의 번호 🔑 - 채번은 `checkflow.rowNos` 한 곳이고 여기서는 갈래 여부만 알려 준다.
+ * 프로세스 줄의 번호 🔑 - 채번은 `processFlow` 의 층 번호 하나다 (갈래·중첩을 함께 푼다).
+ * 흐름(간선) 밖의 단계 - **상황 아래 대응 프로세스**는 형제 순번으로 매긴다 (종전 규칙).
  * **대상 판정과 무관한 캡션용 값**이라 걸러내기 전 원본 줄로 매긴다 (그 날짜에 안 나오는
  * 단계가 있어도 번호가 흔들리지 않는다).
- * @param {Array} steps 하위 프로세스 (원본 순서)
- * @param {{fork:boolean, no:number|string|null, stepsOf:(id:string)=>Array}} o
+ * 🔑 불변식: 결과 배열의 길이와 순서는 입력과 같다 (걸러내지도, 섞지도 않는다).
+ * @param {Array} steps 프로세스 줄 (원본 순서)
+ * @param {{no:Object<string, number|string>}|null} flow processFlow 결과
  */
-function stepNos(steps, o) {
-    return rowNos(steps, {
-        fork: o.fork,
-        base: forkBase(o.no),
-        // 하위 프로세스가 있는 갈래 부모만 갈래 줄 몫의 슬롯을 더 쓴다
-        isBranch: (c) => isFork(c) && o.stepsOf(c.id).length > 0,
-    });
+function stepNosOf(steps, flow) {
+    return steps.map((c, i) => flow?.no?.[c.id] ?? i + 1);
 }
 
 /**
@@ -2994,7 +3518,8 @@ function stepNos(steps, o) {
  * (따로 적으면 한쪽만 고쳐져 같은 항목이 탭마다 다르게 보인다).
  * @param {string} date YYYY-MM-DD
  * @param {{assignee?:string}} f
- * @returns {Promise<{day, byId, kids, checks, checkOf, childrenOf, passes}>}
+ * 프로세스 번호(`flowFor`)도 여기서 내준다 - 두 탭이 같은 번호를 봐야 한다.
+ * @returns {Promise<{day, byId, kids, checks, checkOf, childrenOf, passes, flowFor}>}
  */
 async function checklistContext(date, f = {}) {
     const db = (await load());
@@ -3019,7 +3544,13 @@ async function checklistContext(date, f = {}) {
         if (!eff.id && !eff.subs.length) return true;
         return eff.id === f.assignee || eff.subs.some((s) => s.id === f.assignee);
     };
-    return { day, byId, kids, checks, checkOf, childrenOf, passes };
+    /** 업무항목의 흐름 (번호 채번) - 같은 조회 안에서는 한 번만 계산한다 */
+    const flows = new Map();
+    const flowFor = (groupId) => {
+        if (!flows.has(groupId)) flows.set(groupId, flowFromDb(db, groupId));
+        return flows.get(groupId);
+    };
+    return { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor };
 }
 
 /** 업무구분 → 업무항목 짝. 업무구분 없는 옛 업무항목은 「미분류」 로 뒤에 붙인다 */
@@ -3075,12 +3606,8 @@ async function lateIdSet(date, f = {}) {
  *   Row          = 항목 + { path, check, assignee_eff_id, assignee_eff_name, process_id }
  */
 export async function dailyFlow(date, f = {}) {
-    const { day, byId, kids, checks, checkOf, childrenOf, passes } = await checklistContext(
-        date, f,
-    );
-
-    /** 그 노드의 하위 프로세스 (번호 채번이 갈래 부모를 가릴 때 본다) */
-    const stepsOf = (id) => (kids.get(id) ?? []).filter(isStepKind);
+    const { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor } =
+        await checklistContext(date, f);
 
     /** 체크 대상 한 줄 */
     const rowOf = (item, processId) => {
@@ -3097,7 +3624,7 @@ export async function dailyFlow(date, f = {}) {
     };
 
     /** 프로세스 한 단계 (하위 프로세스·상황·체크항목을 재귀로 모은다) */
-    const buildProcess = (item, no) => {
+    const buildProcess = (item, no, flow) => {
         const children = kids.get(item.id) ?? [];
         const vm = {
             item, no, rows: [], subs: [], situations: [], self: null, done: 0, total: 0,
@@ -3108,18 +3635,17 @@ export async function dailyFlow(date, f = {}) {
         if (leaf && item.daily && isDueOn(item, day) && passes(item)) {
             vm.self = rowOf(item, item.parent_id);
         }
-        // 갈래(fork) 부모의 하위 프로세스는 `4.1` `4.2` 로 - 다음 단계가 유형별로 쪼개진 것이다
-        const fork = isFork(item);
-        const nos = stepNos(children.filter(isStepKind), { fork, no, stepsOf });
+        // 번호는 흐름(간선)의 층에서 온다 - 갈래·중첩을 함께 푼다 (stepNosOf)
+        const nos = stepNosOf(children.filter(isStepKind), flow);
         let at = 0;
         children.forEach((c) => {
             if (c.kind === CHECK_KIND.CHECK) {
                 if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.id));
             } else if (c.kind === CHECK_KIND.SITUATION) {
-                const s = buildSituation(c);
+                const s = buildSituation(c, flow);
                 if (s) vm.situations.push(s);
             } else {
-                const p = buildProcess(c, nos[at]);
+                const p = buildProcess(c, nos[at], flow);
                 at += 1;
                 if (p) vm.subs.push(p);
             }
@@ -3134,7 +3660,7 @@ export async function dailyFlow(date, f = {}) {
     };
 
     /** 상황 - 발생 처리(그 날짜의 체크 기록)된 경우에만 하위가 집계에 든다 */
-    const buildSituation = (item) => {
+    const buildSituation = (item, flow) => {
         const active = checkOf(item.id);
         const eff = effectiveAssignee(item, byId);
         const vm = {
@@ -3147,15 +3673,14 @@ export async function dailyFlow(date, f = {}) {
             total: 0,
         };
         const children = kids.get(item.id) ?? [];
-        // 상황에는 번호가 없다 - 대응 단계는 ①②③ 부터, 갈래면 `1.1` `1.2` 다
-        const nos = stepNos(children.filter((c) => c.kind === CHECK_KIND.PROCESS),
-            { fork: isFork(item), no: null, stepsOf });
+        // 상황에는 번호가 없다 - 대응 단계는 ①②③ 부터 (간선에 넣지 않으므로 형제 순번이다)
+        const nos = stepNosOf(children.filter((c) => c.kind === CHECK_KIND.PROCESS), null);
         let at = 0;
         children.forEach((c) => {
             if (c.kind === CHECK_KIND.CHECK) {
                 if (c.daily && isDueOn(c, day) && passes(c)) vm.rows.push(rowOf(c, item.parent_id));
             } else if (c.kind === CHECK_KIND.PROCESS) {
-                const p = buildProcess(c, nos[at]);
+                const p = buildProcess(c, nos[at], flow);
                 at += 1;
                 if (p) vm.subs.push(p);
             }
@@ -3176,15 +3701,14 @@ export async function dailyFlow(date, f = {}) {
         const roots = kids.get(g.id) ?? [];
         const processes = [];
         const loose = [];      // 업무항목에 바로 둔 체크항목 (흐름 없는 단독 업무)
-        const forkGroup = isFork(g);
-        const nos = stepNos(roots.filter((r) => r.kind === CHECK_KIND.PROCESS),
-            { fork: forkGroup, no: null, stepsOf });
+        const flow = flowFor(g.id);
+        const nos = stepNosOf(roots.filter((r) => r.kind === CHECK_KIND.PROCESS), flow);
         let at = 0;
         roots.forEach((r) => {
             if (r.kind === CHECK_KIND.CHECK) {
                 if (r.daily && isDueOn(r, day) && passes(r)) loose.push(rowOf(r, null));
             } else if (r.kind === CHECK_KIND.PROCESS) {
-                const p = buildProcess(r, nos[at]);
+                const p = buildProcess(r, nos[at], flow);
                 at += 1;
                 if (p) processes.push(p);
             }
@@ -3290,12 +3814,9 @@ export async function checklistTable(date, f = {}) {
  * 주기·상황 발생과 무관하게 목록에 올리되, 그 날짜의 체크 대상만 `due: true` 로 표시한다.
  */
 async function catalogTable(date, f = {}) {
-    const { day, byId, kids, checks, checkOf, childrenOf, passes } = await checklistContext(
-        date, f,
-    );
+    const { day, byId, kids, checks, checkOf, childrenOf, passes, flowFor } =
+        await checklistContext(date, f);
     const late = await lateIdSet(day, f);
-    /** 그 노드의 하위 프로세스 (번호 채번이 갈래 부모를 가릴 때 본다) */
-    const stepsOf = (id) => childrenOf(id, CHECK_KIND.PROCESS);
 
     const rowOf = (item) => {
         const eff = effectiveAssignee(item, byId);
@@ -3315,7 +3836,7 @@ async function catalogTable(date, f = {}) {
     };
 
     /** 프로세스 한 단계를 구간(section)으로 편다 (하위 프로세스·상황까지 재귀) */
-    const walk = (item, no, parentPath, sit, out) => {
+    const walk = (item, no, parentPath, sit, out, flow) => {
         const here = [...parentPath, { title: item.title, no, sit: false }];
         const children = kids.get(item.id) ?? [];
         const rows = [];
@@ -3329,26 +3850,28 @@ async function catalogTable(date, f = {}) {
         if (rows.length) out.push({ key: item.id, path: here, sit, rows, situations: [] });
 
         const steps = childrenOf(item.id, CHECK_KIND.PROCESS);
-        const nos = stepNos(steps, { fork: isFork(item), no, stepsOf });
-        steps.forEach((c, i) => walk(c, nos[i], here, sit, out));
+        const nos = stepNosOf(steps, flow);
+        steps.forEach((c, i) => walk(c, nos[i], here, sit, out, flow));
         childrenOf(item.id, CHECK_KIND.SITUATION).forEach((s) => {
             const sPath = [...here, { title: s.title, no: null, sit: true }];
             const sRows = childrenOf(s.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
             if (sRows.length) {
                 out.push({ key: s.id, path: sPath, sit: s, rows: sRows, situations: [] });
             }
+            // 상황 아래 대응 프로세스는 간선에 넣지 않는다 - 형제 순번으로 매긴다
             const sSteps = childrenOf(s.id, CHECK_KIND.PROCESS);
-            const sNos = stepNos(sSteps, { fork: isFork(s), no: null, stepsOf });
-            sSteps.forEach((sp, i) => walk(sp, sNos[i], sPath, s, out));
+            const sNos = stepNosOf(sSteps, null);
+            sSteps.forEach((sp, i) => walk(sp, sNos[i], sPath, s, out, flow));
         });
     };
 
     // 업무구분 → 업무항목 짝 (dailyFlow 와 같은 순서)
     const groups = divisionPairs(childrenOf).map(([division, g]) => {
         const sections = [];
+        const flow = flowFor(g.id);
         const steps = childrenOf(g.id, CHECK_KIND.PROCESS);
-        const nos = stepNos(steps, { fork: isFork(g), no: null, stepsOf });
-        steps.forEach((p, i) => walk(p, nos[i], [], null, sections));
+        const nos = stepNosOf(steps, flow);
+        steps.forEach((p, i) => walk(p, nos[i], [], null, sections, flow));
         const loose = childrenOf(g.id, CHECK_KIND.CHECK).filter(passes).map(rowOf);
         if (loose.length) {
             sections.push({

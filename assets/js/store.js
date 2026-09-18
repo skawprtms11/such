@@ -119,6 +119,24 @@ const TABLES = [
             'checked_by', 'checked_by_name', 'checked_at',
         ],
     },
+    // 업무 흐름 간선 - 프로세스 순서의 유일한 출처 (from_id 가 null 이면 흐름의 시작)
+    {
+        key: 'checklistEdges',
+        name: 'checklist_edges',
+        cols: [
+            'id', 'group_id', 'from_id', 'to_id', 'label', 'sort_order',
+            'created_by', 'created_by_name', 'created_at',
+        ],
+    },
+    // 프로세스 설명 표 (구분·내용·비고) - 체크리스트에서 유일하게 하드 삭제한다
+    {
+        key: 'checklistNotes',
+        name: 'checklist_notes',
+        cols: [
+            'id', 'item_id', 'label', 'content', 'remark', 'sort_order',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+        ],
+    },
 ];
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
@@ -165,6 +183,7 @@ function mockLoad() {
     const empty = {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
         notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
+        checklistEdges: [], checklistNotes: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;

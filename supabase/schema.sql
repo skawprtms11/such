@@ -489,6 +489,128 @@ create table if not exists public.checklist_checks (
 
 create index if not exists checklist_checks_date_idx on public.checklist_checks (check_date);
 
+-- ─────────────────── 업무 흐름 간선 (checklist_edges) 🔑 ───────────────────
+-- 소유(parent_id)와 흐름(간선)을 나눈다. parent_id·sort_order 는 **소유**만 맡고
+-- (업무항목 소속 · 담당자 상속 · 삭제 전파 · RLS), **흐름 순서는 이 표가 유일한 출처**다.
+-- 그래서 담당자 상속(checklist_effective_assignee)·체크 권한(checklist_can_check)·
+-- 일일 판정(db.js dailyFlow)은 이 표를 보지 않는다 - 바뀌는 것은 프로세스 번호뿐이다.
+--
+--   from_id is null   흐름의 시작(entry)
+--   group_id          흐름 한 벌의 경계 = 업무항목(group) 1개. 다른 업무항목과는 잇지 않는다
+--   label             조건 라벨 (「국내」 「수량 오류 시」)
+--   sort_order        같은 from 의 갈래 좌→우 순서
+--
+-- 순환(cycle)·자기참조·중복·다른 업무항목 간선은 db.addProcessEdge() 가 넣을 때 막는다.
+-- 단계(프로세스)를 지우면 db.deleteChecklistItem() 이 앞뒤 간선을 데카르트곱으로 이어
+-- 흐름이 끊기지 않게 한다. 항목은 soft delete 지만 간선은 실제로 지운다.
+
+create table if not exists public.checklist_edges (
+    id              text        primary key,
+    group_id        text        not null
+                                references public.checklist_items (id) on delete cascade,
+    from_id         text        references public.checklist_items (id) on delete cascade,
+    to_id           text        not null
+                                references public.checklist_items (id) on delete cascade,
+    label           text        not null default '',
+    sort_order      integer     not null default 0,
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    unique (from_id, to_id)
+);
+
+comment on table public.checklist_edges is '업무 흐름 간선(DAG). 업무항목 안의 프로세스 순서는 이 표가 유일한 출처. 편집은 manageChecklist 권한';
+
+-- 시작 간선(from_id is null)은 unique (from_id, to_id) 로는 막히지 않는다
+-- (Postgres 는 unique 에서 null 을 서로 다른 값으로 본다) - 부분 인덱스로 한 번 더 막는다
+create unique index if not exists checklist_edges_entry_uniq
+    on public.checklist_edges (to_id) where from_id is null;
+create index if not exists checklist_edges_group_idx on public.checklist_edges (group_id, sort_order);
+create index if not exists checklist_edges_from_idx  on public.checklist_edges (from_id);
+create index if not exists checklist_edges_to_idx    on public.checklist_edges (to_id);
+
+-- ══════════ 기존 구축분 1회 실행 - sort_order 사슬을 간선으로 옮긴다 ══════════
+-- 🔑 parent_id · sort_order 는 **건드리지 않는다.** 되돌리려면 간선 테이블을 비우면 된다
+-- (화면이 간선을 무시하면 종전 sort_order 흐름으로 돌아간다).
+--
+-- 업무항목별로 프로세스를 **선위순회(preorder)** 로 한 줄로 편 뒤 이웃끼리 잇는다.
+-- 지금 화면이 그리는 순서와 같다:
+--   평평한 형제 사슬        null→c1, c1→c2, …
+--   중첩(process 밑 process) P→c1, c1→…→cn, cn→(P 의 다음 형제)
+-- 상황(situation) 아래 대응 프로세스는 **넣지 않는다** - 상황은 그날 생긴 일이라
+-- 늘 있는 경로(간선)와 다르고, 지금처럼 트리 + sort_order 사슬로 남는다.
+--
+-- 이미 간선이 있는 업무항목은 건드리지 않아 여러 번 실행해도 안전하다.
+
+with recursive ranked as (
+    select i.id, i.parent_id, i.kind,
+           row_number() over (partition by i.parent_id
+                              order by i.sort_order, i.created_at, i.id) as ord
+      from public.checklist_items i
+     where i.deleted_at is null
+), walk as (
+    -- 업무항목(group) 바로 아래 프로세스가 흐름의 시작이다
+    select r.id, g.id as group_id, array[r.ord] as path
+      from ranked r
+      join public.checklist_items g on g.id = r.parent_id
+     where r.kind = 'process' and g.kind = 'group' and g.deleted_at is null
+    union all
+    -- 프로세스 아래 프로세스만 따라 내려간다 (상황 아래로는 내려가지 않는다)
+    select r.id, w.group_id, w.path || r.ord
+      from walk w
+      join ranked r on r.parent_id = w.id
+     where r.kind = 'process' and array_length(w.path, 1) < 20
+), ordered as (
+    -- 배열 비교가 곧 선위순회 순서다 ([1] < [1,1] < [1,2] < [2])
+    select group_id, id, row_number() over (partition by group_id order by path) as pos
+      from walk
+)
+insert into public.checklist_edges (id, group_id, from_id, to_id, label, sort_order, created_at)
+select 'ce_mig_' || md5(o.group_id || ':' || o.id), o.group_id, p.id, o.id, '', 0, now()
+  from ordered o
+  left join ordered p on p.group_id = o.group_id and p.pos = o.pos - 1
+ where not exists (select 1 from public.checklist_edges e where e.group_id = o.group_id)
+on conflict do nothing;
+
+/*
+ * ⚠️ 다음 커밋(일일체크리스트 줄 수 보정)에서 쓸 대상 목록 - **지금은 실행하지 않는다.**
+ * 중첩 프로세스가 평평해지면 하위가 없는 잎이 되어, daily = true 인 채로 남으면
+ * 일일체크리스트에 「단계 완료」 줄이 새로 늘어난다. 그 후보를 먼저 뽑아 확인한 뒤
+ * id 목록으로 끈다 (일괄 update 로 끄면 원래 잎이던 단계까지 함께 꺼진다).
+ *
+ * select i.id, i.title, i.category,
+ *        (select count(*) from public.checklist_items c
+ *          where c.parent_id = i.id and c.kind = 'process' and c.deleted_at is null) as sub_cnt
+ *   from public.checklist_items i
+ *  where i.kind = 'process' and i.daily and i.deleted_at is null
+ *    and exists (select 1 from public.checklist_items c
+ *                 where c.parent_id = i.id and c.kind = 'process' and c.deleted_at is null)
+ *  order by i.category, i.sort_order;
+ */
+
+-- ─────────────────── 프로세스 설명 표 (checklist_notes) ───────────────────
+-- 프로세스(또는 업무항목·상황) 하나에 붙는 설명 표 - 구분 · 내용 · 비고 세 칸.
+-- ⚠️ **이 표만 하드 삭제다** (체크리스트의 soft delete 관례에서 벗어나는 유일한 곳).
+-- 체크 기록과 이어지지 않아 되살릴 이유가 없고, 지운 설명 줄을 남겨 두면 표가 지저분해진다.
+
+create table if not exists public.checklist_notes (
+    id              text        primary key,
+    item_id         text        not null
+                                references public.checklist_items (id) on delete cascade,
+    label           text        not null default '',          -- 구분
+    content         text        not null default '',          -- 내용
+    remark          text        not null default '',          -- 비고
+    sort_order      integer     not null default 0,
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now(),
+    updated_at      timestamptz
+);
+
+comment on table public.checklist_notes is '프로세스별 설명 표(구분·내용·비고). 하드 삭제. 편집은 manageChecklist 권한';
+
+create index if not exists checklist_notes_item_idx on public.checklist_notes (item_id, sort_order);
+
 -- ═══════════════════════════════ RLS 정책 ═══════════════════════════════
 -- 화면에서도 권한을 판정하지만, 서버에서 한 번 더 막는다.
 -- anon 키는 정적 파일에 그대로 담겨 공개되므로 이 정책이 유일한 방어선이다.
@@ -504,6 +626,8 @@ alter table public.notices          enable row level security;
 alter table public.notice_comments  enable row level security;
 alter table public.checklist_items  enable row level security;
 alter table public.checklist_checks enable row level security;
+alter table public.checklist_edges  enable row level security;
+alter table public.checklist_notes  enable row level security;
 
 -- ── 사용자 ──
 drop policy if exists profiles_select on public.profiles;
@@ -704,6 +828,44 @@ drop policy if exists checklist_checks_delete on public.checklist_checks;
 create policy checklist_checks_delete on public.checklist_checks for delete to authenticated
     using (checked_by = auth.uid() or public.checklist_can_check(item_id));
 
+-- ── 업무 흐름 간선 ── 조회는 로그인 사용자 모두(앱·인쇄가 흐름을 읽는다), 편집은 manageChecklist
+-- 🔑 판정 함수를 새로 만들지 않는다 - 항목 편집 권한과 같은 권한이어야 한다
+drop policy if exists checklist_edges_select on public.checklist_edges;
+create policy checklist_edges_select on public.checklist_edges for select to authenticated
+    using (true);
+
+drop policy if exists checklist_edges_insert on public.checklist_edges;
+create policy checklist_edges_insert on public.checklist_edges for insert to authenticated
+    with check (public.can_manage_checklist() and created_by = auth.uid());
+
+drop policy if exists checklist_edges_update on public.checklist_edges;
+create policy checklist_edges_update on public.checklist_edges for update to authenticated
+    using (public.can_manage_checklist())
+    with check (public.can_manage_checklist());
+
+-- 간선은 soft delete 가 아니다 - 흐름에서 빠진 선을 남겨 두면 층 계산이 틀린다
+drop policy if exists checklist_edges_delete on public.checklist_edges;
+create policy checklist_edges_delete on public.checklist_edges for delete to authenticated
+    using (public.can_manage_checklist());
+
+-- ── 프로세스 설명 표 ── 간선과 같은 권한
+drop policy if exists checklist_notes_select on public.checklist_notes;
+create policy checklist_notes_select on public.checklist_notes for select to authenticated
+    using (true);
+
+drop policy if exists checklist_notes_insert on public.checklist_notes;
+create policy checklist_notes_insert on public.checklist_notes for insert to authenticated
+    with check (public.can_manage_checklist() and created_by = auth.uid());
+
+drop policy if exists checklist_notes_update on public.checklist_notes;
+create policy checklist_notes_update on public.checklist_notes for update to authenticated
+    using (public.can_manage_checklist())
+    with check (public.can_manage_checklist());
+
+drop policy if exists checklist_notes_delete on public.checklist_notes;
+create policy checklist_notes_delete on public.checklist_notes for delete to authenticated
+    using (public.can_manage_checklist());
+
 -- ═══════════════════════════ 감사 이력 · 단계 권한 강화 ═══════════════════════════
 -- (보안 점검 반영: 이력 위변조 차단 · 화주의 단계/완료처리 차단)
 
@@ -786,6 +948,13 @@ alter publication supabase_realtime add table public.notice_comments;
 alter publication supabase_realtime add table public.profiles;
 alter publication supabase_realtime add table public.checklist_items;
 alter publication supabase_realtime add table public.checklist_checks;
+-- 새로 더한 두 표는 기존 구축분에 이미 올라가 있을 수 있어 재실행에 견디게 감싼다
+do $$ begin
+    alter publication supabase_realtime add table public.checklist_edges;
+exception when duplicate_object then null; end $$;
+do $$ begin
+    alter publication supabase_realtime add table public.checklist_notes;
+exception when duplicate_object then null; end $$;
 
 -- ────────────────── 대표주문번호 묶음은 같은 등록자만 (enforce_rep_owner) ──────────────────
 -- 화주영업팀은 본인 등록건만 보이므로(RLS) 앱의 assertRepOwner() 만으로는 남의 묶음을
