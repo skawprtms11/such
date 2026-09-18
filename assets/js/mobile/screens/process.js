@@ -99,18 +99,6 @@ function kidsOf(rows, id) {
         .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
 }
 
-/** 층별로 묶은 단계 - 층에 둘 이상이면 갈래다 */
-function layersOf(flow) {
-    const out = [];
-    flow.nodes.forEach((n) => {
-        const lv = flow.layer[n.id];
-        const last = out[out.length - 1];
-        if (last && last.lv === lv) last.items.push(n);
-        else out.push({ lv, items: [n] });
-    });
-    return out;
-}
-
 /** 그 단계로 들어오는 간선의 조건 라벨 (갈래 머리에 「· 수출 건일 때」 로 붙는다) */
 function labelOf(flow, id) {
     return flow.edges.filter((e) => e.to_id === id && e.label)
@@ -118,13 +106,16 @@ function labelOf(flow, id) {
 }
 
 /**
- * 갈래가 다시 모이는 단계 🔑 - 갈래 멤버 **모두의 다음 단계**에 들어 있는 첫 단계.
- * 간선으로 표현된 합류를 캡션 한 줄로 읽어 주는 것이라 판정은 `nexts` 만 본다.
+ * 갈래가 다시 모이는 단계 🔑 - **판정은 `db.processFlow` 의 `joinTarget` 뿐이다.**
+ * 예전에는 여기서 갈래의 「즉시 다음 단계」만 교집합해, 「갈래 A 는 3단계 뒤에 합류」 같은
+ * 흐름에서 캡션이 사라졌다. 여기서는 이 층의 갈래를 낸 갈래 지점만 찾는다.
  */
 function joinOf(flow, items) {
-    const lists = items.map((n) => flow.nexts[n.id] ?? []);
-    if (lists.length < 2) return null;
-    return lists[0].find((id) => lists.every((l) => l.includes(id))) ?? null;
+    if (items.length < 2) return null;
+    const ids = items.map((n) => n.id);
+    const fork = Object.keys(flow.joinTarget ?? {})
+        .find((id) => ids.every((to) => (flow.nexts[id] ?? []).includes(to)));
+    return fork ? (flow.joinTarget[fork] ?? null) : null;
 }
 
 /** 단계 캡션 - `⑦ 출고완료` 대신 앱에서는 `7. 출고완료` 꼴 */
@@ -136,7 +127,11 @@ function caption(flow, id) {
 /** 업무항목 한 벌의 흐름 */
 function flowHtml(division, group, flow, rows) {
     if (!flow.nodes.length) return emptyState('아직 프로세스가 없습니다.');
-    const layers = layersOf(flow);
+    // 층 묶음은 db.processFlow 가 준다 (층 내 순서 = 웹 도식의 열 순서)
+    const byId = new Map(flow.nodes.map((n) => [n.id, n]));
+    const layers = flow.layers.map((row, i) => ({
+        lv: i + 1, items: row.map((id) => byId.get(id)).filter(Boolean),
+    }));
     return `
 <div class="m-fc">
   <p class="m-fc__crumb">${esc(division?.title ?? '')} › ${esc(group.title)}

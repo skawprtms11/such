@@ -9,6 +9,7 @@ import {
     LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
+import { flowNos } from './checkflow.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
@@ -3068,18 +3069,56 @@ function reachOf(edges, startId, reverse = false) {
 }
 
 /**
+ * 갈래 지점마다 **모든 갈래가 다시 모이는 첫 단계** 🔑 (없으면 null).
+ * 즉시 다음 단계만 교집합하면 「갈래 A 는 3단계 뒤에 합류」를 놓친다. 그래서 갈래마다
+ * **닿는 단계 전부**를 모아 교집합하고 그중 가장 이른 층을 고른다.
+ * @param {Array} order 흐름 순서의 id (같은 층이면 이 순서로 앞뒤를 가른다)
+ */
+function joinsOf(nodes, layer, nexts, order) {
+    const at = new Map(order.map((id, i) => [id, i]));
+    const out = {};
+    nodes.forEach((n) => {
+        const branches = [...new Set(nexts[n.id] ?? [])];
+        if (branches.length < 2) return;
+        const reach = branches.map((id) => {
+            const seen = new Set([id]);
+            const stack = [id];
+            while (stack.length) {
+                (nexts[stack.pop()] ?? []).forEach((w) => {
+                    if (seen.has(w)) return;
+                    seen.add(w);
+                    stack.push(w);
+                });
+            }
+            return seen;
+        });
+        const common = [...reach[0]].filter((id) => reach.every((s) => s.has(id)))
+            .sort((a, b) => (layer[a] - layer[b]) || (at.get(a) - at.get(b)));
+        out[n.id] = common[0] ?? null;
+    });
+    return out;
+}
+
+/**
  * 흐름의 층·번호 🔑 (순수 함수 · **판정은 이 함수 한 곳**).
  * 캡션·앱·인쇄·도식이 모두 이 결과만 읽는다.
  *
+ * 🔑 **층·층 내 순서·번호는 `checkflow.flowNos` 에 맡긴다.** 여기서 따로 계산하면
+ * (예전에는 들어오는 간선의 `min(sort_order)` 로 층 내 순서를 정했다) 도식이 쓰는
+ * `layoutDag` 의 열 순서(median 정렬)와 어긋나 `5.1` 이 `5.2` 오른쪽에 그려졌다.
+ * `checkflow.js` 는 `steps.js` 와 같은 순수 공용층이라 앱·웹·여기서 모두 쓸 수 있다.
+ *
  *   층      `layer(v) = 1 + max(layer(선행자))` · 시작 노드는 1 (Kahn 위상정렬 · 최장경로)
- *   번호    층에 노드가 하나면 **정수**(캡션이 ①②③ 로 그린다), 둘 이상이면 **`층.k`**
- *           (`4.1` `4.2` · k = 층 안의 좌→우 = 들어오는 간선의 sort_order 순)
+ *   번호    층에 노드가 하나면 정수 문자열(캡션이 ①②③ 로 그린다), 둘 이상이면 **`층.k`**
+ *           (`4.1` `4.2` · k = 층 안의 좌→우 = 도식의 열 순서와 같다)
  *   순환    넣을 때 막지만(addProcessEdge), 남아 있으면 마지막 층으로 격리하고 `cyclic` 로 알린다
  *
  * 번호는 저장하지 않는다 - 간선이 바뀌면 그때그때 다시 계산한다.
- * @returns {{nodes, edges, layer, no, order, nexts, entries, exits, cyclic}}
- *   nodes   흐름 순서(층 → 좌→우)로 놓인 노드
- *   order   같은 순서의 id 배열 · nexts[id] 나가는 간선의 to_id (sort_order 순)
+ * @returns {{nodes, edges, layer, no, order, layers, nexts, preds, joinTarget,
+ *            entries, exits, cyclic}}
+ *   nodes   흐름 순서(층 → 좌→우)로 놓인 노드 · order 같은 순서의 id 배열
+ *   layers  층별 노드 id (도식의 열 순서와 같다) · nexts[id] 나가는 간선의 to_id
+ *   joinTarget[갈래지점] 갈래가 다시 모이는 단계 (웹·앱 캡션이 이것만 읽는다)
  *   entries 들어오는 간선이 없는 노드 · exits 나가는 간선이 없는 노드
  */
 function flowOf(nodes, edges) {
@@ -3088,64 +3127,29 @@ function flowOf(nodes, edges) {
         && (!e.from_id || pos.has(e.from_id)));
     const preds = {};
     const nexts = {};
-    const inSort = {};
     nodes.forEach((n) => { preds[n.id] = []; nexts[n.id] = []; });
     rows.forEach((e) => {
-        inSort[e.to_id] = Math.min(inSort[e.to_id] ?? Infinity, e.sort_order ?? 0);
         if (!e.from_id) return;                     // 시작 간선은 선행자가 아니다
         nexts[e.from_id].push(e.to_id);
         preds[e.to_id].push(e.from_id);
     });
-
-    const layer = {};
-    const indeg = {};
-    const seq = {};
-    nodes.forEach((n) => { layer[n.id] = 1; indeg[n.id] = preds[n.id].length; });
-    const queue = nodes.filter((n) => !indeg[n.id]).map((n) => n.id);
-    for (let at = 0; at < queue.length; at += 1) {
-        const v = queue[at];
-        seq[v] = at;
-        nexts[v].forEach((w) => {
-            layer[w] = Math.max(layer[w], layer[v] + 1);
-            indeg[w] -= 1;
-            if (!indeg[w]) queue.push(w);
-        });
-    }
-    // 순환에 걸려 위상정렬에서 빠진 노드는 마지막 층으로 몰아 둔다 (화면이 통째로 비지 않게)
-    const cyclic = queue.length < nodes.length;
-    if (cyclic) {
-        const last = Math.max(1, ...Object.values(layer)) + 1;
-        nodes.filter((n) => seq[n.id] === undefined).forEach((n) => {
-            layer[n.id] = last;
-            seq[n.id] = queue.length + pos.get(n.id);
-        });
-    }
-
-    const byLayer = new Map();
-    nodes.forEach((n) => {
-        if (!byLayer.has(layer[n.id])) byLayer.set(layer[n.id], []);
-        byLayer.get(layer[n.id]).push(n.id);
-    });
-    const no = {};
-    const order = [];
-    [...byLayer.keys()].sort((a, b) => a - b).forEach((lv) => {
-        const members = byLayer.get(lv).sort((a, b) => (inSort[a] ?? 0) - (inSort[b] ?? 0)
-            || seq[a] - seq[b] || pos.get(a) - pos.get(b));
-        if (members.length === 1) no[members[0]] = lv;
-        else members.forEach((id, k) => { no[id] = `${lv}.${k + 1}`; });
-        order.push(...members);
-    });
+    const flow = flowNos(nodes, rows.map((e) => ({
+        from: e.from_id ?? null, to: e.to_id, sort_order: e.sort_order,
+    })));
     const byId = new Map(nodes.map((n) => [n.id, n]));
     return {
-        nodes: order.map((id) => byId.get(id)),
+        nodes: flow.order.map((id) => byId.get(id)),
         edges: rows,
-        layer,
-        no,
-        order,
+        layer: flow.layer,
+        no: flow.no,
+        order: flow.order,
+        layers: flow.layers,
         nexts,
+        preds,
+        joinTarget: joinsOf(nodes, flow.layer, nexts, flow.order),
         entries: nodes.filter((n) => !preds[n.id].length).map((n) => n.id),
         exits: nodes.filter((n) => !nexts[n.id].length).map((n) => n.id),
-        cyclic,
+        cyclic: flow.cyclic,
     };
 }
 
@@ -3194,8 +3198,10 @@ function pushEdge(db, e, user) {
     // 시작 간선은 to 마다 하나만 둔다 (스키마의 부분 unique 와 같은 규칙)
     const entryDup = !e.fromId && db.checklistEdges.some((x) => !x.from_id && x.to_id === e.toId);
     if (same || entryDup) return null;
+    // 🔑 같은 업무항목 안에서만 센다 - from 이 null(시작 간선)이면 업무항목 전부가 섞인다
     const mine = sortEdges(db.checklistEdges
-        .filter((x) => (x.from_id ?? null) === (e.fromId ?? null)));
+        .filter((x) => (x.from_id ?? null) === (e.fromId ?? null)
+            && (x.group_id ?? null) === (e.groupId ?? null)));
     const row = {
         id: uid('ce'),
         group_id: e.groupId,
@@ -3273,15 +3279,22 @@ export async function setEdgeLabel(edgeId, label, user) {
 
 /**
  * 같은 단계에서 갈라진 갈래의 좌→우 순서를 한 번에 정한다.
- * @param {string|null} fromId 출발 단계 (null 이면 흐름의 시작들)
+ * 🔑 **반드시 업무항목(`group_id`) 안으로 좁힌다.** `from_id` 만 보면 시작 간선(null)이
+ * 모든 업무항목에 걸쳐 있어, 한 업무항목의 갈래 순서를 바꾸면 **남의 업무항목 시작 순서까지**
+ * 다시 쓰였다 (데이터 오염).
+ * @param {string|null} fromId 출발 단계 (null 이면 그 업무항목 흐름의 시작들)
  * @param {string[]} orderedToIds 새 순서의 도착 단계 id
  */
 export async function reorderEdges(fromId, orderedToIds, user) {
     if (!canManageChecklist(user)) throw new Error('업무 흐름을 편집할 권한이 없습니다.');
     const db = (await load());
-    const rows = sortEdges(db.checklistEdges
-        .filter((e) => (e.from_id ?? null) === (fromId || null)));
     const ids = [...new Set(orderedToIds)];
+    if (!ids.length) throw new Error('순서를 바꿀 연결이 없습니다.');
+    const byId = new Map(aliveItems(db).map((i) => [i.id, i]));
+    const groupOf = (e) => e.group_id ?? flowGroupOf(byId.get(e.to_id), byId) ?? null;
+    const scope = flowGroupOf(byId.get(ids[0]), byId) ?? null;
+    const rows = sortEdges(db.checklistEdges
+        .filter((e) => (e.from_id ?? null) === (fromId || null) && groupOf(e) === scope));
     if (ids.some((id) => !rows.some((r) => r.to_id === id))) {
         throw new Error('같은 단계에서 갈라진 연결끼리만 순서를 바꿀 수 있습니다.');
     }
@@ -3315,7 +3328,12 @@ function bridgePlan(db, targets) {
 
 /**
  * 지운 단계의 앞뒤를 잇는다 🔑 - `{a→x}` `{x→b}` 를 지우고 **데카르트곱 `a→b`** 를 만든다.
- * 라벨은 `a→x` 의 것을 물려받고, 중복은 만들지 않는다 (스키마의 unique 와 같은 규칙).
+ * 중복은 만들지 않는다 (스키마의 unique 와 같은 규칙).
+ *
+ * 🔑 **`sort_order` 는 곱마다 다르게** 준다 - 같은 값을 넣으면 갈래의 좌우가 저장 순서에
+ * 따라 흔들려, 지우기 전후로 도식이 뒤바뀐 적이 있다.
+ * 🔑 **조건 라벨은 next 가 하나일 때만 물려받는다** - 「국내」 갈래를 지웠다고 여러 갈래에
+ * 모두 「국내」를 붙이면 뜻이 틀린다.
  */
 function bridgeEdges(db, targets, byId, user) {
     const { tset, prev, next } = bridgePlan(db, targets);
@@ -3323,13 +3341,13 @@ function bridgeEdges(db, targets, byId, user) {
         .filter((e) => !tset.has(e.to_id) && !tset.has(e.from_id ?? ''));
     if (!prev.length || !next.length) return;
     prev.forEach((p) => {
-        next.forEach((toId) => {
+        next.forEach((toId, i) => {
             pushEdge(db, {
                 groupId: flowGroupOf(byId.get(toId), byId),
                 fromId: p.id,
                 toId,
-                label: p.label,
-                sortOrder: p.sort,
+                label: next.length === 1 ? p.label : '',
+                sortOrder: p.sort + i,
             }, user);
         });
     });

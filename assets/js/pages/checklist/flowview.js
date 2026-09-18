@@ -339,15 +339,18 @@ export function layoutCanvas(host, gvm, o = {}) {
 
     const labels = stage.querySelector('.pm-labels');
     const raw = new Map(gvm.edges.map((e) => [e.id, e]));
+    // 🔑 칩의 자리·크기는 layoutDag 가 정한다 (겹침을 좌표 계산에서 막는다 - P13)
     labels.innerHTML = out.edges.filter((e) => e.label).map((e) => {
         const dot = !raw.get(e.id)?.label;
-        const style = `left:${e.label.x}px; top:${e.label.y}px`;
+        const style = `left:${e.label.x}px; top:${e.label.y}px; `
+            + `width:${e.label.w}px; height:${e.label.h}px`;
         if (!o.edit) {
             return `<span class="pm-elabel" style="${style}">${esc(e.label.text)}</span>`;
         }
         return `<button class="pm-elabel ${dot ? 'is-dot' : ''}" type="button"
             data-edge="${esc(e.id)}" style="${style}"
-            title="조건 라벨 · 갈래 순서 · 연결 끊기">${esc(e.label.text)}</button>`;
+            title="${esc(e.label.text)} · 조건 라벨 · 갈래 순서 · 연결 끊기"
+            >${esc(e.label.text)}</button>`;
     }).join('');
     stage.classList.remove('is-measuring');
 }

@@ -31,6 +31,20 @@ export const DAG_SIZE = {
     lane: 240, laneMin: 200, laneMax: 260, gapX: 40, gapY: 56, pad: 10,
 };
 
+/**
+ * 조건 라벨 칩의 치수 🔑 - **겹침을 계산으로 막으려면 폭을 알아야 한다.**
+ * 글꼴 폭을 재지 않고 글자 수로 어림하고, 화면(flowview)이 이 폭을 칩에 그대로 입혀
+ * (`width` · 넘치면 말줄임) 계산과 실제 칩이 어긋나지 않게 한다.
+ *   char 글자 하나의 폭 · padX 좌우 여백+테두리 · h 높이 · gap 칩 사이 최소 간격
+ */
+export const LABEL_SIZE = { char: 7, padX: 18, h: 18, gap: 6, max: 160 };
+
+/** 라벨 칩의 폭 (글자 수로 어림 · 최대폭에서 잘린다) */
+function labelW(text) {
+    const n = String(text ?? '').length;
+    return Math.min(LABEL_SIZE.max, LABEL_SIZE.padX + LABEL_SIZE.char * Math.max(n, 1));
+}
+
 /** 좌표를 정수로 맞춘다 (SVG 경로 문자열이 길어지지 않게) */
 function r(n) {
     return Math.round(n);
@@ -83,6 +97,14 @@ function arrange(nodes, edges) {
     const ids = new Set(list.map((n) => n.id));
     const rows = (edges ?? []).filter((e) => e && e.from != null
         && ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
+    /* 시작 간선(from null)은 선행자가 아니라 **진입 노드의 순서**다 - 버리면 갈래 순서를
+       바꿔도 1층이 그대로라 사용자가 정한 순서가 사라진다 (db.reorderEdges(null, ...)) */
+    const startSort = new Map();
+    (edges ?? []).forEach((e) => {
+        if (!e || e.from != null || !ids.has(e.to)) return;
+        const so = Number(e.sort_order ?? 0) || 0;
+        startSort.set(e.to, Math.min(startSort.get(e.to) ?? Infinity, so));
+    });
     const pred = new Map(list.map((n) => [n.id, []]));
     const succ = new Map(list.map((n) => [n.id, []]));
     rows.forEach((e) => {
@@ -127,7 +149,9 @@ function arrange(nodes, edges) {
         add(layer.get(id), { key: id, node: id });
         succ.get(id).forEach((e) => walk(e.to));
     };
-    list.filter((n) => !pred.get(n.id).length).forEach((n) => walk(n.id));
+    [...list.filter((n) => !pred.get(n.id).length)]
+        .sort((a, b) => (startSort.get(a.id) ?? 0) - (startSort.get(b.id) ?? 0))
+        .forEach((n) => walk(n.id));
     list.forEach((n) => walk(n.id));          // 순환·미도달 노드도 자리를 받는다
 
     const ri = new Map(rows.map((e, i) => [e, i]));
@@ -221,6 +245,22 @@ function arrange(nodes, edges) {
 }
 
 /**
+ * 마지막 `arrange` 결과 한 벌 🔑 - `dagCols`(폭 계산)와 `layoutDag`(좌표)가 **같은 배열**로
+ * 연달아 불리므로(flowview.layoutCanvas) 같은 계산을 두 번 하지 않는다.
+ * 배열 **레퍼런스**가 같을 때만 재사용한다 - 순수 함수라 같은 입력이면 같은 결과다.
+ * (카드 높이는 `arrange` 가 보지 않는다. `layoutDag` 가 그때그때 노드에서 읽으므로
+ *  1-pass 로 높이를 채워 넣어도 캐시가 틀리지 않는다)
+ */
+let memo = { nodes: null, edges: null, out: null };
+
+function arranged(nodes, edges) {
+    if (memo.nodes === nodes && memo.edges === edges) return memo.out;
+    const out = arrange(nodes, edges);
+    memo = { nodes, edges, out };
+    return out;
+}
+
+/**
  * 층·번호 🔑 (순수 함수 · 웹·앱 공용 · 측정값이 필요 없다).
  *
  * 층에 노드가 **1개면 정수**(`'3'`), **2개 이상이면 `층.k`**(`'4.1'` - k 는 층 내 좌→우 순서)다.
@@ -233,7 +273,7 @@ function arrange(nodes, edges) {
  *   order - 읽는 순서(층 → 층 내 좌→우) · layers - 층별 노드 id
  */
 export function flowNos(nodes, edges) {
-    const a = arrange(nodes, edges);
+    const a = arranged(nodes, edges);
     const layer = {};
     const no = {};
     a.layers.forEach((row, i) => row.forEach((id, k) => {
@@ -248,7 +288,7 @@ export function flowNos(nodes, edges) {
  * 측정값이 필요 없으므로 카드 높이를 재기 **전에** 불러 레인 폭(`laneWidth`)을 정한다.
  */
 export function dagCols(nodes, edges) {
-    const a = arrange(nodes, edges);
+    const a = arranged(nodes, edges);
     return Math.max(1, ...a.rowsAt.map((items) => items.length));
 }
 
@@ -279,11 +319,34 @@ function pathOf(pts) {
     return out.join(' ');
 }
 
-/** 조건 라벨 자리 - **첫 세로 구간의 중간점** (출발 카드 바로 아래라 어느 갈래인지 읽힌다) */
-function labelAt(pts, text) {
-    const turn = pts.find((p, i) => i > 0 && p[1] !== pts[0][1]);
-    if (!turn) return null;
-    return { x: pts[0][0], y: r((pts[0][1] + turn[1]) / 2), text };
+/**
+ * 조건 라벨 자리 🔑 - **갈래마다 다른 자리**여야 한다.
+ * 예전에는 「출발 카드 중심 x · 틈 가운데 y」라, 같은 from 에서 나가는 간선은 라벨이 모두
+ * 같은 점에 겹쳐 뒤의 칩을 누를 수 없었다 (조건 라벨·갈래 순서·연결 끊기를 못 열었다).
+ *
+ * 그래서 **그 갈래가 내려가는 열**(버스에서 내려오는 세로 구간)의 x 를 원하는 자리로 잡고,
+ * 같은 틈에서 자리가 겹치는 칩은 **오른쪽으로 밀어** 겹침을 없앤다.
+ * 다른 틈끼리는 카드 띠(최소 24px)가 사이에 있어 칩 높이(18px)로는 닿지 않는다.
+ * @param {Array} wants `{gap, cx, text, put}` - gap 은 틈 번호(= 출발 카드의 층)
+ */
+function placeLabels(wants, gapMid) {
+    const byGap = new Map();
+    wants.forEach((w) => {
+        if (!byGap.has(w.gap)) byGap.set(w.gap, []);
+        byGap.get(w.gap).push(w);
+    });
+    byGap.forEach((list, L) => {
+        const cy = gapMid(L);
+        let edge = -Infinity;
+        [...list].sort((a, b) => (a.cx - b.cx) || (a.i - b.i)).forEach((w) => {
+            const w0 = labelW(w.text);
+            const x = Math.max(w.cx - w0 / 2, edge);
+            edge = x + w0 + LABEL_SIZE.gap;
+            w.put({
+                x: r(x), y: r(cy - LABEL_SIZE.h / 2), w: w0, h: LABEL_SIZE.h, text: w.text,
+            });
+        });
+    });
 }
 
 /**
@@ -310,7 +373,7 @@ export function layoutDag(nodes, edges, opts = {}) {
     const gapX = Number(opts.gapX ?? DAG_SIZE.gapX) || 0;
     // 틈이 0 이면 버스와 라벨이 카드 경계에 붙어 읽을 수 없다
     const gapY = Math.max(Number(opts.gapY ?? DAG_SIZE.gapY) || 0, 8);
-    const a = arrange(nodes, edges);
+    const a = arranged(nodes, edges);
     const hOf = new Map(a.list.map((n) => [n.id, Math.max(Number(n.height) || 0, 24)]));
     const pitch = lane + gapX;
     const cx = (key) => r(a.col.get(key) * pitch + lane / 2);
@@ -329,6 +392,7 @@ export function layoutDag(nodes, edges, opts = {}) {
     }));
 
     let lineX = 0;
+    const wants = [];
     const out = a.rows.map((e) => {
         if (a.span(e) < 1) return null;          // 순환 격리로 뒤로 가는 간선은 그리지 않는다
         const from = boxes[e.from];
@@ -343,18 +407,32 @@ export function layoutDag(nodes, edges, opts = {}) {
         pts.push([last(), to.y]);
         const trim = simplify(pts);
         lineX = trim.reduce((m, p) => Math.max(m, p[0]), lineX);
-        return {
+        const L0 = a.layer.get(e.from);
+        const row = {
             id: e.id,
             from: e.from,
             to: e.to,
             path: pathOf(trim),
             head: `M${cx(e.to)} ${to.y} l-5 -8 h10 z`,
-            label: e.label ? labelAt(trim, String(e.label)) : null,
+            label: null,
         };
+        if (e.label) {
+            wants.push({
+                gap: L0,
+                cx: cx(L0 + 1 === a.layer.get(e.to) ? e.to : a.dkey(e, L0 + 1)),
+                text: String(e.label),
+                i: wants.length,
+                put: (box) => { row.label = box; },
+            });
+        }
+        return row;
     }).filter(Boolean);
+    placeLabels(wants, gapMid);
 
     const right = Object.values(boxes).reduce((m, b) => Math.max(m, b.x + b.w), 0);
-    const width = r(Math.max(right, out.length ? lineX + lane / 2 : 0)) + DAG_SIZE.pad;
+    // 라벨 칩은 오른쪽으로 밀릴 수 있어 폭에 함께 넣는다 (밀린 칩이 잘리지 않게)
+    const labelX = out.reduce((m, e) => Math.max(m, e.label ? e.label.x + e.label.w : 0), 0);
+    const width = r(Math.max(right, labelX, out.length ? lineX + lane / 2 : 0)) + DAG_SIZE.pad;
     const height = Object.values(boxes).reduce((m, b) => Math.max(m, b.y + b.h), 0) + DAG_SIZE.pad;
     return { boxes, edges: out, width, height, layers: a.layers, cols, dummies: a.dummies };
 }

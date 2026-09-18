@@ -330,6 +330,15 @@ db.js   effectiveAssignee(item)   →  rows 의 assignee_eff_id / assignee_eff_n
 - **선만 SVG 다.** 카드는 HTML 이라 접힘·✎ 모달·상황 블록이 그대로 살아 있다
 - 라벨 칩은 SVG 가 아니라 **HTML**(`.pm-labels`)이다 — 같은 좌표계에 얹어 클릭·팝오버를 붙인다.
   배치할 때마다 다시 만들어지므로 클릭은 `.pm-canvas` 에 **위임**해 받는다
+- 🔑 **라벨 칩의 자리·크기는 `layoutDag` 가 정한다** (`left·top·width·height` 를 인라인으로
+  준다 · 폭은 `LABEL_SIZE` 로 글자 수에서 어림하고 넘치면 말줄임). 자리는 **그 갈래가
+  내려가는 열의 x**(버스에서 내려오는 세로 구간)이고, 같은 틈에서 겹치는 칩은 **오른쪽으로
+  밀어** 겹침을 없앤다 (P13).
+  ⚠️ 예전에는 「출발 카드 중심 x · 틈 가운데 y」라 **같은 `from` 에서 나가는 갈래의 칩이 모두
+  한 점에 겹쳐**, 가려진 간선은 조건 라벨·갈래 순서·연결 끊기를 열 수 없었다.
+  CSS 로 자리를 옮기면 이 계산이 무의미해지므로 CSS 는 모양만 준다
+- 🔑 **`arrange`(층·열 계산)는 같은 배열로 연달아 부르면 한 번만 돈다** — `dagCols`(폭)와
+  `layoutDag`(좌표)가 한 배치에서 함께 불리므로 결과 한 벌을 재사용한다 (레퍼런스가 같을 때만)
 - ⚠️ **선에 반투명을 쓰지 않는다.** 같은 `to` 로 들어오는 합류 버스는 좌표가 완전히 겹쳐
   그려지므로, 반투명이면 겹친 자리만 진해져 「굵은 선」 으로 오해한다
 - **다시 배치하는 때** — 창 리사이즈(디바운스 1회) · 우측 구역 **드래그 종료 시 1회**(끄는 동안
@@ -361,11 +370,18 @@ db.js   effectiveAssignee(item)   →  rows 의 assignee_eff_id / assignee_eff_n
 | **P9** | 화살촉이 도착점에 있고 모양·방향이 규격대로다 |
 | **P10** | **어느 카드에서 어느 카드로** 이어지는지가 `edges` 와 맞는다 |
 | **P11** | 교차 수가 **기준선보다 나빠지지 않는다** (중위·최대·**합계** 셋을 함께 본다) |
+| **P12** | **`flowNos` 의 층 내 순서 = `layoutDag` 의 열 순서** — 번호와 열이 한 벌이다 |
+| **P13** | 조건 라벨 칩끼리 **사각형이 겹치지 않는다** (겹치면 뒤의 칩을 누를 수 없다) |
 
 - 🔑 **개수(P7)만 세면 연결 상대가 틀려도, 끝이 카드에서 떨어져도 0건이 나온다.**
   지난 결함 두 건이 정확히 그것이었다 (`docs/AGENT_LEARNING_LOG.md`)
 - 🔑 **검사기를 믿기 전에 변이로 검사기를 검증한다** (더미 열 예약 제거 · 화살촉 규격 깨기 ·
-  오배선 → 해당 항목만 올라오는지)
+  오배선 · 라벨 자리를 옛 식으로 되돌림 → 해당 항목만 올라오는지)
+- 🔑 **커버리지 카운터를 함께 읽는다** — 긴 간선·3폭 이상 층·합류·갈래·라벨이 몇 건 나왔는지
+  찍는다. 0건이면 「깨끗해서 0」이 아니라 「검사 거리가 없어서 0」이다
+- 🔑 **P11 기준선 키는 `건수:시드:g생성기해시`** 다. 랜덤 생성기 설정(`GEN`)을 고치면 교차 수
+  분포가 달라져 옛 기준선과 비교할 수 없다. `sum` 이 없는 낡은 기준선·기준선 없음은 **실패**이고,
+  다시 기록할 때는 사유를 남긴다 (`npm run check:flow -- --baseline --reason=사유`)
 
 ---
 
@@ -448,10 +464,10 @@ db.js   effectiveAssignee(item)   →  rows 의 assignee_eff_id / assignee_eff_n
 
 | 함수 | 설명 |
 |---|---|
-| `processFlow(groupId, {includeInactive})` | 업무항목 한 벌의 흐름 — `{nodes, edges, layer, no, order, nexts, entries, exits, cyclic}`. **캡션·도식·앱·인쇄가 모두 이것만 읽는다.** 비활성을 뺄 때는 간선을 이어 준다(끊으면 뒷 단계가 1층으로 튄다) |
+| `processFlow(groupId, {includeInactive})` | 업무항목 한 벌의 흐름 — `{nodes, edges, layer, no, order, layers, nexts, preds, joinTarget, entries, exits, cyclic}`. **캡션·도식·앱·인쇄가 모두 이것만 읽는다.** 층·층 내 순서·번호는 `checkflow.flowNos` 에 맡긴다 (유일 출처). `layers` 층별 id · `joinTarget[갈래지점]` 모든 갈래의 **첫 공통 후속**(없으면 null · 「3단계 뒤 합류」도 잡는다). 비활성을 뺄 때는 간선을 이어 준다(끊으면 뒷 단계가 1층으로 튄다) |
 | `addProcessEdge(fromId, toId, {label, sortOrder}, user)` | 단계를 잇는다 (`fromId` 가 null 이면 흐름의 시작). **순환·자기참조·중복·다른 업무항목을 거부** |
 | `removeProcessEdge(edgeId, user)` · `setEdgeLabel(edgeId, label, user)` | 연결 끊기 · 조건 라벨 |
-| `reorderEdges(fromId, orderedToIds, user)` | 같은 `from` 에서 갈라진 갈래의 좌→우 순서 |
+| `reorderEdges(fromId, orderedToIds, user)` | 같은 `from` 에서 갈라진 갈래의 좌→우 순서. 🔑 **반드시 업무항목(`group_id`) 안으로 좁힌다** — `fromId` 가 null(흐름의 시작)이면 `from_id` 만 보면 **모든 업무항목의 시작 간선**이 대상이 되어 남의 업무항목 순서까지 다시 쓴다 (`pushEdge` 의 `sort_order` 채번도 같다) |
 | `reachableFrom(groupId, fromId, {reverse})` | 간선을 따라 닿는 단계. 🔑 **연결 모드에서 막을 후보 = `{reverse:true}`**(from 의 선행자들) |
 | `bridgeInfo(itemId)` | 단계를 지우면 어디가 이어지는지 `{prev, next}` — 확인 문구용. 잇는 일은 `deleteChecklistItem` 이 한다 |
 | `createChecklistItem({kind:'process', parent_id, from_id})` | 단계를 만들면서 **간선도 함께** 만든다. `from_id` 를 주면 그 뒤에, `null` 이면 시작, 안 주면 맨 뒤 |
@@ -537,7 +553,7 @@ Row         = 항목 + { path, check, assignee_eff_id, assignee_eff_name, proces
 |---|---|
 | `CHECK_KIND` / `CHECK_KINDS` | `division` `group` `process` `situation` `check` (저장값) / 표시 문구 `업무구분` `업무항목` `프로세스` `상황` `체크항목` |
 | `CHECK_KIND_CHILDREN` | 종류별 허용 하위 종류. `root` 키는 최상위(업무구분만) |
-| `checkflow.flowNos` | 간선 목록 → 층·번호 (순수 함수). ⚠️ 화면은 이것을 직접 부르지 않는다 — **번호는 `db.processFlow` 한 곳**에서 온다 |
+| `checkflow.flowNos` | 간선 목록 → 층·**층 내 순서**·번호 (순수 함수). 🔑 **층 내 순서의 유일한 출처**이고 `db.processFlow`(내부 `flowOf`)가 그것을 그대로 쓴다 — 도식의 열 순서(`layoutDag`)와 같은 계산이라 `5.1` 이 `5.2` 오른쪽에 그려지는 일이 구조적으로 없다 (P12). ⚠️ 화면은 이것을 직접 부르지 않는다 — **번호는 `db.processFlow` 한 곳**에서 온다 |
 | `checkflow.dagCols` / `laneWidth` / `layoutDag` | 열 수 → 레인 폭 → 좌표 (웹 도식 전용 · 2-pass) |
 | `DAG_SIZE` | 도식 치수 `lane 240`(`200~260` 가변) `gapX 40` `gapY 56` — **레인 폭·간격의 유일한 출처**. `laneWidth` 와 `layoutDag` 에 **같은 `gapX`** 를 넘긴다 |
 | `CHECK_TEMPLATES` | 업무항목 이름별 견본 (현재 `입고`). 「견본: 이름」 버튼이 쓴다 |

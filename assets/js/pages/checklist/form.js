@@ -133,11 +133,13 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
 }
 
 /**
- * 순서(↑↓)를 쓸 수 있는 종류인가 🔑 - **단계(프로세스)는 아니다.**
+ * 순서(↑↓)를 쓸 수 있는 종류인가 🔑 - **단계(프로세스)만 아니다.**
  * 단계 순서는 간선이 정하므로 형제 순서를 바꿔도 흐름이 달라지지 않는다 (오해를 부른다).
+ * ⚠️ 업무구분·업무항목은 나열 순서가 곧 화면 순서라 반드시 바꿀 수 있어야 한다
+ * (한때 프로세스와 함께 빠져 순서를 못 바꿨다).
  */
 function canMove(item) {
-    return item.kind === CHECK_KIND.CHECK || item.kind === CHECK_KIND.SITUATION;
+    return item.kind !== CHECK_KIND.PROCESS;
 }
 
 /** 번호 캡션 - `③` · 갈래 줄이면 `4.1` 그대로 (window.confirm 용 평문) */

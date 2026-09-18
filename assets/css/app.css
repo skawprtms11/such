@@ -1754,16 +1754,21 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 
 /* 선 위 라벨 칩 - SVG 가 아니라 HTML 이라 누를 수 있다 (좌표는 선과 같다) */
 .pm-labels { position: absolute; top: 0; left: 0; }
+/* 🔑 자리와 크기(left·top·width·height)는 checkflow.layoutDag 가 인라인으로 준다 -
+   칩끼리 겹치지 않는 자리를 좌표 계산이 이미 잡아 두었다 (CSS 로 옮기면 겹친다) */
 .pm-elabel {
-    position: absolute; transform: translate(-50%, -50%); z-index: 2;
-    max-width: 160px; overflow: hidden; padding: 2px 7px;
+    position: absolute; z-index: 2; box-sizing: border-box;
+    overflow: hidden; padding: 1px 7px;
     border: 1px solid var(--gray-300); border-radius: 999px; background: #fff;
     color: var(--gray-700); font: inherit; font-size: 11.5px; line-height: 1.5;
     text-overflow: ellipsis; white-space: nowrap;
 }
 button.pm-elabel { cursor: pointer; }
 button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
-.pm-elabel.is-dot { width: 16px; height: 16px; padding: 0; color: var(--gray-400); text-align: center; }
+.pm-elabel.is-dot { padding: 0; color: var(--gray-400); text-align: center; }
+
+/* 아직 저장하지 않은 입력칸 - 실시간 갱신이 값을 지우지 않게 표시해 둔다 (process.js) */
+.pm-side .is-dirty { border-color: var(--amber); background: var(--amber-soft); }
 
 /* 간선 팝오버 - 조건 라벨 · 갈래 좌우 순서 · 연결 끊기 */
 .pm-epop {

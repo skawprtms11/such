@@ -79,6 +79,9 @@ export async function render(root, { user }) {
             headSum.textContent = '';
             await drawManage({ state, body, user, users, reload });
         } else {
+            // 🔑 업무프로세스 탭을 떠나면 문서 리스너(연결 모드 Esc·인쇄)를 걷는다
+            state.link = null;
+            disposeManage();
             await drawToday({ state, body, headSum, user, users, canManage, reload });
         }
     }

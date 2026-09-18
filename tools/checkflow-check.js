@@ -20,11 +20,17 @@
  *   P10 **어느 카드에서 어느 카드로** 이어지는지가 `edges` 와 맞는다
  *   P11 교차 수 - DAG 는 0 이 불가능하므로 **기준선 대비 악화**를 잡는다
  *       (중위·최대 + **합계** - 중위값이 0 이면 중간 구간의 악화가 드러나지 않는다)
+ *   P12 **`flowNos` 의 층 내 순서 = `layoutDag` 의 열 순서** (번호와 열이 한 벌이다)
+ *   P13 조건 라벨 칩끼리 **사각형 겹침 0** (겹치면 뒤의 칩을 눌러 팝오버를 열 수 없다)
  *
  * 🔑 **개수(P7)만 세면 연결 상대가 틀려도, 끝이 카드에서 떨어져도 0건이 나온다.**
  * 🔑 치수는 **5조합을 돌려가며** 넣는다 - 기본값으로만 돌리면 좁은 틈·간격 0 이 검사되지 않는다.
  * 🔑 **검사기를 믿기 전에 변이로 검사기를 검증한다** (더미 열 예약 제거 · 라벨 좌표 ·
  * 화살촉 규격 · 오배선 → 해당 항목만 올라오는지).
+ * 🔑 **커버리지 카운터를 함께 찍는다** - 0건이 「없어서 0」인지 「만들어 봤는데 0」인지
+ * 구분해야 한다 (긴 간선·3폭 이상 층·합류·갈래가 실제로 몇 건 나왔는지).
+ * 🔑 **P11 기준선 키에는 생성기 설정 해시가 들어간다** - 생성기를 고치면 교차 수가 달라지므로
+ * 옛 기준선과 비교하는 것은 뜻이 없다. `sum` 이 없는 낡은 기준선은 **실패**로 본다.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -58,8 +64,11 @@ const OPTS = [
 ];
 
 const fails = {
-    P1: 0, P2: 0, P3: 0, P4: 0, P5: 0, P6: 0, P7: 0, P8: 0, P9: 0, P10: 0, P11: 0, EX: 0,
+    P1: 0, P2: 0, P3: 0, P4: 0, P5: 0, P6: 0, P7: 0, P8: 0, P9: 0, P10: 0, P11: 0,
+    P12: 0, P13: 0, EX: 0,
 };
+/** 커버리지 - 「검사할 거리가 실제로 나왔는지」 (0건이면 검사기를 못 믿는다) */
+const cover = { span: 0, wide: 0, join: 0, fork: 0, label: 0 };
 const first = {};
 function note(k, msg) {
     fails[k] += 1;
@@ -68,7 +77,27 @@ function note(k, msg) {
 
 /* ------------------------------ 랜덤 DAG 생성기 ------------------------------ */
 
-const LABELS = ['국내', '해외', '조건A', '재작업', '반품'];
+const LABELS = ['국내', '해외', '조건A', '재작업', '반품', '수량 오류 시'];
+
+/**
+ * 생성기 설정 🔑 - **P11 기준선 키에 해시로 들어간다.**
+ * 여기를 고치면 교차 수 분포가 달라져 옛 기준선과 비교할 수 없다.
+ *   width 층 폭 최대 (4갈래 이상 층이 나와야 갈래 정렬을 검사한다)
+ *   span  긴 간선의 최대 뛰어넘는 층 수 (더미 열 예약 검사)
+ *   join  층마다 합류를 **의도적으로** 만들 확률
+ */
+const GEN = { v: 2, depth: 6, width: 5, span: 4, join: 0.45, label: 0.3 };
+
+/** 설정 해시 (짧은 FNV-1a · 기준선 키에 붙는다) */
+function hashOf(v) {
+    const t = JSON.stringify(v);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < t.length; i += 1) {
+        h = ((h ^ t.charCodeAt(i)) * 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+}
+const GEN_KEY = hashOf(GEN);
 
 /**
  * 랜덤 DAG 🔑 - **층을 먼저 배정하고 앞→뒤 간선만** 만든다 (순환을 만들 수 없다).
@@ -76,13 +105,14 @@ const LABELS = ['국내', '해외', '조건A', '재작업', '반품'];
  * 그 위에 span 1~4 의 간선을 얹는다. 같은 from 의 `sort_order` 는 무작위 순열이다.
  */
 function makeDag() {
-    const depth = 2 + pick(6);
+    const depth = 2 + pick(GEN.depth);
     const at = [];
     const nodes = [];
     let id = 0;
     for (let L = 0; L < depth; L += 1) {
         at[L] = [];
-        const n = 1 + pick(3);
+        // 🔑 4갈래 이상 층도 나오게 한다 (3폭까지만 만들면 갈래 정렬이 거의 검사되지 않는다)
+        const n = 1 + pick(GEN.width);
         for (let i = 0; i < n; i += 1) {
             id += 1;
             nodes.push({ id: `n${id}`, height: 24 + pick(9) * 22 });
@@ -95,19 +125,30 @@ function makeDag() {
         const k = `${from}>${to}`;
         if (seen.has(k)) return;
         seen.add(k);
-        edges.push({ id: `e${edges.length}`, from, to, label: rnd() < 0.3 ? LABELS[pick(5)] : '' });
+        edges.push({
+            id: `e${edges.length}`,
+            from,
+            to,
+            label: rnd() < GEN.label ? LABELS[pick(LABELS.length)] : '',
+        });
     };
     at[0].forEach((to) => push(null, to));       // 시작 표시 (그리지 않는다)
     for (let L = 1; L < depth; L += 1) {
         at[L].forEach((to) => {
             push(at[L - 1][pick(at[L - 1].length)], to);
             for (let k = pick(3); k > 0; k -= 1) {
-                const back = 1 + pick(4);
-                if (L - back < 0) continue;
+                // 🔑 뛰어넘을 층이 없으면 **버리지 않고** 가능한 범위에서 다시 고른다
+                const back = 1 + pick(Math.min(GEN.span, L));
                 const row = at[L - back];
                 push(row[pick(row.length)], to);
             }
         });
+        /* 합류를 의도적으로 만든다 - 앞 층의 노드 여럿을 이 층의 한 노드로 모은다
+           (무작위로만 만들면 합류가 드물게 나와 합류 버스가 거의 검사되지 않는다) */
+        if (rnd() < GEN.join && at[L - 1].length > 1) {
+            const to = at[L][pick(at[L].length)];
+            at[L - 1].forEach((from) => push(from, to));
+        }
     }
     /* 같은 from 의 순서는 사용자가 정한 값이다 - 무작위 순열로 넣어 pin 이 지켜지는지 본다 */
     const byFrom = new Map();
@@ -305,18 +346,62 @@ function checkOne(tag, nodes, edges, opts) {
             }
         }
         if (!e.label) return;
-        const turn = ps.find((p, i) => i > 0 && p[1] !== ps[0][1]);
-        const lo = Math.min(ps[0][1], turn[1]);
-        const hi = Math.max(ps[0][1], turn[1]);
-        if (e.label.x !== ps[0][0] || e.label.y < lo || e.label.y > hi) {
-            note('P8', `${tag} 라벨 (${e.label.x},${e.label.y}) 이 첫 세로 구간 `
-                + `x${ps[0][0]} y${lo}~${hi} 밖이다`);
+        /* 🔑 라벨은 **출발 카드가 있는 층 아래 틈** 안에 있어야 한다 (사각형이라 중심으로 본다).
+           예전에는 「첫 세로 구간 위」였는데, 그러면 같은 from 의 갈래 라벨이 한 점에 겹쳤다 */
+        const lc = [e.label.x + e.label.w / 2, e.label.y + e.label.h / 2];
+        if (!(e.label.w > 0 && e.label.h > 0)) {
+            note('P8', `${tag} 라벨 크기 ${e.label.w}x${e.label.h}`);
         }
-        if (list.some((c) => c.x < e.label.x && e.label.x < c.x + c.w
-            && c.y < e.label.y && e.label.y < c.y + c.h)) {
-            note('P8', `${tag} 라벨 (${e.label.x},${e.label.y}) 이 카드 안이다`);
+        const li = layers.findIndex((row) => row.includes(e.from));
+        const gap = li >= 0 && li + 1 < band.length
+            ? [band[li][1], band[li + 1][0]]
+            : null;
+        if (!gap || !(gap[0] < lc[1] && lc[1] < gap[1])) {
+            note('P8', `${tag} 라벨 y${lc[1]} 이 층${li + 1} 아래 틈 `
+                + `${gap ? `${gap[0]}~${gap[1]}` : '없음'} 밖이다`);
+        }
+        if (list.some((c) => c.x < lc[0] && lc[0] < c.x + c.w
+            && c.y < lc[1] && lc[1] < c.y + c.h)) {
+            note('P8', `${tag} 라벨 (${lc}) 이 카드 안이다`);
         }
     });
+
+    /* P13 라벨 칩끼리 겹침 - 겹치면 뒤의 칩을 눌러 팝오버를 열 수 없다 */
+    const chips = res.edges.filter((e) => e.label).map((e) => ({ id: e.id, ...e.label }));
+    cover.label += chips.length;
+    chips.forEach((a, i) => chips.slice(i + 1).forEach((b) => {
+        if (overlap(a.x, a.x + a.w, b.x, b.x + b.w) > 0
+            && overlap(a.y, a.y + a.h, b.y, b.y + b.h) > 0) {
+            note('P13', `${tag} 라벨 ${a.id}(x${a.x} y${a.y} w${a.w}) `
+                + `x ${b.id}(x${b.x} y${b.y} w${b.w})`);
+        }
+    }));
+
+    /* P12 번호(flowNos)와 열(layoutDag)이 한 벌인가 🔑 - 층 내 순서의 출처가 하나여야 한다 */
+    const nos = flowNos(nodes, edges);
+    if (nos.layers.length !== layers.length) {
+        note('P12', `${tag} 층 수 ${nos.layers.length} != ${layers.length}`);
+    } else {
+        nos.layers.forEach((row, L) => {
+            if (row.join('>') !== layers[L].join('>')) {
+                note('P12', `${tag} 층${L + 1} 순서 ${row} != 열 순서 ${layers[L]}`);
+                return;
+            }
+            row.forEach((id, k) => {
+                if (k && cols[row[k - 1]] >= cols[id]) {
+                    note('P12', `${tag} 층${L + 1} 열이 왼→오 가 아니다 `
+                        + `${row[k - 1]}(${cols[row[k - 1]]}) ${id}(${cols[id]})`);
+                }
+                const want = row.length > 1 ? `${L + 1}.${k + 1}` : `${L + 1}`;
+                if (nos.no[id] !== want) {
+                    note('P12', `${tag} 번호 ${id} = ${nos.no[id]} (기대 ${want})`);
+                }
+                if (nos.layer[id] !== L + 1) {
+                    note('P12', `${tag} 층 ${id} = ${nos.layer[id]} (기대 ${L + 1})`);
+                }
+            });
+        });
+    }
 
     /* P9 화살촉 - 카드 천장에 꽂히고 꼭짓점이 도착점과 같다 */
     paths.forEach(({ e, ps }) => {
@@ -372,7 +457,9 @@ function checkOne(tag, nodes, edges, opts) {
     /* P6 치수 - width 는 카드와 더미 열(선이 지나는 열 오른쪽 끝)까지 덮어야 한다 */
     const lineX = paths.reduce((m, { ps }) => ps.reduce((n, p) => Math.max(n, p[0]), m), 0);
     const right = list.reduce((m, b) => Math.max(m, b.x + b.w), 0);
-    const w = Math.round(Math.max(right, paths.length ? lineX + lane / 2 : 0)) + DAG_SIZE.pad;
+    const chipX = chips.reduce((m, c) => Math.max(m, c.x + c.w), 0);
+    const w = Math.round(Math.max(right, chipX, paths.length ? lineX + lane / 2 : 0))
+        + DAG_SIZE.pad;
     const h = list.reduce((m, b) => Math.max(m, b.y + b.h), 0) + DAG_SIZE.pad;
     if (w !== width || h !== height) note('P6', `${tag} ${width}/${height} != ${w}/${h}`);
 
@@ -387,6 +474,18 @@ function checkOne(tag, nodes, edges, opts) {
         note('P6', `${tag} 레인 ${lw} x ${count} 열 = `
             + `${lw * count + gapX * (count - 1)} > 가용 ${avail}`);
     }
+
+    /* 커버리지 - 검사할 거리가 실제로 나왔는지 (P12·P13 은 갈래·합류가 없으면 늘 0건이다) */
+    const inDeg = new Map();
+    const outDeg = new Map();
+    edges.filter((e) => e.from != null).forEach((e) => {
+        inDeg.set(e.to, (inDeg.get(e.to) ?? 0) + 1);
+        outDeg.set(e.from, (outDeg.get(e.from) ?? 0) + 1);
+        if (Math.abs((nos.layer[e.to] ?? 0) - (nos.layer[e.from] ?? 0)) > 1) cover.span += 1;
+    });
+    cover.join += [...inDeg.values()].filter((n) => n > 1).length;
+    cover.fork += [...outDeg.values()].filter((n) => n > 1).length;
+    cover.wide += layers.filter((row) => row.length >= 3).length;
 
     return crossings(paths);
 }
@@ -429,7 +528,16 @@ function checkExample() {
     const px = points(long.path).map((p) => p[0]);
     if (!px.includes(1 * (240 + 40) + 120)) note('EX', 'p7→p8 이 더미 열(1)로 내려오지 않는다');
     const cross = checkOne('EX', nodes, edges, { lane: 240, gapX: 40, gapY: 56 });
-    return { cross, labels: dag.edges.filter((e) => e.label).length };
+    const labels = dag.edges.filter((e) => e.label).length;
+    /* 🔑 찍어만 보지 않고 단언한다 - 교차 0 · 라벨 2개(국내·해외)가 이 예시의 정답이다 */
+    if (cross !== 0) note('EX', `교차 ${cross} (기대 0)`);
+    if (labels !== 2) note('EX', `라벨 ${labels}개 (기대 2 - 국내·해외)`);
+    const chips = dag.edges.filter((e) => e.label).map((e) => e.label);
+    if (chips.length === 2 && overlap(chips[0].x, chips[0].x + chips[0].w,
+        chips[1].x, chips[1].x + chips[1].w) > 0) {
+        note('EX', '국내·해외 라벨이 x 대역에서 겹친다');
+    }
+    return { cross, labels };
 }
 
 /* ------------------------------ 실행 ------------------------------ */
@@ -451,21 +559,31 @@ const mid = sorted.length
 const max = sorted.length ? sorted[sorted.length - 1] : 0;
 /* 🔑 합계도 기준선에 넣는다 - 중위값이 0 이면(절반 넘게 교차 0) 중간 구간의 악화를 못 잡는다 */
 const sum = crossList.reduce((m, v) => m + v, 0);
-const runKey = `${TOTAL}:${SEED}`;
+/* 🔑 기준선 키에 **생성기 설정 해시**를 넣는다 - 생성기를 고치면 옛 교차 수와 비교할 수 없다 */
+const runKey = `${TOTAL}:${SEED}:g${GEN_KEY}`;
+const reason = args.find((a) => a.startsWith('--reason='))?.slice(9) ?? '';
 const base = fs.existsSync(BASE_FILE)
     ? JSON.parse(fs.readFileSync(BASE_FILE, 'utf8'))
     : { note: '랜덤 DAG 교차 수 기준선 - `npm run check:flow -- --baseline` 으로 다시 쓴다', runs: {} };
 let p11 = '';
 if (flags.has('--baseline')) {
-    base.runs[runKey] = { median: mid, max, sum };
+    base.runs[runKey] = {
+        median: mid, max, sum, gen: GEN, reason, at: new Date().toISOString().slice(0, 10),
+    };
     fs.writeFileSync(BASE_FILE, `${JSON.stringify(base, null, 4)}\n`);
-    p11 = `기준선 기록 ${runKey} → 중위 ${mid} · 최대 ${max} · 합계 ${sum}`;
+    p11 = `기준선 기록 ${runKey} → 중위 ${mid} · 최대 ${max} · 합계 ${sum}`
+        + `${reason ? ` (사유: ${reason})` : ' ⚠️ --reason= 로 사유를 남긴다'}`;
 } else {
     const b = base.runs[runKey];
     if (!b) {
-        p11 = `기준선 없음 (${runKey}) - --baseline 으로 기록한다 `
-            + `· 중위 ${mid} · 최대 ${max} · 합계 ${sum}`;
-    } else if (mid > b.median || max > b.max || sum > (b.sum ?? sum)) {
+        note('P11', `기준선 없음 (${runKey}) - `
+            + 'npm run check:flow -- --baseline --reason=사유 로 기록한다');
+        p11 = `기준선 없음 · 이번 중위 ${mid} · 최대 ${max} · 합계 ${sum}`;
+    } else if (b.sum == null) {
+        // 🔑 합계 없는 낡은 기준선은 통과로 쳐 주지 않는다 (중간 구간의 악화를 못 잡는다)
+        note('P11', `기준선에 합계가 없다 (${runKey}) - --baseline 으로 다시 기록한다`);
+        p11 = `낡은 기준선 (합계 없음) · 이번 합계 ${sum}`;
+    } else if (mid > b.median || max > b.max || sum > b.sum) {
         note('P11', `교차 악화 중위 ${mid}/${b.median} · 최대 ${max}/${b.max} `
             + `· 합계 ${sum}/${b.sum}`);
         p11 = `기준선 중위 ${b.median} · 최대 ${b.max} · 합계 ${b.sum}`;
@@ -482,5 +600,8 @@ process.stdout.write(`랜덤 DAG ${TOTAL}개 불변식 검사 (시드 ${SEED})\n
 process.stdout.write(`${lines.join('\n')}\n`);
 process.stdout.write(`  P11 ${p11}\n`);
 process.stdout.write(`  고정 예시 교차 ${ex.cross} · 라벨 ${ex.labels}개\n`);
+process.stdout.write(`  커버리지 - 긴 간선 ${cover.span} · 3폭 이상 층 ${cover.wide} `
+    + `· 합류 ${cover.join} · 갈래 ${cover.fork} · 라벨 ${cover.label} `
+    + `(생성기 g${GEN_KEY})\n`);
 process.stdout.write(`${bad ? 'FAIL' : 'PASS'}\n`);
 process.exitCode = bad ? 1 : 0;

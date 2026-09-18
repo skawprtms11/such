@@ -36,13 +36,22 @@ let closePop = null;
 /** 연결 모드의 Esc 리스너를 걷는 함수 */
 let offEsc = null;
 
-/** 화면을 떠날 때 창 리사이즈·문서 리스너를 모두 끊는다 (checklist.js 의 정리 함수가 부른다) */
+/** 인쇄 뒤처리(afterprint) 리스너를 걷는 함수 */
+let offPrint = null;
+
+/**
+ * 화면을 떠날 때 창 리사이즈·문서 리스너를 모두 끊는다 (checklist.js 의 정리 함수가 부른다).
+ * 🔑 **탭을 바꿀 때도 부른다** - 연결 모드의 Esc 리스너는 문서에 걸려 있어, 일일체크리스트로
+ * 옮긴 뒤 Esc 를 누르면 보이지 않는 화면을 다시 그리게 된다.
+ */
 export function disposeManage() {
     shown?.off();
     shown = null;
     closePop?.();
     offEsc?.();
     offEsc = null;
+    offPrint?.();
+    offPrint = null;
 }
 
 /**
@@ -75,6 +84,8 @@ export async function drawManage(ctx) {
     closePop?.();
     offEsc?.();
     offEsc = null;
+    offPrint?.();
+    offPrint = null;
     const divisions = await db.listChecklistDivisions();
     // 업무구분 없는 옛 업무항목이 있으면 「미분류」 를 마지막에 붙인다 (옮길 수 있게)
     const orphans = await db.listChecklistGroups(null);
@@ -238,10 +249,12 @@ export async function drawManage(ctx) {
         const off = () => {
             document.body.classList.remove('cl-printing');
             window.removeEventListener('afterprint', off);
+            offPrint = null;
             state.open = prev;
             reload();
         };
         window.addEventListener('afterprint', off);
+        offPrint = () => window.removeEventListener('afterprint', off);
         window.print();
     });
 
@@ -450,6 +463,27 @@ function sideHtml(gvm, state, target, notes, labels) {
 </aside>`;
 }
 
+/** 설명 표의 칸 순서 - Tab 이 옮겨 갈 다음 칸을 알려면 순서를 알아야 한다 */
+const NOTE_FIELDS = ['label', 'content', 'remark'];
+
+/** 그 칸의 다음 칸 (마지막 칸이면 다시 첫 칸 - 빈 행의 첫 칸으로 이어진다) */
+function nextField(field) {
+    return NOTE_FIELDS[NOTE_FIELDS.indexOf(field) + 1] ?? NOTE_FIELDS[0];
+}
+
+/**
+ * 저장 뒤 포커스를 되살린다 🔑 - 빈 행을 저장하면 표를 다시 그려 엘리먼트가 바뀌므로
+ * **행 id + 칸**으로 다시 찾아 준다 (못 찾으면 새 빈 행의 첫 칸).
+ */
+function focusNote(body, noteId, field) {
+    const row = noteId
+        ? body.querySelector(`.pm-side tr[data-note="${CSS.escape(noteId)}"]`)
+        : null;
+    const el = row?.querySelector(`[data-nf="${field}"]`)
+        ?? body.querySelector('.pm-side tr.is-draft [data-nf="label"]');
+    el?.focus();
+}
+
 /**
  * 설명 표 편집 - 인라인 입력칸 + blur 저장.
  * 빈 행은 값이 들어온 순간 등록되고, 저장이 실패하면 **값을 그대로 두고** 토스트만 띄운다
@@ -470,6 +504,10 @@ function bindNotes(body, state, target, user, reload) {
         const get = (k) => tr.querySelector(`[data-nf="${k}"]`)?.value.trim() ?? '';
         return { label: get('label'), content: get('content'), remark: get('remark') };
     };
+    /* Tab 으로 칸을 옮기면 change(=blur) 가 **먼저** 오므로, 저장 뒤에 어디로 갈 셈이었는지
+       알 수 있게 마지막 키를 적어 둔다 (빈 행은 저장하면 표를 다시 그려야 한다) */
+    let tabbed = false;
+    side.addEventListener('keydown', (e) => { tabbed = e.key === 'Tab' && !e.shiftKey; });
     side.querySelectorAll('tr[data-note]').forEach((tr) => {
         const id = tr.dataset.note;
         tr.querySelectorAll('[data-nf]').forEach((el) => {
@@ -477,11 +515,20 @@ function bindNotes(body, state, target, user, reload) {
                 const vals = valuesOf(tr);
                 // 빈 행은 아직 아무 값도 없으면 저장하지 않는다 (지나가며 누른 것일 수 있다)
                 if (!id && !vals.label && !vals.content && !vals.remark) return;
+                const val = el.value.trim();
                 try {
-                    if (id) await db.updateChecklistNote(id, { [el.dataset.nf]: el.value }, user);
-                    else await db.createChecklistNote(target.item.id, vals, user);
+                    if (id) {
+                        // 🔑 표를 다시 그리지 않는다 - 그리면 Tab 으로 옮긴 포커스가 사라진다
+                        await db.updateChecklistNote(id, { [el.dataset.nf]: val }, user);
+                        el.value = val;
+                        el.classList.remove('is-dirty');
+                        return;
+                    }
+                    const row = await db.createChecklistNote(target.item.id, vals, user);
                     el.classList.remove('is-dirty');
+                    const want = tabbed ? nextField(el.dataset.nf) : el.dataset.nf;
                     await reload();
+                    focusNote(body, row?.id, want);
                 } catch (err) {
                     toast(err.message, 'error');
                 }
@@ -725,8 +772,9 @@ function openEdgePop(chip, gvm, user, reload) {
     const at = sibs.findIndex((x) => x.id === edge.id);
     const pop = document.createElement('div');
     pop.className = 'pm-epop';
-    pop.style.left = chip.style.left;
-    pop.style.top = chip.style.top;
+    // 칩은 좌상단 좌표로 놓이므로(layoutDag) 팝오버는 칩의 가운데·아래에 맞춘다
+    pop.style.left = `${chip.offsetLeft + chip.offsetWidth / 2}px`;
+    pop.style.top = `${chip.offsetTop + chip.offsetHeight}px`;
     pop.innerHTML = `
 <input type="text" maxlength="40" value="${esc(edge.label)}" data-elabel
        placeholder="조건 (예: 수출 건일 때)" aria-label="조건 라벨">

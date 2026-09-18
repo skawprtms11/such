@@ -104,6 +104,8 @@ const TABLES = [
     {
         key: 'checklistItems',
         name: 'checklist_items',
+        // ⚠️ `child_flow` 는 간선 테이블(checklistEdges)로 옮기며 **쓰지 않는 컬럼**이 되었다.
+        // 옛 행이 서버에 남아 있어 목록에서만 빼지 않는다 (지우려면 마이그레이션이 필요하다)
         cols: [
             'id', 'category', 'parent_id', 'kind', 'child_flow', 'title', 'description',
             'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name', 'sub_assignees',
