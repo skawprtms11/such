@@ -8,9 +8,10 @@
  * 🔑 **이 탭이 다루는 것은 흐름과 그 설명뿐이다.** 체크항목(kind=check)은 만들지도 보이지도
  * 않는다 - 일일체크리스트 탭이 맡는다 (docs/checklist.md).
  *
- * 🔑 **흐름 편집은 「선 긋기」다.** 속성 폼에서 연결 방식을 고르는 것이 아니라
- * 카드 아래 ＋(다음 단계) · ↳(이미 있는 단계로 잇기)로 간선을 만들고, 선 위 라벨 칩에서
+ * 🔑 **흐름 편집은 「카드 우클릭 메뉴」 하나다.** 속성 폼에서 연결 방식을 고르는 것이 아니라
+ * 카드를 우클릭해 「하위 프로세스 추가 · 연결… · 속성 · 삭제」를 고르고, 선 위 라벨 칩에서
  * 조건·갈래 순서·연결 끊기를 한다. 규칙(순환 금지·브릿지)은 전부 db.js 가 판단한다.
+ * (호버로 뜨던 ＋ · ↳ 버튼은 없앴다 - 손잡이가 둘이면 어느 쪽이 갈래인지 알기 어려웠다)
  *
  * 좁은 화면에서는 우측을 먼저 접고(서랍), 더 좁으면 세그먼트로 한 칸씩 본다 (app.css).
  */
@@ -22,7 +23,7 @@ import {
     UNSORTED_ID, circled, iconBtn, openBtn, quickBar, segHtml, textBtn, whoHtml,
 } from './common.js';
 import { canvasHtml, groupVM, layoutCanvas } from './flowview.js';
-import { openForm } from './form.js';
+import { deleteText, openForm } from './form.js';
 
 /** 인쇄용 가용폭 (px) - A4 세로에서 여백을 뺀 대략치 */
 const PRINT_W = 680;
@@ -36,6 +37,9 @@ let closePop = null;
 /** 연결 모드의 Esc 리스너를 걷는 함수 */
 let offEsc = null;
 
+/** 열려 있는 카드 우클릭 메뉴를 닫는 함수 (문서 리스너를 함께 걷는다) */
+let closeMenu = null;
+
 /** 인쇄 뒤처리(afterprint) 리스너를 걷는 함수 */
 let offPrint = null;
 
@@ -48,6 +52,7 @@ export function disposeManage() {
     shown?.off();
     shown = null;
     closePop?.();
+    closeMenu?.();
     offEsc?.();
     offEsc = null;
     offPrint?.();
@@ -305,9 +310,11 @@ export async function drawManage(ctx) {
         if (gvm) layoutCanvas(body, gvm, { edit: state.edit });
     });
     bindQuick(body, state, user, reload);
+    // 우클릭 메뉴는 비편집 모드에도 있다 (그때는 「속성 보기」만 나온다)
+    if (gvm) bindMenu(body, { state, rows, flow, user, reload, formCtx });
     if (state.edit && group) {
         bindStep(body, state, group, user, reload);
-        bindLink(body, state, user, reload);
+        bindLink(body, state, flow, user, reload);
         bindEdge(body, gvm, user, reload);
         bindDrag(body, user, reload);
     }
@@ -344,7 +351,8 @@ function guideHtml(state, group) {
         return `
 <p class="pm-guide pm-guide--link">
   ${icon('branch', 'icon icon--sm')}
-  <b>${esc(state.link.caption)}</b> 뒤에 이을 단계를 고르세요.
+  <b>${esc(state.link.caption)}</b> 뒤에 <b>연결할 단계를 클릭하세요</b> · Esc 취소.
+  카드에 마우스를 올리면 점선으로 미리 보여 줍니다.
   흐린 카드는 고를 수 없습니다 (그렇게 이으면 흐름이 되돌아옵니다).
   <span class="toolbar__spacer"></span>
   <button class="btn btn--sm" type="button" data-link-cancel>취소 (Esc)</button>
@@ -352,10 +360,11 @@ function guideHtml(state, group) {
     }
     return `
 <p class="pm-guide">
-  위에서 아래로가 업무 순서입니다. 카드 아래 ${icon('plus', 'icon icon--sm')} 로 다음 단계를 만들고
-  (이미 다음 단계가 있으면 한 번 더 눌러 <b>갈래</b>), ${icon('branch', 'icon icon--sm')} 로
-  이미 있는 단계에 잇습니다 (<b>합류</b>).
-  선 위 칩을 누르면 조건·갈래 순서·연결 끊기를 할 수 있습니다.
+  위에서 아래로가 업무 순서입니다. <b>카드를 오른쪽 클릭</b>하면
+  ${icon('plus', 'icon icon--sm')} 하위 프로세스 추가 · ${icon('branch', 'icon icon--sm')} 연결 ·
+  ${icon('edit', 'icon icon--sm')} 속성 · ${icon('trash', 'icon icon--sm')} 삭제 메뉴가 열립니다.
+  같은 카드에 하위 프로세스를 또 넣으면 <b>갈래</b>가 되고, 이미 있는 단계로 연결하면
+  <b>합류</b>입니다. 선 위 칩을 누르면 조건·갈래 순서·연결 끊기를 할 수 있습니다.
 </p>`;
 }
 
@@ -662,19 +671,13 @@ function bindGrip(body, state, done) {
 /* ------------------------------ 흐름 편집 (선 긋기) ------------------------------ */
 
 /**
- * 카드 아래 ＋ - 다음 단계를 새로 만들어 잇는다.
- * 🔑 **갈래는 따로 만들지 않는다** - 다음 단계가 이미 있는 카드에서 한 번 더 누르면
+ * 「하위 프로세스 추가」 입력칸 - 이름을 넣고 Enter 면 그 카드 뒤로 새 단계가 이어진다.
+ * 🔑 **갈래는 따로 만들지 않는다** - 하위 프로세스가 이미 있는 카드에서 **또 추가하면**
  * 간선이 하나 더 생기고, 그것이 곧 갈래다 (db.addProcessEdge 가 순환만 막는다).
- * 등록한 뒤에는 **새 카드로 입력칸을 옮겨** 사슬을 계속 이어 만들 수 있게 한다.
+ * 등록한 뒤에는 **새 카드로 입력칸을 옮겨** 사슬을 계속 이어 만들 수 있게 한다
+ * (같은 카드에 갈래를 더 달려면 그 카드를 다시 우클릭한다).
  */
 function bindStep(body, state, group, user, reload) {
-    body.querySelectorAll('[data-next]').forEach((el) => {
-        el.addEventListener('click', () => {
-            state.step = { fromId: el.dataset.next };
-            state.quick = null;
-            reload();
-        });
-    });
     const form = body.querySelector('[data-next-form]');
     if (!form) return;
     const input = form.elements.title;
@@ -705,18 +708,14 @@ function bindStep(body, state, group, user, reload) {
 }
 
 /**
- * 연결 모드 - ↳ 를 누르면 대상을 고르는 모드로 들어간다 (Esc 로 취소).
+ * 연결 모드 - 우클릭 메뉴의 「연결…」 로 들어와 대상 카드를 클릭한다 (Esc 로 취소).
  * 고를 수 없는 카드는 `prepLink` 가 미리 흐리게 만들어 두었고, 그래도 눌리면 여기서 막는다.
+ *
+ * 🔑 **클릭 전에 두 번 알린다** - 카드에 마우스를 올리면 예상 화살표를 **점선**으로 그리고,
+ * 클릭하면 「「③ WMS처리」 → 「⑦ 출고완료」 로 연결하시겠습니까?」 로 확인한다.
+ * 취소하면 **연결 모드를 그대로 둔다** (다른 카드를 바로 고를 수 있게).
  */
-function bindLink(body, state, user, reload) {
-    body.querySelectorAll('[data-link]').forEach((el) => {
-        el.addEventListener('click', () => {
-            state.link = { fromId: el.dataset.link };
-            state.step = null;
-            state.quick = null;
-            reload();
-        });
-    });
+function bindLink(body, state, flow, user, reload) {
     if (!state.link) return;
     const cancel = () => {
         state.link = null;
@@ -729,6 +728,12 @@ function bindLink(body, state, user, reload) {
     document.addEventListener('keydown', onKey);
     offEsc = () => document.removeEventListener('keydown', onKey);
 
+    const ghost = linkGhost(body, state.link.fromId);
+    body.querySelectorAll('.pm-node').forEach((el) => {
+        if (el.classList.contains('is-nolink')) return;
+        el.addEventListener('mouseenter', () => ghost(el));
+        el.addEventListener('mouseleave', () => ghost(null));
+    });
     body.querySelectorAll('[data-target]').forEach((el) => {
         el.addEventListener('click', async (e) => {
             if (e.target.closest('button')) return;      // ✎ 는 연결 모드에서도 속성 모달이다
@@ -737,6 +742,8 @@ function bindLink(body, state, user, reload) {
                 toast('그 단계로는 이을 수 없습니다 (흐름이 되돌아오거나 이미 이어져 있습니다).', 'error');
                 return;
             }
+            const msg = `「${state.link.caption}」 → 「${stepText(flow, to)}」 로 연결하시겠습니까?`;
+            if (!(await confirmDialog(msg))) return;
             try {
                 await db.addProcessEdge(state.link.fromId, to, {}, user);
                 state.link = null;
@@ -745,6 +752,142 @@ function bindLink(body, state, user, reload) {
             } catch (err) {
                 toast(err.message, 'error');
             }
+        });
+    });
+}
+
+/** 번호 + 이름 평문 (`③ WMS처리`) - window.confirm·메뉴 머리글용 */
+function stepText(flow, id) {
+    const node = flow?.nodes.find((n) => n.id === id);
+    return `${circled(flow?.no[id] ?? '')} ${node?.title ?? ''}`.trim();
+}
+
+/**
+ * 연결 미리보기 🔑 - 카드에 마우스를 올린 동안 **점선 화살표**를 도식 SVG 에 얹는다.
+ * 좌표는 카드 엘리먼트에서 그대로 읽는다 (layoutDag 를 다시 부르지 않는다 - 임시 선이라
+ * 본 배치와 같은 규칙을 지킬 필요가 없고, 되돌리기가 `remove()` 하나면 끝난다).
+ * 화면을 다시 그리면 `layoutCanvas` 가 SVG 를 통째로 다시 쓰므로 남지 않는다.
+ * @returns {(el:HTMLElement|null) => void} 대상 카드(없으면 지운다)
+ */
+function linkGhost(body, fromId) {
+    const svg = body.querySelector('.pm-edges');
+    const from = body.querySelector(`.pm-node[data-node="${CSS.escape(fromId)}"]`);
+    return (el) => {
+        if (!svg) return;
+        svg.querySelectorAll('.pm-ghost').forEach((x) => x.remove());
+        if (!el || !from || el === from) return;
+        const sx = Math.round(from.offsetLeft + from.offsetWidth / 2);
+        const sy = from.offsetTop + from.offsetHeight;
+        const tx = Math.round(el.offsetLeft + el.offsetWidth / 2);
+        const ty = el.offsetTop;
+        // 대상이 위쪽이면 가운데를 잡을 수 없어 출발 카드 바로 아래에서 꺾는다
+        const mid = ty > sy ? Math.round((sy + ty) / 2) : sy + 16;
+        svg.insertAdjacentHTML('beforeend', `
+<path class="pm-edge pm-ghost" d="M${sx} ${sy} V${mid} H${tx} V${ty}" />
+<path class="pm-edge__head pm-ghost" d="M${tx} ${ty} l-5 -8 h10 z" />`);
+    };
+}
+
+/* ------------------------------ 카드 우클릭 메뉴 ------------------------------ */
+
+/**
+ * 카드 우클릭 메뉴 🔑 - **흐름 편집 수단은 이 메뉴 하나다** (호버 ＋ · ↳ 를 없앴다).
+ * 편집 모드가 아니면 「속성 보기」만 둔다 - 읽는 화면에서 구조가 바뀌면 안 된다.
+ * 연결 모드에서는 열지 않는다 (지금은 대상을 고르는 중이다 · Esc 로 빠져나온다).
+ */
+function bindMenu(body, ctx) {
+    const canvas = body.querySelector('.pm-canvas');
+    if (!canvas) return;
+    canvas.addEventListener('contextmenu', (e) => {
+        const node = e.target.closest('.pm-node');
+        if (!node || ctx.state.link) return;
+        e.preventDefault();
+        openMenu(node, e, ctx);
+    });
+}
+
+/** 메뉴 항목 - 이모지 없이 icons.js 의 단색 SVG 를 쓴다 (기기마다 그림이 달라지지 않게) */
+function menuItems(edit) {
+    if (!edit) return [['open', 'edit', '속성 보기', '']];
+    return [
+        ['add', 'plus', '하위 프로세스 추가', ''],
+        ['link', 'branch', '연결…', ''],
+        ['open', 'edit', '속성', ''],
+        ['del', 'trash', '삭제', 'is-danger'],
+    ];
+}
+
+/**
+ * 메뉴를 카드 위에 띄운다. 바깥을 누르거나 Esc 로 닫힌다 (문서 리스너는 닫을 때 걷는다).
+ * @param {{state:object, rows:Array, flow:object, user:object, reload:Function,
+ *          formCtx:object}} ctx
+ */
+function openMenu(nodeEl, ev, ctx) {
+    closeMenu?.();
+    closePop?.();
+    const { state, rows, flow, user, reload, formCtx } = ctx;
+    const item = rows.find((r) => r.id === nodeEl.dataset.node);
+    const stage = nodeEl.closest('.pm-stage');
+    if (!item || !stage) return;
+    const box = stage.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.className = 'pm-menu';
+    menu.style.left = `${Math.round(ev.clientX - box.left)}px`;
+    menu.style.top = `${Math.round(ev.clientY - box.top)}px`;
+    menu.innerHTML = `
+<p class="pm-menu__head">${esc(stepText(flow, item.id))}</p>
+${menuItems(state.edit).map(([act, ic, label, cls]) => `
+<button class="pm-menu__btn ${cls}" type="button" data-mi="${act}">
+  ${icon(ic, 'icon icon--sm')}<span>${esc(label)}</span></button>`).join('')}`;
+    stage.appendChild(menu);
+    menu.querySelector('button').focus();
+
+    const shut = () => {
+        document.removeEventListener('pointerdown', onOut, true);
+        document.removeEventListener('keydown', onKey);
+        menu.remove();
+        closeMenu = null;
+    };
+    const onOut = (e) => {
+        if (!menu.contains(e.target)) shut();
+    };
+    const onKey = (e) => {
+        if (e.key === 'Escape') shut();
+    };
+    document.addEventListener('pointerdown', onOut, true);
+    document.addEventListener('keydown', onKey);
+    closeMenu = shut;
+
+    const act = {
+        add: () => {
+            state.step = { fromId: item.id };
+            state.quick = null;
+            reload();
+        },
+        link: () => {
+            state.link = { fromId: item.id };
+            state.step = null;
+            state.quick = null;
+            reload();
+        },
+        open: () => openForm({ item, parentId: item.parent_id, kind: item.kind }, formCtx),
+        del: async () => {
+            // 삭제 문구(하위 개수·흐름 이어붙임)는 속성 모달과 같은 것을 쓴다 (form.deleteText)
+            if (!(await confirmDialog(await deleteText(item, rows)))) return;
+            try {
+                await db.deleteChecklistItem(item.id, user);
+                toast('삭제했습니다.', 'success');
+                await reload();
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        },
+    };
+    menu.querySelectorAll('[data-mi]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const run = act[el.dataset.mi];
+            shut();
+            run();
         });
     });
 }

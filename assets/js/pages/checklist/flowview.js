@@ -179,28 +179,16 @@ function chainStep(p, o) {
 }
 
 /**
- * 카드 아래 편집 손잡이 🔑 - **선 긋기**가 흐름 편집의 전부다.
- *   ＋  다음 단계를 새로 만들어 잇는다. 이미 다음 단계가 있으면 **한 번 더 눌러 갈래**를 만든다
- *   ↳  이미 있는 단계로 잇는다 (합류) - 연결 모드로 들어간다
+ * 하위 프로세스 이름 입력칸 🔑 - 카드 아래 틈에 뜬다 (우클릭 메뉴의 「하위 프로세스 추가」).
+ * 호버 버튼(＋ · ↳)은 없앴다 - 편집 수단이 카드 우클릭 한 곳으로 모였다 (docs/checklist.md).
  */
-function portsHtml(id, adding) {
-    if (adding) {
-        return `
+function stepFormHtml(id) {
+    return `
 <form class="pm-port pm-port--form" data-next-form="${esc(id)}">
   <input type="text" name="title" maxlength="100" autocomplete="off"
-         placeholder="다음 단계 이름 · Enter (Esc 닫기)">
+         placeholder="하위 프로세스 이름 · Enter (Esc 닫기)">
   <button class="btn btn--sm btn--primary" type="submit">추가</button>
 </form>`;
-    }
-    return `
-<div class="pm-port">
-  <button class="btn btn--sm btn--primary pm-port__btn" type="button" data-next="${esc(id)}"
-          title="다음 단계 추가 (한 번 더 누르면 갈래)" aria-label="다음 단계 추가"
-    >${icon('plus', 'icon icon--sm')}</button>
-  <button class="btn btn--sm pm-port__btn" type="button" data-link="${esc(id)}"
-          title="이미 있는 단계로 잇기 (합류)" aria-label="이미 있는 단계로 잇기"
-    >${icon('branch', 'icon icon--sm')}</button>
-</div>`;
 }
 
 /**
@@ -221,7 +209,8 @@ function nodeHtml(p, o) {
      ${o.picked ? 'is-picked' : ''} ${o.block ? 'is-nolink' : ''}"
      data-node="${esc(it.id)}">
   <div class="pm-card">
-    <div class="pm-card__head" ${linking ? `data-target="${esc(it.id)}"` : `data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}"`}>
+    <div class="pm-card__head" title="오른쪽 클릭 · 메뉴"
+         ${linking ? `data-target="${esc(it.id)}"` : `data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}"`}>
       ${noHtml(p.no)}
       <span class="pm-card__title">${esc(it.title)}</span>
       ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
@@ -235,7 +224,7 @@ function nodeHtml(p, o) {
     ${p.situations.map((s) => sitHtml(s, it.id, o.next, state)).join('')}
     ${state.edit ? quickBar(it) : ''}` : ''}
   </div>
-  ${state.edit && !linking ? portsHtml(it.id, state.step?.fromId === it.id) : ''}
+  ${state.edit && !linking && state.step?.fromId === it.id ? stepFormHtml(it.id) : ''}
 </div>`;
 }
 
@@ -261,7 +250,7 @@ export function canvasHtml(gvm, state) {
         return `
 <div class="pm-canvas">
   <p class="pm-empty">아직 단계가 없습니다.
-    ${state.edit ? '아래 「+ 다음 프로세스」 로 첫 단계를 넣으세요.' : '「편집」 을 켜고 첫 단계를 넣으세요.'}</p>
+    ${state.edit ? '아래 「+ 다음 단계」 로 첫 단계를 넣으세요.' : '「편집」 을 켜고 첫 단계를 넣으세요.'}</p>
 </div>`;
     }
     const { flow } = gvm;

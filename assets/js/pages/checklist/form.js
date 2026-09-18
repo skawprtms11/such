@@ -113,14 +113,7 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
         });
     });
     m.root.querySelector('[data-del]')?.addEventListener('click', async () => {
-        const kids = item.kind === CHECK_KIND.DIVISION || item.kind === CHECK_KIND.GROUP
-            ? (await db.listChecklistItems({ root: item.id, includeInactive: true })).length - 1
-            : countDescendants(rows, item.id);
-        const msg = (kids
-            ? `${label} 「${item.title}」 아래 항목 ${num(kids)}개도 함께 삭제됩니다. 계속할까요?`
-            : `${label} 「${item.title}」을(를) 삭제할까요?`)
-            + await bridgeText(item);
-        if (!(await confirmDialog(msg))) return;
+        if (!(await confirmDialog(await deleteText(item, rows)))) return;
         try {
             await db.deleteChecklistItem(item.id, user);
             toast('삭제했습니다.', 'success');
@@ -145,6 +138,23 @@ function canMove(item) {
 /** 번호 캡션 - `③` · 갈래 줄이면 `4.1` 그대로 (window.confirm 용 평문) */
 function noText(n) {
     return n.no == null ? n.title : `${circled(n.no)} ${n.title}`;
+}
+
+/**
+ * 삭제 확인 문구 🔑 - **속성 모달과 카드 우클릭 메뉴가 같은 문구를 쓴다** (문구가 갈라지면
+ * 한쪽만 「아래 항목도 함께 삭제」를 알리게 된다).
+ * `window.confirm` 평문이라 이스케이프하지 않는다 (esc 를 쓰면 &quot; 가 그대로 보인다).
+ * @param {object} item 지울 항목 · @param {Array} rows 같은 업무항목 아래 항목 전부
+ */
+export async function deleteText(item, rows) {
+    const label = CHECK_KINDS[item.kind];
+    const kids = item.kind === CHECK_KIND.DIVISION || item.kind === CHECK_KIND.GROUP
+        ? (await db.listChecklistItems({ root: item.id, includeInactive: true })).length - 1
+        : countDescendants(rows, item.id);
+    return (kids
+        ? `${label} 「${item.title}」 아래 항목 ${num(kids)}개도 함께 삭제됩니다. 계속할까요?`
+        : `${label} 「${item.title}」을(를) 삭제할까요?`)
+        + await bridgeText(item);
 }
 
 /**

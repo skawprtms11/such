@@ -352,7 +352,8 @@ function placeLabels(wants, gapMid) {
 /**
  * 간선 테이블 → 좌표 🔑 (2-pass - 화면이 카드 높이를 재서 넘긴다).
  *
- *   x  `col * (lane + gapX)` - 카드 폭이 모두 같아 **이산값**이다 (들여쓰기가 없다)
+ *   x  `col * (lane + gapX)` - 카드 폭이 모두 같아 **이산값**이다 (들여쓰기가 없다).
+ *      단, **그 층에 혼자인 카드**는 자식 자리 가운데로 **반열**(`pitch / 2`)까지 옮긴다 (T자)
  *   y  층 띠를 쌓는다. `yTop(L) = yTop(L-1) + 층 내 최대 높이 + gapY`
  *
  * 모든 간선은 **출발 = 카드 바닥 · 도착 = 카드 천장**이고 꺾임은 **층 사이 틈 가운데**에서만
@@ -376,7 +377,6 @@ export function layoutDag(nodes, edges, opts = {}) {
     const a = arranged(nodes, edges);
     const hOf = new Map(a.list.map((n) => [n.id, Math.max(Number(n.height) || 0, 24)]));
     const pitch = lane + gapX;
-    const cx = (key) => r(a.col.get(key) * pitch + lane / 2);
     const rowH = a.rowsAt.map((items) => items
         .reduce((m, it) => Math.max(m, it.node ? hOf.get(it.node) : 0), 24));
     const yTop = rowH.map(() => 0);
@@ -384,11 +384,48 @@ export function layoutDag(nodes, edges, opts = {}) {
     /** 층 L 아래 틈의 가운데 - 버스는 이 높이에만 있다 (카드 띠를 건드리지 않는다) */
     const gapMid = (L) => r(yTop[L - 1] + rowH[L - 1] + gapY / 2);
 
+    /**
+     * T자 배치 🔑 - **규칙 하나다: 그 층에 항목이 하나뿐인 카드만 반열(pitch/2) 단위로
+     * 자식들이 내려가는 자리의 가운데로 옮긴다.** 갈래 부모가 자식 열 범위의 가운데 위로
+     * 올라가 세로 기둥 + 가로 버스, 즉 T 가 된다.
+     *
+     * - **아래 층부터 위로** 정하므로 갈래 부모 위의 순차 줄기도 차례로 따라 올라온다
+     *   (부모의 자리는 자식의 최종 자리로 계산한다)
+     * - 자식이 다음 층에서 **더미 열**로 내려가면(긴 간선) 그 더미 열을 자식으로 본다 -
+     *   선이 실제로 지나는 열이 T 의 팔이다
+     * - 🔑 **옆에 다른 카드·지나가는 선(더미)이 있는 층은 옮기지 않는다.** 그 층의 x 대역이
+     *   겹치거나(P4) 카드가 지나가는 선을 삼킨다(P2). 혼자인 층은 col 이 0 이라 왼쪽으로
+     *   밀려날 일도 없다
+     * - 자식 자리의 가운데가 반열 격자에 없으면(자식마다 이동량이 달라진 경우) **가장 가까운
+     *   반열**로 맞춘다 - x 는 `col * pitch + k * (pitch / 2)` 만 갖는다 (검사기 P5)
+     */
+    const half = Math.max(1, Math.round(pitch / 2));
+    const baseX = (key) => a.col.get(key) * pitch;
+    const xOf = new Map();
+    /** 층에 혼자인 카드를 자식 자리 가운데로 옮긴다 (자식이 없으면 그대로) */
+    const center = (it, L) => {
+        const kids = a.rows
+            .filter((e) => e.from === it.node && a.span(e) >= 1)
+            .map((e) => (L + 1 === a.layer.get(e.to) ? e.to : a.dkey(e, L + 1)))
+            .map((key) => xOf.get(key) ?? baseX(key));
+        if (!kids.length) return;
+        const mid = (Math.min(...kids) + Math.max(...kids)) / 2;
+        const base = baseX(it.key);
+        xOf.set(it.key, base + Math.round((mid - base) / half) * half);
+    };
+    for (let L = a.maxL; L >= 1; L -= 1) {
+        const items = a.rowsAt[L - 1];
+        items.forEach((it) => xOf.set(it.key, baseX(it.key)));
+        if (items.length === 1 && items[0].node) center(items[0], L);
+    }
+    const xAt = (key) => xOf.get(key) ?? baseX(key);
+    const cx = (key) => r(xAt(key) + lane / 2);
+
     const boxes = {};
     const cols = {};
     a.layers.forEach((row, i) => row.forEach((id) => {
         cols[id] = a.col.get(id);
-        boxes[id] = { x: r(a.col.get(id) * pitch), y: r(yTop[i]), w: lane, h: r(hOf.get(id)) };
+        boxes[id] = { x: r(xAt(id)), y: r(yTop[i]), w: lane, h: r(hOf.get(id)) };
     }));
 
     let lineX = 0;

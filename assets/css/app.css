@@ -1751,6 +1751,9 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 /* ⚠️ 합류 버스는 좌표가 겹쳐 그려진다 - 반투명을 쓰면 겹친 자리만 진해진다 (불투명 실선만) */
 .pm-edge { fill: none; stroke: var(--gray-400); stroke-width: 2; }
 .pm-edge__head { fill: var(--gray-400); stroke: none; }
+/* 연결 미리보기 - 마우스를 올린 카드로 이어질 자리를 점선으로 보여 준다 (process.js) */
+.pm-edge.pm-ghost { stroke: var(--blue); stroke-dasharray: 6 4; }
+.pm-edge__head.pm-ghost { fill: var(--blue); }
 
 /* 흐름 상태 알림 - 시작이 여럿 · 순환 (막지 않고 알리기만 한다) */
 .pm-status { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
@@ -1786,16 +1789,30 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
 .pm-epop input:focus { border-color: var(--blue); outline: none; }
 .pm-epop__row { display: flex; align-items: center; gap: 4px; }
 
-/* 카드 아래 편집 손잡이 - ＋ 다음 단계 · ↳ 이미 있는 단계로 잇기 (층 사이 틈에 뜬다) */
+/* 하위 프로세스 이름 입력칸 - 층 사이 틈에 뜬다 (카드 우클릭 → 하위 프로세스 추가) */
 .pm-port {
     position: absolute; top: 100%; left: 0; z-index: 3;
     display: flex; justify-content: center; gap: 4px; width: 100%; margin-top: 4px;
-    opacity: 0; pointer-events: none; transition: opacity .12s ease;
 }
-.pm-node:hover .pm-port, .pm-port:focus-within, .pm-port--form { opacity: 1; pointer-events: auto; }
-.pm-port__btn { width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: 999px; }
-.pm-port--form { gap: 4px; }
 .pm-port--form input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--blue); border-radius: 8px; background: #fff; font: inherit; font-size: 12.5px; }
+
+/* 카드 우클릭 메뉴 - 하위 프로세스 추가 · 연결… · 속성 · 삭제 (비편집은 속성 보기만) */
+.pm-menu {
+    position: absolute; z-index: 6; min-width: 170px;
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 6px; border: 1px solid var(--gray-300); border-radius: 10px; background: #fff;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, .16);
+}
+.pm-menu__head { margin: 0 0 2px; padding: 4px 8px; border-bottom: 1px solid var(--gray-200); color: var(--gray-500); font-size: 11.5px; font-weight: 600; }
+.pm-menu__btn {
+    display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px;
+    border: 0; border-radius: 6px; background: none; color: var(--gray-800);
+    font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+}
+.pm-menu__btn:hover, .pm-menu__btn:focus-visible { background: var(--gray-100); outline: none; }
+.pm-menu__btn .icon { color: var(--gray-500); }
+.pm-menu__btn.is-danger, .pm-menu__btn.is-danger .icon { color: var(--red); }
+.pm-menu__btn.is-danger:hover { background: var(--red-soft); }
 
 /* 연결 모드 - 고를 수 없는 카드는 흐리게 (판정은 db.reachableFrom) */
 .cl-manage.is-linking .pm-node .pm-card { cursor: pointer; }
@@ -1967,5 +1984,6 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
     body.cl-printing .pm-canvas { overflow: visible; }
     body.cl-printing .pm-node, body.cl-printing .pm-step,
     body.cl-printing .pm-sit, body.cl-printing .pm-pnote { break-inside: avoid; }
-    body.cl-printing .pm-port, body.cl-printing .pm-status { display: none !important; }
+    body.cl-printing .pm-port, body.cl-printing .pm-status,
+    body.cl-printing .pm-menu { display: none !important; }
 }

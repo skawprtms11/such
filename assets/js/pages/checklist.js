@@ -98,8 +98,8 @@ export async function render(root, { user }) {
         const el = document.activeElement;
         if (el && body.contains(el) && el.matches('input, textarea, select')) return;
         if (document.querySelector('.modal-back')) return;
-        // 빠른 추가·단계 입력칸 · 간선 팝오버 · 아직 저장하지 않은 우측 설명 표의 입력값
-        const editing = '.pm-quick__form, .pm-port--form, .pm-epop,'
+        // 빠른 추가·단계 입력칸 · 간선 팝오버 · 카드 우클릭 메뉴 · 아직 저장하지 않은 설명 표
+        const editing = '.pm-quick__form, .pm-port--form, .pm-epop, .pm-menu,'
             + ' .pm-side .is-dirty, .cl-reg .is-dirty, .cb .is-dirty';
         if (body.querySelector(editing)) return;
         reload();
