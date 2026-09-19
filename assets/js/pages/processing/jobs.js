@@ -7,10 +7,10 @@
  */
 import { can } from '../../auth.js';
 import * as db from '../../db.js';
-import { PROCESS_ITEM_KIND, PROCESS_STATUS } from '../../config.js';
+import { PROCESS_ITEM_KIND, PROCESS_PHASE, PROCESS_STATUS } from '../../config.js';
 import { needQty } from '../../processing-calc.js';
 import {
-    confirmDialog, downloadCsv, esc, num, openModal, toast, today,
+    confirmDialog, downloadCsv, esc, fmtDateTime, num, openModal, toast, today,
 } from '../../util.js';
 import { emptyRow, groupLines, kindTag, openSafe, statusOptions, statusTag } from './common.js';
 import { printProcessDoc } from './doc.js';
@@ -159,7 +159,8 @@ function rowHtml(j, i, canManage) {
 
 /**
  * 문서생성 / 문서보기.
- * 🔑 번호가 없으면 채번하고(대기 → 진행 자동 전이), 있으면 그대로 다시 인쇄한다.
+ * 🔑 번호가 없으면 채번하고, 있으면 그대로 다시 인쇄한다. **문서생성은 상태를 바꾸지 않는다**
+ * (§8 개정 - 진행은 앱 작업전 검수로만 된다).
  * 재생성은 하지 않는다 - 같은 번호의 내용이 다른 종이가 두 장 돌면 현장 사고다.
  */
 async function handleDoc(id, user, reload) {
@@ -171,7 +172,7 @@ async function handleDoc(id, user, reload) {
                 throw new Error('작업지시서를 생성할 권한이 없습니다.');
             }
             if (!(await confirmDialog(
-                '작업지시서를 생성할까요?\n생성하면 문서번호가 정해지고 상태가 「진행」이 됩니다.'
+                '작업지시서를 생성할까요?\n생성하면 문서번호가 정해집니다.'
                 + '\n이후에는 수량·구성품을 수정할 수 없습니다.'))) return;
             await db.issueProcessDoc(id, user);
         }
@@ -245,7 +246,7 @@ export async function openJobDetail(jobId, user, reload) {
     }
     const { job, items } = found;
     const canManage = can(user, 'manageProcessing');
-    const done = job.status === PROCESS_STATUS.DONE;
+    const photos = await loadPhotos(job.id);
 
     const m = openModal(`${job.product_code} · ${job.product_name}`, `
 <table class="grid pc-detail">
@@ -257,7 +258,10 @@ export async function openJobDetail(jobId, user, reload) {
       <th>완료요청일</th><td>${esc(job.due_date)}</td></tr>
   <tr><th>등록자</th><td>${esc(job.created_by_name)}</td>
       <th>등록일</th><td>${esc(String(job.created_at).slice(0, 10))}</td></tr>
+  <tr><th>작업전 검수</th><td>${checkedCell(job.pre_check_by_name, job.pre_check_at)}</td>
+      <th>완료 검수</th><td>${checkedCell(job.done_by_name, job.done_at)}</td></tr>
 </table>
+${photosHtml(photos)}
 <div class="pc-sec">
   <div class="pc-sec__head"><h4>구성품</h4></div>
   <div class="table-wrap"><table class="grid pc-items">
@@ -274,33 +278,131 @@ export async function openJobDetail(jobId, user, reload) {
 </div>`, {
         wide: true,
         footer: `
-${canManage ? `
-<button class="btn" id="pd-edit" type="button">수정</button>
-${job.doc_no ? `<button class="btn ${done ? '' : 'btn--success'}" id="pd-done" type="button"
-  >${done ? '완료취소' : '작업완료'}</button>` : ''}` : ''}
+${canManage ? '<button class="btn" id="pd-edit" type="button">수정</button>' : ''}
 <span class="toolbar__spacer"></span>
 <button class="btn btn--primary" id="pd-doc" type="button">${job.doc_no ? '작업지시서' : '문서생성'}</button>
 <button class="btn" id="pd-close" type="button">닫기</button>`,
     });
 
-    m.root.querySelector('#pd-close').addEventListener('click', () => m.close());
-    m.root.querySelector('#pd-edit')?.addEventListener('click', () => {
+    // 🔑 사진 주소는 화면을 닫을 때 반드시 놓는다 (mock 의 objectURL 은 안 놓으면 샌다).
+    // `openModal` 이 스스로 닫는 두 경로(× 버튼 · 배경 클릭)도 같이 받는다 - `release()` 는
+    // 여러 번 불러도 안전하다
+    const close = () => {
+        photos.release();
         m.close();
+    };
+    m.root.addEventListener('click', (e) => {
+        if (e.target === m.root || e.target.closest('.modal__close')) photos.release();
+    });
+    m.root.querySelector('#pd-close').addEventListener('click', close);
+    m.root.querySelector('#pd-edit')?.addEventListener('click', () => {
+        close();
         openSafe(openJobForm(found, user, reload));
     });
     m.root.querySelector('#pd-doc').addEventListener('click', async () => {
-        m.close();
+        close();
         await handleDoc(job.id, user, reload);
     });
-    m.root.querySelector('#pd-done')?.addEventListener('click', async () => {
-        try {
-            if (done) await db.revokeProcessDone(job.id, user);
-            else await db.setProcessDone(job.id, user);
-            m.close();
-            toast(done ? '완료를 취소했습니다.' : '작업을 완료했습니다.', 'success');
-            await reload();
-        } catch (err) {
-            toast(err.message, 'error');
-        }
+    // 주소는 **누르는 순간** 다시 읽는다. 아래 재발급으로 바뀌어 있을 수 있다
+    m.root.querySelectorAll('button[data-path]').forEach((el) => {
+        el.addEventListener('click', () => openPhoto(photos.urls.get(el.dataset.path),
+            el.dataset.cap));
+    });
+    bindPhotoRetry(m.root, photos);
+}
+
+/**
+ * 서명 URL 은 10분이면 만료된다 (`store.js` 의 `fileUrls`).
+ * 팝업을 오래 열어 두면 썸네일이 깨지므로, **깨진 그림만** 한 번 다시 발급받아 갈아 끼운다.
+ * 팝업을 열 때마다 새로 발급하므로 이 경로는 오래 열어 둔 경우에만 탄다.
+ */
+function bindPhotoRetry(root, photos) {
+    root.querySelectorAll('img[data-path]').forEach((img) => {
+        img.addEventListener('error', async () => {
+            if (img.dataset.retried) return;
+            img.dataset.retried = '1';
+            try {
+                const url = await photos.reissue(img.dataset.path);
+                if (url) img.src = url;
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
+}
+
+/**
+ * 검수 사진 메타 + 주소.
+ * 앱이 남긴 증빙을 **보여주기만** 한다 - 웹에서는 찍지도 지우지도 않는다 (§8 · A16).
+ */
+async function loadPhotos(jobId) {
+    const [pre, done] = await Promise.all([
+        db.listProcessPhotos(jobId, PROCESS_PHASE.PRE),
+        db.listProcessPhotos(jobId, PROCESS_PHASE.DONE),
+    ]);
+    const rows = [...pre, ...done];
+    const packs = [await db.processPhotoUrls(rows.map((p) => p.path))];
+    const urls = packs[0].urls;
+    return {
+        pre,
+        done,
+        urls,
+        /** 만료된 주소 1건 다시 발급 (`bindPhotoRetry`) - 새로 받은 몫도 함께 놓는다 */
+        async reissue(path) {
+            const next = await db.processPhotoUrls([path]);
+            packs.push(next);
+            const url = next.urls.get(path);
+            if (url) urls.set(path, url);
+            return url;
+        },
+        release() {
+            packs.splice(0).forEach((pack) => pack.release());
+        },
+    };
+}
+
+/** 검수자·검수시각 칸 */
+function checkedCell(name, at) {
+    if (!at) return '-';
+    return `${esc(name || '')} · ${esc(fmtDateTime(at))}`;
+}
+
+/** 썸네일 한 칸 - 주소를 못 받은 사진(파일이 사라짐)도 자리는 남긴다 */
+function thumbHtml(url, cap, path) {
+    if (!url) return `<span class="pc-thumb is-gone"><span>${esc(cap)} (없음)</span></span>`;
+    return `
+<button class="pc-thumb" type="button" data-path="${esc(path)}" data-cap="${esc(cap)}">
+  <img src="${esc(url)}" alt="${esc(cap)}" data-path="${esc(path)}">
+  <span>${esc(cap)}</span></button>`;
+}
+
+/** 사진 묶음 한 절 */
+function photoSecHtml(rows, urls, title, capOf) {
+    if (!rows.length) return '';
+    return `
+<div class="pc-sec">
+  <div class="pc-sec__head">
+    <h4>${esc(title)} <span class="tag tag--gray">${rows.length}장</span></h4>
+  </div>
+  <div class="pc-thumbs">
+    ${rows.map((p) => thumbHtml(urls.get(p.path), capOf(p), p.path)).join('')}
+  </div>
+</div>`;
+}
+
+/** 사진 썸네일 줄 (작업전 N장 · 완료 3장) */
+function photosHtml({ pre, done, urls }) {
+    return photoSecHtml(pre, urls, '작업전 검수 사진', (p) => `구성품 ${p.line_no}`)
+        + photoSecHtml(done, urls, '완료 검수 사진', (p) => `완료 ${p.seq}`);
+}
+
+/** 썸네일을 눌렀을 때 원본 크기로 */
+function openPhoto(url, cap) {
+    if (!url) {
+        toast('사진 주소를 받지 못했습니다. 팝업을 닫았다가 다시 열어 주세요.', 'error');
+        return;
+    }
+    openModal(cap, `<div class="pc-photo"><img src="${esc(url)}" alt="${esc(cap)}"></div>`, {
+        wide: true,
     });
 }

@@ -6,17 +6,20 @@
 import {
     CHECK_CYCLE, CHECK_FLOW, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
-    LOAD_STATUS, PERMISSION, PROCESS_ITEM_KIND, PROCESS_ITEM_KINDS, PROCESS_STATUS,
+    LOAD_STATUS, PERMISSION, PROCESS_DONE_PHOTOS, PROCESS_ITEM_KIND, PROCESS_ITEM_KINDS,
+    PROCESS_PHASE, PROCESS_PHASES, PROCESS_STATUS,
     PROCESS_WORK_TYPES, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isFork, isValidLocation, stowStatus,
 } from './config.js';
 import {
-    expandMasterItems, formatDocNo, nextDocSeq, validateLots,
+    expandMasterItems, formatDocNo, missingSlots, nextDocSeq, photoLines, validateLots,
 } from './processing-calc.js';
+import { PHOTO, PHOTO_READ_ERROR } from './photo.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
 import { forkBase, rowNos } from './checkflow.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
+    fileUrls, putFile,
 } from './store.js';
 import { supabase } from './supabase.js';
 import { uid, today, toDateStr, addDays } from './util.js';
@@ -36,6 +39,15 @@ function normalize(db) {
     db.processMasterItems = db.processMasterItems ?? [];
     db.processJobs = db.processJobs ?? [];
     db.processJobItems = db.processJobItems ?? [];
+    db.processPhotos = db.processPhotos ?? [];
+    // 모바일 검수 도입 전에 등록된 작업 - 검수 시각이 없으면 작업대기다
+    db.processJobs.forEach((j) => {
+        j.pre_check_at = j.pre_check_at ?? null;
+        j.pre_check_by = j.pre_check_by ?? null;
+        j.pre_check_by_name = j.pre_check_by_name ?? '';
+        j.done_by = j.done_by ?? null;
+        j.done_by_name = j.done_by_name ?? '';
+    });
     // 종류(kind)가 없는 옛 항목 - 하위가 있으면 프로세스, 없으면 체크항목으로 본다
     const hasKid = new Set(db.checklistItems.map((i) => i.parent_id).filter(Boolean));
     db.checklistItems.forEach((i) => {
@@ -3530,14 +3542,26 @@ function assertProcessing(user, what) {
     if (!canManageProcessing(user)) throw new Error(`유통가공 ${what} 권한이 없습니다.`);
 }
 
+/** 유통가공 **검수**(작업전·완료·그 취소) 권한 - 등록 권한과 다른 축이다 (A14) */
+export function canCheckProcessing(user) {
+    return !!PERMISSION[user?.role]?.updateStatus;
+}
+
+/** 검수 권한 확인 */
+function assertCheck(user) {
+    if (!canCheckProcessing(user)) throw new Error('유통가공 검수 권한이 없습니다.');
+}
+
 /**
- * 진행상태 판정 🔑 **유일한 출처**.
+ * 진행상태 판정 🔑 **유일한 출처** (docs/processing.md §8).
  * 상태 컬럼을 두지 않고 완료 시각으로 표현한다 (CLAUDE.md 핵심개념 1 과 같은 원칙).
- * 화면은 이 값을 그리기만 하고 다시 계산하지 않는다.
+ * 화면은 이 값을 그리기만 하고 `pre_check_at`·`done_at` 을 다시 해석하지 않는다.
+ *
+ * 🔑 **문서생성은 상태를 바꾸지 않는다.** 종이를 뽑은 것과 현장이 작업을 시작한 것은 다르다.
  */
 export function processStatus(job) {
     if (job?.done_at) return PROCESS_STATUS.DONE;
-    if (job?.doc_created_at) return PROCESS_STATUS.DOING;
+    if (job?.pre_check_at) return PROCESS_STATUS.DOING;
     return PROCESS_STATUS.WAIT;
 }
 
@@ -3844,7 +3868,12 @@ export async function createProcessJob(payload, user) {
         doc_created_at: null,
         doc_created_by: null,
         doc_created_by_name: '',
+        pre_check_at: null,
+        pre_check_by: null,
+        pre_check_by_name: '',
         done_at: null,
+        done_by: null,
+        done_by_name: '',
         created_by: user.id,
         created_by_name: user.name,
         created_at: new Date().toISOString(),
@@ -3943,40 +3972,29 @@ export async function deleteProcessJobs(ids, user) {
         const names = done.map((j) => j.doc_no || j.product_code).join(', ');
         throw new Error(`완료된 작업은 삭제할 수 없습니다 (${names}). 완료취소 후 삭제하세요.`);
     }
+    // A18 - 현장이 작업전 사진을 남긴 건은 지우지 않는다 (증빙만 남고 작업이 사라진다)
+    const doing = rows.filter((j) => j.pre_check_at);
+    if (doing.length) {
+        const names = doing.map((j) => j.doc_no || j.product_code).join(', ');
+        throw new Error(`작업중인 작업은 삭제할 수 없습니다 (${names}).`
+            + ' 앱에서 작업전검수를 취소한 뒤 삭제하세요.');
+    }
     const now = new Date().toISOString();
     rows.forEach((job) => { job.deleted_at = now; });
     await save(db);
     return rows.length;
 }
 
-/** 작업완료 - 작업지시서가 나간 건만 완료할 수 있다 (대기 → 완료 건너뛰기 금지) */
-export async function setProcessDone(id, user) {
-    assertProcessing(user, '작업완료');
-    const db = (await load());
-    const job = aliveJobs(db).find((j) => j.id === id);
-    if (!job) throw new Error('작업을 찾을 수 없습니다.');
-    if (!job.doc_no) throw new Error('작업지시서를 생성한 뒤에 완료 처리할 수 있습니다.');
-    if (job.done_at) return withStatus(job);
-    const now = new Date().toISOString();
-    Object.assign(job, { done_at: now, updated_at: now });
-    await save(db);
-    return withStatus(job);
-}
-
-/** 완료취소 - 진행으로 되돌린다 (문서번호는 그대로 둔다) */
-export async function revokeProcessDone(id, user) {
-    assertProcessing(user, '완료취소');
-    const db = (await load());
-    const job = aliveJobs(db).find((j) => j.id === id);
-    if (!job) throw new Error('작업을 찾을 수 없습니다.');
-    if (!job.done_at) return withStatus(job);
-    Object.assign(job, { done_at: null, updated_at: new Date().toISOString() });
-    await save(db);
-    return withStatus(job);
-}
+/**
+ * ⚠️ `setProcessDone` 은 **없앴다** (docs/processing.md §8 개정).
+ * 완료는 사진 3장이 있어야 성립하므로 앱 완료검수(`saveDoneCheck` → `completeDoneCheck`)로만
+ * 찍는다. 버튼 하나를 남겨 두면 증빙 없는 완료가 생기고, 그 건은 앱에서 취소하기 전까지
+ * 사진을 붙일 수 없다. 완료취소(`revokeProcessDone`)는 아래 「모바일 검수」 절에 있다.
+ */
 
 /**
- * 작업지시서 문서번호 채번 + `doc_created_at` 기록 🔑 (대기 → 진행 자동 전이).
+ * 작업지시서 문서번호 채번 + `doc_created_at` 기록 🔑
+ * **상태는 바꾸지 않는다** (§8 개정 - 종이를 뽑은 것과 현장이 착수한 것은 다르다).
  *
  * 이미 번호가 있으면 **그대로 돌려준다**(재생성 없음 - 같은 번호의 다른 종이가 돌면 현장 사고다).
  * 두 사람이 같은 순간에 누르면 같은 번호가 나올 수 있어 방어가 두 겹이다.
@@ -4013,6 +4031,295 @@ export async function issueProcessDoc(id, user) {
         }
     }
     throw new Error('문서번호 채번에 실패했습니다. 다시 시도해 주세요.');
+}
+
+/* ----------------------------- 모바일 검수 (§17) ----------------------------- */
+/**
+ * 현장이 휴대폰으로 남기는 **사진 증빙**. 상태를 움직이는 유일한 경로다.
+ *
+ *   작업대기 ─(작업전 검수: 구성품 줄마다 1장)→ 작업중 ─(완료 검수: 3장)→ 작업완료
+ *
+ * 🔑 **화면이 잠그는 조건을 여기에도 둔다.** 「사진이 다 찼을 때만 검수완료」 는 표현이 아니라
+ * 쓰기 허용 조건이라, 화면 버튼만 잠그면 db 를 직접 불러 뚫린다.
+ * 🔑 **되돌릴 수 없는 저장(업로드·시각 기록)은 실패 경로마다 `invalidate()`** 한다 -
+ * `db` 객체는 store 캐시와 같은 객체라 실패한 값이 남으면 다음 저장이 밀어 넣는다.
+ */
+
+/**
+ * 사진 Storage 경로 🔑 **만드는 곳은 여기 한 곳뿐이다.**
+ * 결정적이라 재촬영·재저장이 같은 파일을 덮어쓴다(고아 파일이 쌓이지 않는다).
+ */
+function photoPath(jobId, phase, slot) {
+    return `jobs/${jobId}/${phase}/${slot}.jpg`;
+}
+
+/** 이 작업·단계의 사진 메타 (line_no → seq 순) */
+function photosOf(db, jobId, phase) {
+    return db.processPhotos
+        .filter((p) => p.job_id === jobId && p.phase === phase)
+        .sort((a, b) => ((a.line_no ?? 0) - (b.line_no ?? 0)) || ((a.seq ?? 1) - (b.seq ?? 1)));
+}
+
+/** 검수 대상 작업 - 없음·삭제됨·문서 없음(A17)을 한 곳에서 거른다 */
+function checkJob(db, jobId) {
+    const job = aliveJobs(db).find((j) => j.id === jobId);
+    if (!job) throw new Error('작업을 찾을 수 없습니다.');
+    if (!job.doc_no) throw new Error('작업지시서를 생성한 뒤에 검수할 수 있습니다.');
+    return job;
+}
+
+/** 촬영 결과 검증 - 이미지가 아니거나 비었거나 상한(1MB)을 넘으면 거부한다 */
+function checkBlob(blob) {
+    const size = Number(blob?.size ?? 0);
+    const type = String(blob?.type ?? '');
+    if (!size || !type.startsWith('image/') || size > PHOTO.maxBytes) {
+        throw new Error(PHOTO_READ_ERROR);
+    }
+    return size;
+}
+
+/**
+ * 업로드 → 메타 upsert (커밋 지점 ①).
+ * 일부만 올라가면 **성공한 것만 메타에 남기고 오류를 던진다.** 다시 저장하면 남은 것만
+ * 올라간다(경로가 결정적이라 중복이 없다). 시각 기록은 여기서 하지 않는다.
+ *
+ * @param {Array<{slot:number, blob:Blob, size:number}>} rows
+ */
+async function commitPhotos(jobId, phase, rows, user) {
+    const saved = [];
+    let failed = null;
+    for (const r of rows) {
+        const path = photoPath(jobId, phase, r.slot);
+        try {
+            // 폰 회선에서 동시 업로드는 더 잘 깨진다
+            await putFile(path, r.blob);
+            saved.push({ ...r, path });
+        } catch (err) {
+            failed = err;
+            break;
+        }
+    }
+
+    // 한 장도 못 올렸으면 남길 메타가 없다 - 캐시를 버리고 그대로 던진다
+    if (!saved.length) {
+        invalidate();
+        throw failed;
+    }
+
+    // 업로드가 도는 동안(수 초) 캐시가 낡는다. 메타는 **다시 읽은** 값 위에 얹는다
+    invalidate();
+    const db = (await load());
+    const now = new Date().toISOString();
+    saved.forEach((r) => {
+        const line = phase === PROCESS_PHASE.PRE ? r.slot : null;
+        const seq = phase === PROCESS_PHASE.PRE ? 1 : r.slot;
+        const cur = db.processPhotos.find((p) => p.job_id === jobId && p.phase === phase
+            && (p.line_no ?? null) === line && Number(p.seq) === seq);
+        const patch = {
+            path: r.path,
+            size: r.size,
+            taken_by: user.id,
+            taken_by_name: user.name,
+            taken_at: now,
+        };
+        // 🔑 같은 자리는 **같은 행을 고친다.** 새 행을 만들면 unique 슬롯 제약에 걸린다
+        if (cur) Object.assign(cur, patch);
+        else {
+            db.processPhotos.push({
+                id: uid('pp'), job_id: jobId, phase, line_no: line, seq, ...patch,
+            });
+        }
+    });
+    try {
+        await save(db);
+    } catch (err) {
+        invalidate();
+        throw err;
+    }
+    if (failed) throw failed;
+    return photosOf(db, jobId, phase);
+}
+
+/** 시각 기록 - 실패하면 캐시를 버린다 (찍힌 시각이 남아 다음 저장에 섞이지 않게) */
+async function stamp(db, job, patch) {
+    Object.assign(job, patch, { updated_at: new Date().toISOString() });
+    try {
+        await save(db);
+    } catch (err) {
+        invalidate();
+        throw err;
+    }
+    return withStatus(job);
+}
+
+/**
+ * 검수 대상 작업 목록 (앱 `#/pcheck`).
+ * 🔑 **`doc_no` 가 있는 작업만** 본다 (A17). 목록·문서번호 입력·바코드 스캔이 같은 모집단이라
+ * 같은 작업이 경로에 따라 열리거나 안 열리는 일이 없다.
+ *
+ * @param {'pre'|'done'} phase
+ * @param {{keyword?:string}} f keyword - 문서번호·제품코드·제품명
+ */
+export async function listProcessJobsForCheck(phase, f = {}) {
+    if (!PROCESS_PHASES.includes(phase)) throw new Error('검수 단계가 올바르지 않습니다.');
+    const db = (await load());
+    let rows = aliveJobs(db).filter((j) => j.doc_no).filter((j) => (phase === PROCESS_PHASE.PRE
+        ? !j.pre_check_at
+        : j.pre_check_at && !j.done_at));
+    const k = String(f.keyword ?? '').trim().toLowerCase();
+    if (k) {
+        rows = rows.filter((j) => `${j.doc_no} ${j.product_code} ${j.product_name}`
+            .toLowerCase().includes(k));
+    }
+    return rows
+        .map((j) => ({
+            ...withStatus(j),
+            photo_count: photosOf(db, j.id, phase).length,
+        }))
+        .sort((a, b) => (a.start_date === b.start_date
+            ? (a.doc_no > b.doc_no ? 1 : -1)
+            : (a.start_date > b.start_date ? 1 : -1)));
+}
+
+/**
+ * 문서번호로 작업 1건 (앱의 직접 입력·바코드 스캔).
+ * **주문번호는 보지 않는다** - 유통가공은 주문과 이어지지 않는 독립 업무다.
+ */
+export async function findProcessJobByDocNo(docNo) {
+    const key = String(docNo ?? '').trim();
+    if (!key) return null;
+    const db = (await load());
+    const job = aliveJobs(db).find((j) => j.doc_no === key);
+    if (!job) return null;
+    return { job: withStatus(job), items: jobItemsOf(db, job.id) };
+}
+
+/** 사진 메타 목록 (화면이 「무엇이 저장됐나」를 판단하는 유일한 근거) */
+export async function listProcessPhotos(jobId, phase) {
+    const db = (await load());
+    return photosOf(db, jobId, phase);
+}
+
+/**
+ * 사진 주소 발급. 화면은 정리 함수에서 반드시 `release()` 를 부른다
+ * (mock 의 objectURL 은 지우지 않으면 샌다).
+ */
+export function processPhotoUrls(paths) {
+    return fileUrls(paths);
+}
+
+/**
+ * 작업전 검수 사진 저장 (커밋 지점 ① - 서버에 남는 첫 시점).
+ * @param {Array<{line_no:number, blob:Blob}>} photos 이번에 올릴 것만
+ */
+export async function savePreCheck(jobId, photos, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+    // 🔑 검수완료된 건은 화면이 읽기 전용이다. 같은 조건을 여기에도 둔다 -
+    // 없으면 db 를 직접 불러 증빙 사진을 **소리 없이 갈아끼울** 수 있다
+    if (job.pre_check_at) throw new Error('작업전 검수를 취소한 뒤에 다시 촬영할 수 있습니다.');
+
+    const lines = photoLines(jobItemsOf(db, job.id));
+    const rows = (photos ?? []).map((p) => {
+        const slot = Number(p.line_no);
+        if (!lines.includes(slot)) throw new Error('구성품에 없는 줄의 사진입니다.');
+        return { slot, blob: p.blob, size: checkBlob(p.blob) };
+    });
+    if (!rows.length) return photosOf(db, jobId, PROCESS_PHASE.PRE);
+    return commitPhotos(jobId, PROCESS_PHASE.PRE, rows, user);
+}
+
+/**
+ * 작업전 검수완료 (커밋 지점 ② - 상태가 바뀐다) → `작업중`.
+ * 🔑 판정은 화면 상태가 아니라 **저장된 사진 메타**로 한다.
+ */
+export async function completePreCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const lines = photoLines(jobItemsOf(db, job.id));
+    // 🔑 `miss.length === 0` 은 구성품이 0줄이어도 참이다. 그 경우 사진 한 장 없이
+    // 작업중이 되므로 따로 막는다 (학습로그 2026-09-16 「b === 0 이면 늘 통과」)
+    if (!lines.length) throw new Error('구성품이 없어 검수할 수 없습니다.');
+    const have = photosOf(db, jobId, PROCESS_PHASE.PRE).map((p) => Number(p.line_no));
+    const miss = missingSlots(lines, have);
+    if (miss.length) {
+        throw new Error(`구성품 ${lines.length}줄 중 ${miss.length}줄의 사진이 없습니다.`);
+    }
+    if (job.pre_check_at) return withStatus(job);
+    return stamp(db, job, {
+        pre_check_at: new Date().toISOString(),
+        pre_check_by: user.id,
+        pre_check_by_name: user.name,
+    });
+}
+
+/**
+ * 완료 검수 사진 저장 (정확히 `PROCESS_DONE_PHOTOS` 칸 중 이번에 찍은 것).
+ * @param {Array<{seq:number, blob:Blob}>} photos
+ */
+export async function saveDoneCheck(jobId, photos, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.pre_check_at) throw new Error('작업전 검수를 먼저 마쳐야 합니다.');
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const rows = (photos ?? []).map((p) => {
+        const slot = Number(p.seq);
+        if (!Number.isInteger(slot) || slot < 1 || slot > PROCESS_DONE_PHOTOS) {
+            throw new Error(`완료 사진 ${PROCESS_DONE_PHOTOS}장을 모두 촬영해 주세요.`);
+        }
+        return { slot, blob: p.blob, size: checkBlob(p.blob) };
+    });
+    if (!rows.length) return photosOf(db, jobId, PROCESS_PHASE.DONE);
+    return commitPhotos(jobId, PROCESS_PHASE.DONE, rows, user);
+}
+
+/** 완료처리 → `작업완료`. 작업전 검수를 건너뛴 작업은 거부한다 */
+export async function completeDoneCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.pre_check_at) throw new Error('작업전 검수를 먼저 마쳐야 합니다.');
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const want = Array.from({ length: PROCESS_DONE_PHOTOS }, (_, i) => i + 1);
+    const have = photosOf(db, jobId, PROCESS_PHASE.DONE).map((p) => Number(p.seq));
+    if (missingSlots(want, have).length) {
+        throw new Error(`완료 사진 ${PROCESS_DONE_PHOTOS}장을 모두 촬영해 주세요.`);
+    }
+    return stamp(db, job, {
+        done_at: new Date().toISOString(),
+        done_by: user.id,
+        done_by_name: user.name,
+    });
+}
+
+/**
+ * 작업전검수 취소 → `작업대기`.
+ * **사진은 지우지 않는다** (A22 - 다시 찍으면 같은 경로를 덮어쓴다).
+ */
+export async function revokePreCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('완료를 먼저 취소해야 합니다.');
+    if (!job.pre_check_at) return withStatus(job);
+    return stamp(db, job, { pre_check_at: null, pre_check_by: null, pre_check_by_name: '' });
+}
+
+/** 완료취소 → `작업중`. 켜는 쪽과 같은 권한(`updateStatus`)이 끈다 */
+export async function revokeProcessDone(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.done_at) return withStatus(job);
+    return stamp(db, job, { done_at: null, done_by: null, done_by_name: '' });
 }
 
 /* --------------------------------- 실시간 구독 -------------------------------- */

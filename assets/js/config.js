@@ -549,19 +549,39 @@ export const PROCESS_ITEM_KINDS = Object.values(PROCESS_ITEM_KIND);
 
 /**
  * 유통가공 진행상태 - **저장하지 않고 계산한다** (db.processStatus 가 유일한 출처).
- *   완료 : done_at 있음
- *   진행 : doc_created_at 있음 (작업지시서가 나갔다 = 현장에 내려갔다)
- *   대기 : 그 밖
+ *   작업완료 : done_at 있음      (앱 완료 검수 - 사진 3장)
+ *   작업중   : pre_check_at 있음 (앱 작업전 검수 - 구성품 줄마다 사진 1장)
+ *   작업대기 : 그 밖
+ *
+ * 🔑 문서생성(doc_created_at)은 **상태를 바꾸지 않는다** (docs/processing.md §8).
+ * 전날 미리 뽑아 둔 작업지시서 때문에 착수 전인데 진행으로 보이던 문제를 없앤 것이다.
  */
-export const PROCESS_STATUS = { WAIT: '대기', DOING: '진행', DONE: '완료' };
+export const PROCESS_STATUS = { WAIT: '작업대기', DOING: '작업중', DONE: '작업완료' };
 export const PROCESS_STATUSES = Object.values(PROCESS_STATUS);
 
-/** 진행상태별 태그 색 (.tag--*) */
+/**
+ * 진행상태 색 토큰 🔑 **하나뿐이다.**
+ * 웹은 `.tag--*` `.pc-bar--*` 로, 앱은 ui.js 의 `tag(label, tone)` 로 같은 값을 쓴다.
+ * 화면마다 색을 정하면 같은 상태가 웹·앱에서 다른 색으로 보인다.
+ */
 export const PROCESS_STATUS_TONE = {
     [PROCESS_STATUS.WAIT]: 'gray',
     [PROCESS_STATUS.DOING]: 'blue',
     [PROCESS_STATUS.DONE]: 'green',
 };
+
+/** 검수 사진 단계 (process_photos.phase) - 앱 라우트 `#/pcheck/<phase>/:id` 와 같은 값이다 */
+export const PROCESS_PHASE = { PRE: 'pre', DONE: 'done' };
+export const PROCESS_PHASES = Object.values(PROCESS_PHASE);
+
+/** 검수 단계 표시 문구 - 세그먼트·안내문이 같은 말을 쓰게 한다 */
+export const PROCESS_PHASE_LABEL = {
+    [PROCESS_PHASE.PRE]: '작업전 검수',
+    [PROCESS_PHASE.DONE]: '완료 검수',
+};
+
+/** 완료 검수 사진 장수 - **정확히** 이 수만 받는다 (docs/processing.md A20) */
+export const PROCESS_DONE_PHOTOS = 3;
 
 /**
  * 메뉴 정의
@@ -629,6 +649,9 @@ export const APP_TABS = [
     { key: 'stow', route: '#/stow', label: '적치', title: '출고적치', icon: 'stow' },
     { key: 'adjust', route: '#/adjust', label: '조정', title: '조정요청', icon: 'adjust' },
     { key: 'load', route: '#/load', label: '상차', title: '상차작업', icon: 'loading' },
+    // 유통가공은 주문 흐름(출고→검수→적치→조정→상차)과 이어지지 않는 독립 업무라 맨 뒤에 둔다.
+    // 앱에서는 **검수(사진 증빙)만** 한다 - 등록·문서생성은 웹이다 (docs/processing.md §17)
+    { key: 'pcheck', route: '#/pcheck', label: '가공', title: '유통가공', icon: 'processing' },
 ];
 
 /**

@@ -142,8 +142,9 @@ export async function render(root, { user, params }) {
 이 탭바는 과도기 코드다(§0). 6단계 정리에서 함께 걷어낸다.
 
 ⚠️ 위 `MENUS`/`mobile` 플래그는 **웹 셸(`app.html`)의 반응형 탭바 전용**이다.
-앱 셸(`m.html`)은 별도 상수 `config.js` 의 `APP_TABS`(하단 탭 5개) · `APP_MENU`(상단바 메뉴)를
-쓴다. 자세한 내용은 [docs/mobile.md](mobile.md#2-하단-탭-5개-configjs-의-app_tabs) 참고.
+앱 셸(`m.html`)은 별도 상수 `config.js` 의 `APP_TABS`(하단 탭 6개 — 출고·검수·적치·조정·상차·가공) ·
+`APP_MENU`(상단바 메뉴)를 쓴다.
+자세한 내용은 [docs/mobile.md](mobile.md#2-하단-탭-6개-configjs-의-app_tabs) 참고.
 
 ---
 

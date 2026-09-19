@@ -285,3 +285,26 @@ db 함수를 직접 부르면 주기 밖 기록이 들어가 `late`·`checklistS
 **파일**: `assets/js/db.js`(`issueProcessDoc` `buildJobItems` `updateProcessJob`) ·
 `assets/js/pages/processing/jobform.js` · `assets/js/processing-calc.js`(`needQty`) ·
 `docs/processing.md`
+
+---
+
+### 2026-09-19 — [db-guard-team] 새 역할에 권한을 주면서 기존 테이블의 UPDATE 정책을 안 봤다
+
+**무엇**: 모바일 검수 권한을 `updateStatus`(현장작업자 포함)로 정하고 새 테이블·버킷 정책은
+전부 그렇게 맞췄는데, **상태를 찍는 대상인 `process_jobs` 의 UPDATE 정책**은 이전 판의
+`can_manage_processing()` 그대로였다. 현장작업자가 검수를 끝내면 사진은 올라가고
+`pre_check_at` UPDATE 는 RLS 로 0행이 되는데, PostgREST 는 오류를 주지 않아 앱은
+성공 토스트를 띄웠다. mock 모드는 RLS 를 타지 않아 브라우저 29항목이 전부 통과했다.
+**원인**:
+  1. 권한 축을 하나 늘리면서 「새로 만드는 것」만 맞추고 「이미 있는 것 중 그 역할이
+     건드려야 하는 것」을 열거하지 않았다.
+  2. `store.js` 가 update 결과 행 수를 보지 않아 RLS 무음 실패가 성공으로 보였다.
+**교훈**:
+  1. **역할이 새 동작을 얻으면 그 동작이 쓰는 모든 테이블의 정책을 표로 적고 대조한다.**
+     insert 하는 테이블뿐 아니라 update 하는 테이블(상태 컬럼이 있는 부모)까지.
+  2. **쓰기 결과는 되읽는다.** `pushChanges` 가 `.select('id')` 로 반영 행 수를 확인하고
+     0행이면 예외를 던진다 (select 정책이 좁은 테이블은 `scopedSelect` 로 예외 표시).
+  3. **RLS 위의 동작은 mock 으로 증명되지 않는다.** 적용 후 실 계정으로 확인할 항목을
+     문서에 적어 둔다 (`docs/processing.md` §17-8).
+**파일**: `supabase/schema.sql`(`process_jobs_update` `enforce_process_check_cols`) ·
+`assets/js/store.js`(`pushChanges` `scopedSelect`) · `docs/processing.md`

@@ -112,6 +112,32 @@ export function validateLots(rows, need) {
     return { ok: list.length > 0 && !errors.length && !sumMsg, total, diff, sumMsg, errors };
 }
 
+/* ------------------------------ 검수 사진 슬롯 ------------------------------ */
+
+/**
+ * 작업전 검수의 사진 슬롯 = **구성품 줄 번호**(`line_no`) 집합 (docs/processing.md §17-2 · A19).
+ * 한 구성품을 LOT 3개로 나눠도 실물은 한 품목이라 사진은 1장이다.
+ */
+export function photoLines(items) {
+    // 줄 번호는 1부터다(expandMasterItems). 서버 CHECK(process_photos_slot_chk)도 같은 값을
+    // 요구하므로 0·음수를 여기서 걸러 「저장은 되는데 서버가 거부」 하는 경로를 만들지 않는다
+    return [...new Set((items ?? []).map((i) => Number(i.line_no)))]
+        .filter((n) => Number.isInteger(n) && n > 0)
+        .sort((a, b) => a - b);
+}
+
+/**
+ * 있어야 할 슬롯 중 **아직 없는 것** (검수완료 허용 조건의 근거).
+ * @param {Array<number>} expected 있어야 할 슬롯 키
+ * @param {Array<number>} have 사진 메타가 있는 슬롯 키
+ */
+export function missingSlots(expected, have) {
+    const got = new Set((have ?? []).map(Number));
+    return [...new Set((expected ?? []).map(Number))]
+        .filter((n) => !got.has(n))
+        .sort((a, b) => a - b);
+}
+
 /* --------------------------------- 문서번호 --------------------------------- */
 
 /** 'YYYY-MM-DD' · Date · ISO 문자열을 `YYYYMMDD` 로 (문서번호 앞자리) */

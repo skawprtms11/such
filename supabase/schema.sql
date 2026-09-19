@@ -849,7 +849,8 @@ create index if not exists process_master_items_master_idx
     on public.process_master_items (master_id, sort_order);
 
 -- ─────────────────────── 유통가공 작업 (process_jobs) ───────────────────────
--- 진행상태는 저장하지 않는다. done_at → 완료, doc_created_at → 진행, 없으면 대기.
+-- 진행상태는 저장하지 않는다. done_at → 작업완료, pre_check_at → 작업중, 없으면 작업대기.
+-- (둘 다 앱 검수에서만 찍힌다 - 문서생성은 상태를 바꾸지 않는다 · docs/processing.md §8)
 -- 문서번호는 한 번 나가면 고정이고 재생성하지 않는다 (unique 가 최후 방어선).
 -- 삭제는 soft delete 라 지워진 작업의 번호도 되돌아오지 않는다.
 create table if not exists public.process_jobs (
@@ -875,7 +876,7 @@ create table if not exists public.process_jobs (
     check (due_date >= start_date)
 );
 
-comment on table public.process_jobs is '유통가공 작업. 진행상태는 저장하지 않고 done_at·doc_created_at 으로 계산한다(db.processStatus)';
+comment on table public.process_jobs is '유통가공 작업. 진행상태는 저장하지 않고 done_at·pre_check_at 으로 계산한다(db.processStatus)';
 
 create index if not exists process_jobs_date_idx on public.process_jobs (start_date, due_date);
 create index if not exists process_jobs_code_idx on public.process_jobs (product_code);
@@ -955,6 +956,8 @@ drop policy if exists process_jobs_insert on public.process_jobs;
 create policy process_jobs_insert on public.process_jobs for insert to authenticated
     with check (public.can_manage_processing() and created_by = auth.uid());
 
+-- ⚠️ 이 정책은 **아래 「모바일 검수」 블록에서 다시 만든다** (검수 권한까지 열고 트리거로 좁힌다).
+-- 여기 남겨 두는 것은 모바일 블록을 떼어내도 등록 권한자의 수정이 막히지 않게 하기 위해서다.
 drop policy if exists process_jobs_update on public.process_jobs;
 create policy process_jobs_update on public.process_jobs for update to authenticated
     using (public.can_manage_processing()) with check (public.can_manage_processing());
@@ -1022,4 +1025,195 @@ begin
             execute format('alter publication supabase_realtime add table public.%I', t);
         end if;
     end loop;
+end $$;
+
+-- ─────────── 유통가공 모바일 검수 (docs/processing.md §17) · 멱등 ───────────
+-- 현장이 휴대폰으로 남기는 사진 증빙. **상태를 움직이는 유일한 경로**다.
+--   작업대기 ─(작업전 검수: 구성품 줄마다 1장)→ 작업중 ─(완료 검수: 3장)→ 작업완료
+-- 🔑 문서생성(doc_created_at)은 더 이상 상태를 바꾸지 않는다 (§8 개정).
+-- 전부 if not exists / create or replace / drop policy if exists 라 몇 번을 돌려도 같은 결과다.
+-- ⚠️ 이 블록은 supabase/migrations 초안(20260919_processing_mobile.sql)과 **글자까지 같아야 한다.**
+
+alter table public.process_jobs add column if not exists pre_check_at      timestamptz;
+alter table public.process_jobs add column if not exists pre_check_by      uuid references public.profiles (id);
+alter table public.process_jobs add column if not exists pre_check_by_name text not null default '';
+alter table public.process_jobs add column if not exists done_by           uuid references public.profiles (id);
+alter table public.process_jobs add column if not exists done_by_name      text not null default '';
+
+comment on column public.process_jobs.pre_check_at is '작업전 검수 완료 시각. 있으면 작업중 (db.processStatus)';
+comment on column public.process_jobs.done_at is '완료 검수 시각. 있으면 작업완료 (앱에서만 찍힌다)';
+
+-- 사진 **파일은 Storage**(버킷 process-photos), 여기에는 메타만 둔다.
+create table if not exists public.process_photos (
+    id            text        primary key,
+    job_id        text        not null references public.process_jobs (id) on delete cascade,
+    phase         text        not null check (phase in ('pre', 'done')),
+    line_no       integer,                       -- 작업전: 구성품 줄 · 완료: null
+    seq           integer     not null default 1,
+    path          text        not null,          -- jobs/{job_id}/{phase}/{line_no|seq}.jpg
+    size          integer     not null default 0,
+    taken_by      uuid        references public.profiles (id),
+    taken_by_name text        not null default '',
+    taken_at      timestamptz not null default now()
+);
+
+comment on table public.process_photos is '유통가공 검수 사진 메타. 파일은 Storage 버킷 process-photos 에 있다';
+
+-- 🔑 슬롯 규칙을 서버에도 못 박는다 - 작업전은 「구성품 줄마다 1장」(line_no · seq 1),
+-- 완료는 「줄과 무관한 3장」(line_no 없음 · seq 1~3). db.js 의 commitPhotos 가 넣는 값과 같다.
+-- 없으면 phase 와 슬롯 키가 어긋난 행(작업전인데 line_no 없음)이 들어가 unique 슬롯이 헛돈다.
+alter table public.process_photos drop constraint if exists process_photos_slot_chk;
+alter table public.process_photos add constraint process_photos_slot_chk check (
+    seq > 0 and (
+        (phase = 'pre'  and line_no is not null and line_no > 0 and seq = 1)
+     or (phase = 'done' and line_no is null)
+    )
+);
+
+-- 🔑 null 이 섞인 unique 는 중복을 막지 못한다. coalesce 로 한 자리에 모은다.
+-- 재촬영·재저장은 **같은 행을 update** 하고 같은 경로를 덮어쓴다 (Storage 에 고아가 안 쌓인다)
+create unique index if not exists process_photos_slot_uidx
+    on public.process_photos (job_id, phase, coalesce(line_no, -1), seq);
+
+-- (job_id, phase) 인덱스는 위 unique 의 선두 두 컬럼과 겹쳐 쓸모가 없다. 쓰기만 느려진다
+drop index if exists public.process_photos_job_idx;
+
+alter table public.process_photos enable row level security;
+
+-- 🔑 검수는 manageProcessing 이 아니라 **updateStatus** 다 (docs/processing.md A14).
+-- 현장작업자는 등록 권한이 없지만 사진을 찍는 사람이고, 화주관리자는 그 반대다.
+-- 🔑 조회는 **활성 로그인 사용자**로 좁힌다(다른 테이블의 using(true) 와 다르다).
+-- 사진은 현장 사람·제품이 찍힌 개인정보라, 중지된 계정의 토큰이 남아 있어도 보이지 않게 한다.
+drop policy if exists process_photos_select on public.process_photos;
+create policy process_photos_select on public.process_photos for select to authenticated
+    using (public.my_role() is not null);
+
+drop policy if exists process_photos_insert on public.process_photos;
+create policy process_photos_insert on public.process_photos for insert to authenticated
+    with check (public.can_update_status() and taken_by = auth.uid());
+
+-- 🔑 재촬영도 「찍은 사람 = 나」 를 유지한다 (증빙의 명의 바꿔치기 차단)
+drop policy if exists process_photos_update on public.process_photos;
+create policy process_photos_update on public.process_photos for update to authenticated
+    using (public.can_update_status())
+    with check (public.can_update_status() and taken_by = auth.uid());
+
+drop policy if exists process_photos_delete on public.process_photos;
+create policy process_photos_delete on public.process_photos for delete to authenticated
+    using (public.my_role() = 'admin');
+
+-- ── 🔴 검수가 상태를 못 찍던 구멍 (process_jobs_update) ──
+-- 위쪽 블록의 process_jobs_update 는 can_manage_processing() 뿐이라, 현장작업자(worker)의
+-- pre_check_at·done_at UPDATE 가 **0행으로 조용히 실패**했다(PostgREST 는 오류를 주지 않는다).
+-- 정책을 updateStatus 까지 열고, 넓어진 만큼 트리거로 **고칠 수 있는 컬럼을** 좁힌다.
+create or replace function public.enforce_process_check_cols()
+    returns trigger language plpgsql set search_path = public as $$
+declare
+    probe public.process_jobs;
+begin
+    if public.can_manage_processing() then
+        return new;                      -- 등록 권한자는 종전대로 전부 수정
+    end if;
+    if not public.can_update_status() then
+        raise exception '유통가공 작업을 수정할 권한이 없습니다.';
+    end if;
+    -- 검수 컬럼만 old 로 되돌린 사본이 old 와 같아야 한다 = 나머지를 건드리지 않았다
+    probe := new;
+    probe.pre_check_at      := old.pre_check_at;
+    probe.pre_check_by      := old.pre_check_by;
+    probe.pre_check_by_name := old.pre_check_by_name;
+    probe.done_at           := old.done_at;
+    probe.done_by           := old.done_by;
+    probe.done_by_name      := old.done_by_name;
+    probe.updated_at        := old.updated_at;
+    if probe is distinct from old then
+        raise exception '검수 권한으로는 검수 항목만 수정할 수 있습니다.';
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_process_check_cols on public.process_jobs;
+create trigger trg_enforce_process_check_cols
+    before update on public.process_jobs
+    for each row execute function public.enforce_process_check_cols();
+
+drop policy if exists process_jobs_update on public.process_jobs;
+create policy process_jobs_update on public.process_jobs for update to authenticated
+    using      (public.can_manage_processing() or public.can_update_status())
+    with check (public.can_manage_processing() or public.can_update_status());
+
+-- ── Storage 버킷 (private · 1MB · JPEG 만) ──
+-- ⚠️ file_size_limit 은 압축 목표(200KB)의 5배다. 목표를 못 맞춘 사진(라벨·도장이 많은 화면은
+-- JPEG 가 잘 안 줄어든다)도 통과시키되 원본(3~8MB)은 확실히 막는다.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('process-photos', 'process-photos', false, 1048576, array['image/jpeg'])
+on conflict (id) do update
+    set public = false, file_size_limit = 1048576, allowed_mime_types = array['image/jpeg'];
+
+-- ── storage.objects 정책 (이 버킷 한정) ──
+-- ⚠️ storage.objects 는 supabase_storage_admin 소유다. 소유자 오류가 나면
+--    Dashboard → Storage → Policies 에서 같은 이름·같은 식으로 만든다.
+--    (`alter table storage.objects enable row level security` 는 넣지 않는다 - 소유자 오류가 난다.
+--     Supabase 는 이 테이블의 RLS 를 이미 켜 두었다)
+-- ⚠️ 읽기가 **버킷 전체**인 것은 버킷이 private 이기 때문이다. 서명 URL 발급도 이 정책을
+-- 탄다. 공개 버킷으로 바꾸면 주소만 알면 누구나 보게 되므로 바꾸지 않는다.
+-- 🔑 사진 메타(process_photos_select)와 같은 기준으로 **활성 로그인 사용자**만 읽는다.
+drop policy if exists process_photos_obj_select on storage.objects;
+create policy process_photos_obj_select on storage.objects for select to authenticated
+    using (bucket_id = 'process-photos' and public.my_role() is not null);
+
+-- 🔑 쓰기는 **경로까지** 강제한다. 권한만 보면 검수 권한자가 `jobs/…` 밖이나 없는 작업 아래에
+-- 아무 파일이나 올려 버킷을 개인 저장소로 쓸 수 있다. 경로 규칙은 db.js 의 photoPath 하나뿐이라
+-- (jobs/{job_id}/{phase}/{slot}.jpg) 서버가 같은 모양을 요구해도 정상 경로는 막히지 않는다.
+-- storage.foldername(name) 은 파일명을 뺀 폴더 배열이다 - [1]='jobs' · [2]=작업 id (1부터).
+drop policy if exists process_photos_obj_insert on storage.objects;
+create policy process_photos_obj_insert on storage.objects for insert to authenticated
+    with check (
+        bucket_id = 'process-photos'
+        and public.can_update_status()
+        and (storage.foldername(name))[1] = 'jobs'
+        and exists (
+            select 1 from public.process_jobs j
+            where j.id = (storage.foldername(name))[2] and j.deleted_at is null
+        )
+    );
+
+-- 🔑 update 정책이 꼭 필요하다 - 재촬영이 같은 경로를 덮어쓴다(upsert 는 UPDATE 를 탄다).
+-- insert 만 열면 재촬영이 조용히 실패한다.
+drop policy if exists process_photos_obj_update on storage.objects;
+create policy process_photos_obj_update on storage.objects for update to authenticated
+    using (bucket_id = 'process-photos' and public.can_update_status())
+    with check (
+        bucket_id = 'process-photos'
+        and public.can_update_status()
+        and (storage.foldername(name))[1] = 'jobs'
+        and exists (
+            select 1 from public.process_jobs j
+            where j.id = (storage.foldername(name))[2] and j.deleted_at is null
+        )
+    );
+
+drop policy if exists process_photos_obj_delete on storage.objects;
+create policy process_photos_obj_delete on storage.objects for delete to authenticated
+    using (bucket_id = 'process-photos' and public.my_role() = 'admin');
+
+-- ── 실시간 갱신 (멱등 가드 - alter publication 은 재실행 시 42710 으로 죽는다) ──
+do $$
+begin
+    if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime publication 이 없어 건너뜁니다.';
+        return;
+    end if;
+    if (select puballtables from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime 이 FOR ALL TABLES 라 추가할 것이 없습니다.';
+        return;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public'
+          and tablename = 'process_photos'
+    ) then
+        alter publication supabase_realtime add table public.process_photos;
+    end if;
 end $$;

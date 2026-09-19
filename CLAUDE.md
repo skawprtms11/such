@@ -17,7 +17,7 @@
 | 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` | `#/status` (상단바 메뉴) |
 | 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` | `#/ship` `#/inspect` `#/stow` `#/adjust` (탭 4개로 분리) |
 | 상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
-| 유통가공작업 | [docs/processing.md](docs/processing.md) | `assets/js/pages/processing.js` | `#/processing` | — (앱에 없음) |
+| 유통가공작업 | [docs/processing.md](docs/processing.md) | `assets/js/pages/processing.js` | `#/processing` | `#/pcheck` (세그 3개 — 작업전 검수 · 완료 검수 · 캘린더). **앱은 사진 검수만** 한다 |
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |
@@ -129,7 +129,9 @@ thefurerap/
 │     ├─ icons.js        단색 라인 SVG 아이콘 (currentColor 기반)
 │     ├─ steps.js        출고 처리 단계 계산 (여러 화면이 공유)
 │     ├─ checkflow.js    업무프로세스 도식의 좌표 계산 (순수 함수 · 웹/앱 공용)
-│     ├─ processing-calc.js  유통가공 순수 계산 (구성품 전개·LOT 분할·문서번호·캘린더 레인)
+│     ├─ processing-calc.js  유통가공 순수 계산 (구성품 전개·LOT 분할·문서번호·캘린더 레인·사진 슬롯)
+│     ├─ photo.js        검수 사진 압축 (긴 변 1280 · JPEG · 목표 200KB)
+│     ├─ idb.js          IndexedDB 래퍼 (mock 사진 저장소 + 촬영 초안)
 │     ├─ scanner.js      바코드 스캔 공통 모듈
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
@@ -139,7 +141,7 @@ thefurerap/
 │     └─ mobile/          모바일 앱 화면 층 (docs/mobile.md) — pages/ 와 서로 import 하지 않는다
 │        ├─ app.js        앱 셸 · 해시 라우터 · 하단 탭 · 상단바 메뉴(≡)
 │        ├─ ui.js         앱 공통 컴포넌트 (dock·scanBar·sheet·bigCounter 등)
-│        └─ screens/      화면별 모듈 (ship·inspect·stow·adjust·load·status·issues·wait·stock·account)
+│        └─ screens/      화면별 모듈 (ship·inspect·stow·adjust·load·pcheck·status·issues·wait·stock·account)
 ├─ public/icons/          PWA 아이콘 (해시 없이 그대로 복사됨)
 │                        icon.svg(파비콘) · icon-192/512.png(설치)
 │                        icon-maskable-512.png(안드로이드) · apple-touch-icon.png(iOS)
@@ -326,7 +328,7 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | `viewAll` 전체 조회 | ✅ | ✅ | ✅ | ❌ 본인 등록건만 | ✅ |
 | `download` 다운로드 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `createOrder` 주문 등록·수정 | ✅ | ❌ | ✅ | ✅ | ❌ |
-| `updateStatus` 출고·검수·적치·상차 | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `updateStatus` 출고·검수·적치·상차 · **유통가공 검수** | ✅ | ✅ | ❌ | ❌ | ✅ |
 | `createIssue` 이슈 등록 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `closeOrder` 출고 완료처리 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `manageNotice` 공지 등록·수정·삭제 | ✅ | ✅ | ❌ | ❌ | ❌ |
@@ -337,6 +339,14 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 **현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·상차리스트는 전부 처리하고,
 주문처리현황·이슈등록·공지사항은 조회만 한다 (공지 **댓글은 쓸 수 있다**).
 업무체크리스트는 **본인이 담당(상속 포함)인 항목만** 체크한다 (업무프로세스 편집은 못 한다).
+🔑 **유통가공은 등록 권한(`manageProcessing`)과 검수 권한(`updateStatus`)이 다른 축이다.**
+화주관리자는 웹에서 작업을 등록하지만 창고에 없어 검수를 하지 않고, 현장작업자는 등록은 못 하지만
+앱에서 사진을 찍는 사람이다. 판정은 `db.canCheckProcessing(user)` 한 곳이다
+([docs/processing.md](docs/processing.md) §7).
+🔑 **현장작업자는 유통가공 작업의 「검수 컬럼」만 고칠 수 있다** — `process_jobs` 의 update
+RLS 를 `updateStatus` 까지 열되 `trg_enforce_process_check_cols` 트리거가
+`pre_check_*` · `done_*` · `updated_at` 외의 컬럼이 바뀌면 거부한다. 정책만 좁혀 두었더니
+검수가 **RLS 0행으로 조용히 실패**했던 자리다 ([docs/processing.md](docs/processing.md) §5-1).
 이슈 처리는 단계별로 주체가 다르다 —
 이슈접수는 `updateStatus` 와 `createIssue` 를 함께 가진 역할(관리자·용마담당자),
 담당자확인은 선정된 확인담당자 본인·관리자, 종결요청은 담당자·관리자,
@@ -407,7 +417,8 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
 | `process_masters` | 유통가공 작업마스터 (제품별 구성품 BOM · docs/processing.md) | `work_type`(라벨/해체/세트) `product_code` `product_name` `created_by` `created_by_name` `updated_at` `deleted_at`(soft delete) · **`unique(product_code) where deleted_at is null`** |
 | `process_master_items` | 마스터 구성품 | `master_id`(on delete cascade) `kind`(제품/부자재) `code`(부자재는 빌 수 있다) `name` `qty_per`(작업 1개당 소요량) `sort_order` |
-| `process_jobs` | 유통가공 작업 | `doc_no`(작업지시서 문서번호 `YYYYMMDD-NN` · **unique**) `master_id` `work_type` `product_code` `product_name`(마스터 **스냅샷**) `qty` `start_date` `due_date` `doc_created_at`(=진행) `doc_created_by(_name)` `done_at`(=완료) `created_by(_name)` `updated_at` `deleted_at` · **진행상태는 저장하지 않고 계산한다(`db.processStatus`)** |
+| `process_jobs` | 유통가공 작업 | `doc_no`(작업지시서 문서번호 `YYYYMMDD-NN` · **unique**) `master_id` `work_type` `product_code` `product_name`(마스터 **스냅샷**) `qty` `start_date` `due_date` `doc_created_at`(문서 발행 시각 · **상태를 바꾸지 않는다**) `doc_created_by(_name)` `pre_check_at`(=작업중) `pre_check_by(_name)` `done_at`(=작업완료) `done_by(_name)` `created_by(_name)` `updated_at` `deleted_at` · **진행상태는 저장하지 않고 계산한다(`db.processStatus`)** |
+| `process_photos` | 유통가공 검수 사진 **메타** (파일은 Storage 버킷 `process-photos`) | `job_id`(on delete cascade) `phase`(pre 작업전 / done 완료) `line_no`(작업전은 구성품 줄 · 완료는 null) `seq`(완료의 1·2·3) `path`(`jobs/{job_id}/{phase}/{슬롯}.jpg` — **결정적**) `size` `taken_by(_name)` `taken_at` · **`unique(job_id, phase, coalesce(line_no,-1), seq)`** |
 | `process_job_items` | 작업 구성품 스냅샷 + LOT 행 | `job_id`(on delete cascade) `line_no`(**구성품 줄** - 같은 값이 한 구성품의 LOT 행들) `kind` `code` `name` `qty_per`(스냅샷) `lot`(제품 행만) `qty` `sort_order` · 필요수량은 `qty_per × job.qty` 로 **계산한다**(컬럼 없음) |
 
 `orders` 의 `pallet_count`(파렛트수) · `box_count`(박스수) 는 **출고주문처리의

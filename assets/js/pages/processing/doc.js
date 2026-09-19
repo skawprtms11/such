@@ -6,6 +6,7 @@
  *
  * 🔑 제품명·품목명·LOT 은 사용자 입력이라 **모든 값을 `esc()`** 로 내보낸다.
  */
+import { code128Svg } from '../../barcode.js';
 import { PROCESS_ITEM_KIND } from '../../config.js';
 import { needQty } from '../../processing-calc.js';
 import { esc, num, today, toast } from '../../util.js';
@@ -63,6 +64,8 @@ function docHtml(job, items) {
   .head h1 { margin: 0; font-size: 20pt; letter-spacing: 2px; }
   .head .meta { text-align: right; font-size: 11pt; }
   .head .meta b { font-size: 14pt; letter-spacing: 1px; }
+  /* 현장이 앱에서 스캔해 검수 화면을 여는 바코드다 (docs/processing.md §17-1) */
+  .head .bc { margin-top: 2mm; }
   hr { border: none; border-top: 2px solid #000; margin: 6mm 0; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th, td { border: 1px solid #000; padding: 2.5mm 3mm; word-break: break-all; }
@@ -81,6 +84,9 @@ function docHtml(job, items) {
     <div class="meta">
       문서번호 <b>${esc(job.doc_no ?? '-')}</b><br>
       출력일 ${esc(today())}
+      ${job.doc_no ? `<div class="bc">${code128Svg(job.doc_no, {
+        height: 40, moduleWidth: 1.4, showText: false,
+    })}</div>` : ''}
     </div>
   </div>
   <hr>

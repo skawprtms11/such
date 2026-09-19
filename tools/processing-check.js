@@ -21,13 +21,16 @@
  *         L2 `normalizeLots` 는 **앞 행을 바꾸지 않는다** (마지막 행만 손댄다)
  *         L3 `ok` 이면 합계 = 필요수량이고 오류가 없다 · 아니면 오류나 합계 문구가 있다
  *         L4 2행 이상인데 LOT 이 비었거나 중복이면 `ok` 가 아니다
+ *   사진   P1 작업전 슬롯 = 구성품 줄 집합 (LOT 행이 몇 개든 줄마다 1장)
+ *         P2 missingSlots 는 **찍지 않은 것만** 돌려준다 · 비면 전부 찍힌 것이다
+ *         P3 문자열·중복·없는 줄이 섞여도 결과가 같다 (앱 슬롯 키는 문자열이다)
  *   문서   D1 `parseDocNo(formatDocNo(d, n))` 이 원래 값과 같다 (세 자리 이상 포함)
  *         D2 `nextDocSeq` 는 그 날짜의 모든 순번보다 크다 (**숫자 비교** - 자릿수가 달라도)
  */
 import process from 'node:process';
 import {
-    CAL_CELLS, calendarGrid, calendarLanes, formatDocNo, needQty, nextDocSeq,
-    normalizeLots, parseDocNo, validateLots,
+    CAL_CELLS, calendarGrid, calendarLanes, formatDocNo, missingSlots, needQty, nextDocSeq,
+    normalizeLots, parseDocNo, photoLines, validateLots,
 } from '../assets/js/processing-calc.js';
 
 /** 시드 고정 난수 - 깨진 입력을 다시 만들어 볼 수 있어야 한다 (2번째 인자로 시드 교체) */
@@ -40,6 +43,7 @@ const pick = (n) => Math.floor(rnd() * n);
 
 const fails = {
     C1: 0, C2: 0, C3: 0, C4: 0, C5: 0, G1: 0, L1: 0, L2: 0, L3: 0, L4: 0, D1: 0, D2: 0,
+    P1: 0, P2: 0, P3: 0,
 };
 const first = {};
 function note(key, msg) {
@@ -235,6 +239,44 @@ function checkDocNo(t) {
     if (nextDocSeq([], date) !== 1) note('D2', `t${t} 빈 목록의 다음 순번이 1 이 아니다`);
 }
 
+/* ------------------------------- 검수 사진 슬롯 ------------------------------- */
+
+/**
+ * 작업전 검수는 **구성품 줄마다 1장**이고, 「검수완료」 허용 조건이 `missingSlots` 하나로
+ * 판정된다 (db.completePreCheck). 여기가 틀리면 사진 없는 작업이 작업중이 되거나,
+ * 다 찍었는데 완료가 막힌다.
+ */
+function checkPhotos(t) {
+    const lines = 1 + pick(8);
+    // LOT 행이 여러 개인 구성품을 섞는다 - 그래도 사진 슬롯은 줄마다 1개여야 한다
+    const items = [];
+    for (let line = 1; line <= lines; line += 1) {
+        const rows = 1 + pick(3);
+        for (let r = 0; r < rows; r += 1) items.push({ line_no: line, sort_order: r + 1 });
+    }
+    const want = photoLines(items);
+    if (want.length !== lines || want.some((n, i) => n !== i + 1)) {
+        note('P1', `t${t} 슬롯이 구성품 줄과 다르다 ${JSON.stringify(want)}`);
+    }
+
+    // 일부만 찍은 상태 - 없는 것만 정확히 집어내야 한다
+    const shot = want.filter(() => rnd() < 0.6);
+    const miss = missingSlots(want, shot);
+    if (miss.some((n) => shot.includes(n)) || miss.some((n) => !want.includes(n))) {
+        note('P2', `t${t} 빠진 슬롯 계산이 틀렸다 ${JSON.stringify({ want, shot, miss })}`);
+    }
+    if ((miss.length === 0) !== (shot.length === want.length)) {
+        note('P2', `t${t} 다 찍었는지 판정이 어긋났다 ${JSON.stringify({ shot, miss })}`);
+    }
+
+    // 중복·문자열·구성품에 없는 줄이 섞여도 흔들리지 않는다 (앱은 슬롯 키를 문자열로 들고 있다)
+    const noisy = shot.map(String).concat(shot, [999]);
+    const same = missingSlots(want, noisy);
+    if (JSON.stringify(same) !== JSON.stringify(miss)) {
+        note('P3', `t${t} 잡음이 섞이자 결과가 달라졌다 ${JSON.stringify({ miss, same })}`);
+    }
+}
+
 /* --------------------------------- 실행 --------------------------------- */
 
 const total = Number(process.argv[2] ?? 3000);
@@ -242,6 +284,7 @@ for (let t = 0; t < total; t += 1) {
     checkCalendar(t);
     checkLots(t);
     checkDocNo(t);
+    checkPhotos(t);
 }
 
 const bad = Object.values(fails).some(Boolean);
