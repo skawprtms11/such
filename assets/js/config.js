@@ -649,9 +649,6 @@ export const APP_TABS = [
     { key: 'stow', route: '#/stow', label: '적치', title: '출고적치', icon: 'stow' },
     { key: 'adjust', route: '#/adjust', label: '조정', title: '조정요청', icon: 'adjust' },
     { key: 'load', route: '#/load', label: '상차', title: '상차작업', icon: 'loading' },
-    // 유통가공은 주문 흐름(출고→검수→적치→조정→상차)과 이어지지 않는 독립 업무라 맨 뒤에 둔다.
-    // 앱에서는 **검수(사진 증빙)만** 한다 - 등록·문서생성은 웹이다 (docs/processing.md §17)
-    { key: 'pcheck', route: '#/pcheck', label: '가공', title: '유통가공', icon: 'processing' },
 ];
 
 /**
@@ -659,6 +656,10 @@ export const APP_TABS = [
  * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
  */
 export const APP_MENU = [
+    // 유통가공은 주문 흐름(출고→검수→적치→조정→상차)과 이어지지 않는 독립 업무라 하단 탭이 아니라
+    // 상단바 메뉴에 둔다. 앱에서는 **검수(사진 증빙)만** 한다 - 등록·문서생성은 웹이다
+    // (docs/processing.md §17). 화면 안의 세그 3개(작업전 검수·완료 검수·캘린더)가 하위 탭이다
+    { key: 'pcheck', route: '#/pcheck', title: '유통가공작업', icon: 'processing' },
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'checklist', route: '#/checklist', title: '일일체크리스트', icon: 'checklist' },
     { key: 'process', route: '#/process', title: '업무프로세스', icon: 'sheet' },
