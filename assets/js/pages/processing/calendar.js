@@ -28,18 +28,18 @@ export async function drawCalendar({ state, body, user, reload }) {
 
     body.innerHTML = `
 <div class="toolbar">
-  <div class="pc-nav">
-    <button class="btn btn--sm" id="pc-prev" type="button" aria-label="이전 달">◀</button>
-    <strong class="pc-month">${esc(month)}</strong>
-    <button class="btn btn--sm" id="pc-next" type="button" aria-label="다음 달">▶</button>
-    <button class="btn btn--sm" id="pc-today" type="button">오늘</button>
-  </div>
-  <label class="field" style="flex:0 0 120px">
+  <label class="field" style="flex:0 0 130px">
     <span class="field__label">진행상태</span>
     <select id="pc-f-status">${statusOptions(state.status)}</select>
   </label>
+  <div class="pc-nav">
+    <button class="btn" id="pc-prev" type="button" aria-label="이전 달">◀</button>
+    <strong class="pc-month">${esc(month)}</strong>
+    <button class="btn" id="pc-next" type="button" aria-label="다음 달">▶</button>
+    <button class="btn" id="pc-today" type="button">오늘</button>
+  </div>
   <span class="toolbar__spacer"></span>
-  <span class="tag tag--gray">막대는 시작예정일 ~ 완료요청일</span>
+  <span class="pc-hint">막대는 시작예정일 ~ 완료요청일</span>
 </div>
 <div class="pc-cal">
   <div class="pc-cal__head">

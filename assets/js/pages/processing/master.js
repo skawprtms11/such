@@ -23,11 +23,11 @@ export async function drawMaster({ state, body, user, reload }) {
 
     body.innerHTML = `
 <div class="toolbar">
-  <label class="field" style="flex:0 0 140px">
+  <label class="field" style="flex:0 0 130px">
     <span class="field__label">작업구분</span>
     <select id="pm-f-type">${workTypeOptions(state.masterWorkType)}</select>
   </label>
-  <label class="field" style="flex:1 1 160px;max-width:260px">
+  <label class="field" style="flex:1 1 180px;max-width:240px">
     <span class="field__label">제품코드 / 제품명</span>
     <input type="text" id="pm-f-kw" placeholder="검색어 입력" value="${esc(state.masterKeyword)}">
   </label>
