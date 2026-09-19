@@ -378,8 +378,12 @@ input:focus, select:focus, textarea:focus {
 
 textarea { min-height: 84px; resize: vertical; }
 
-/* 월 선택은 내부 아이콘 때문에 기본 높이가 더 커진다. 텍스트 입력칸과 맞춘다 */
-input[type=month] { height: 38px; }
+/* 월·날짜 선택은 내부 아이콘 때문에 기본 높이가 더 커진다. 텍스트 입력칸·셀렉트와 맞춘다 */
+input[type=month], input[type=date] { height: 38px; }
+
+/* 툴바 안의 버튼은 입력칸(38px)과 같은 높이로 맞춘다 - 조회 버튼과 우측 동작 버튼이
+   날짜칸·셀렉트와 밑선이 어긋나 들쭉날쭉해 보이는 것을 막는다 (btn--sm 은 제외) */
+.toolbar .btn:not(.btn--sm) { height: 38px; padding-top: 0; padding-bottom: 0; }
 
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 12px 0; }
 .check input { width: auto; min-height: auto; }
@@ -1754,6 +1758,8 @@ label.pallet .pallet__loc { flex: 1; text-align: right; margin-right: 4px; }
 /* 연결 미리보기 - 마우스를 올린 카드로 이어질 자리를 점선으로 보여 준다 (process.js) */
 .pm-edge.pm-ghost { stroke: var(--blue); stroke-dasharray: 6 4; }
 .pm-edge__head.pm-ghost { fill: var(--blue); }
+/* 담당 전환점 칩 - 담당을 직접 지정한 카드에만 붙는다 (docs/checklist.md) */
+.pm-card__head .pm-who { flex: none; margin-left: 2px; padding: 1px 6px; border-radius: 10px; background: var(--gray-100); font-size: 11.5px; }
 
 /* 흐름 상태 알림 - 시작이 여럿 · 순환 (막지 않고 알리기만 한다) */
 .pm-status { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
@@ -1867,11 +1873,15 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
 .pm-step__rail { position: relative; display: flex; justify-content: center; padding-top: 8px; }
 .pm-step:not(.is-last) > .pm-step__rail::after { content: ''; position: absolute; top: 38px; bottom: -14px; border-left: 2px solid var(--gray-300); }
 .pm-step:not(.is-last) > .pm-step__rail::before { content: ''; position: absolute; bottom: -14px; left: 50%; margin-left: -4px; border: 4px solid transparent; border-top: 6px solid var(--gray-300); z-index: 1; }
-/* 순번 배지 - 카드 왼쪽 사각 배지 (갈래 줄의 `4.1` 은 폭이 늘어난다) */
-.pm-no { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 22px; padding: 0 4px; border-radius: 6px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 700; }
+/* 번호 배지 - 사각 배지 (갈래 줄의 `4.1` 은 폭이 늘어난다) */
+.pm-no { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 22px; padding: 0 5px; border-radius: 4px; background: var(--blue); color: #fff; font-size: 12.5px; font-weight: 700; }
+/* ⚠️ 모서리에 걸치는 것은 **카드 머리 안에서만** (업무 흐름도 관례).
+   같은 배지를 우측 설명 표 머리(`.pm-side__head`)와 상황 블록 레일도 줄 안에 그대로 쓴다 */
+.pm-card__head .pm-no { position: absolute; top: -8px; left: -7px; z-index: 1; }
 .pm-step.is-off .pm-card, .pm-step.is-off .pm-no { opacity: .6; }
-.pm-card { border: 1.5px solid var(--gray-300); border-radius: 10px; background: #fff; }
-.pm-card__head { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 5px 9px; }
+.pm-card { position: relative; border: 1.5px solid var(--gray-300); border-radius: 10px; background: #fff; }
+/* 위 여백 9px 은 좌상단 배지와 글자가 겹치지 않게 (제목만 보이는 접힌 카드 기준) */
+.pm-card__head { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 9px 9px 5px; }
 .pm-card__title { flex: 1; min-width: 0; overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .pm-card__desc { color: var(--gray-500); font-size: 12.5px; }
 .pm-note { color: var(--gray-500); font-size: 12px; }
@@ -1987,3 +1997,207 @@ button.pm-elabel:hover { border-color: var(--blue); color: var(--blue); }
     body.cl-printing .pm-port, body.cl-printing .pm-status,
     body.cl-printing .pm-menu { display: none !important; }
 }
+
+/* ---------------------------- 유통가공작업 (pc-) ---------------------------- */
+/* docs/processing.md - 캘린더·구성품 LOT 표. 색은 :root 의 CSS 변수만 쓴다 */
+
+/* 등록·수정 폼의 기본정보 3열 배치 */
+.pc-form-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.pc-sec { margin-top: 18px; }
+
+.pc-sec__head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.pc-hint { font-size: 12px; color: var(--gray-500); }
+
+/* 상세 팝업의 항목·값 표 */
+table.grid.pc-detail th {
+    width: 96px;
+    background: var(--gray-100);
+    color: var(--gray-700);
+    font-size: 12px;
+}
+
+/* 구성품 · LOT 표 - 입력칸이 들어가므로 셀 여백을 줄인다 */
+table.grid.pc-items td { padding: 4px 6px; vertical-align: middle; }
+table.grid.pc-items input { min-height: 32px; padding: 5px 8px; font-size: 13px; }
+table.grid.pc-items input.is-error { border-color: var(--red); background: var(--red-soft); }
+
+/* 줄 끝 합계 행 */
+table.grid.pc-items tr.pc-sum td {
+    background: var(--gray-100);
+    font-size: 12px;
+    color: var(--gray-700);
+}
+
+.pc-err { display: block; color: var(--red); font-size: 11px; line-height: 1.4; }
+
+/* 완료요청일이 지났는데 끝나지 않은 작업 */
+.pc-late { color: var(--red); font-weight: 700; }
+
+/* 마스터가 없는 제품코드 안내 (막다른 길이 되지 않게 등록 버튼을 함께 둔다) */
+.pc-nomaster {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--amber-soft);
+    color: var(--amber);
+    font-size: 13px;
+}
+
+.pc-nomaster p { margin: 0; }
+
+/* ── 작업캘린더 ── */
+
+.pc-nav { display: flex; align-items: center; gap: 6px; }
+.pc-month { font-size: 15px; font-weight: 700; min-width: 88px; text-align: center; line-height: 38px; }
+
+.pc-cal {
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--card);
+}
+
+.pc-cal__head {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    background: var(--gray-100);
+}
+
+.pc-dow {
+    padding: 7px 0;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gray-700);
+}
+
+/* 일요일은 빨강, 토요일은 파랑 - 달력의 통상 표기다 */
+.pc-dow--0 { color: var(--red); }
+.pc-dow--6 { color: var(--blue); }
+
+/* 한 주 - 날짜 칸(배경) 위에 막대 격자를 겹친다 */
+.pc-week { position: relative; }
+.pc-week + .pc-week { border-top: 1px solid var(--gray-200); }
+
+.pc-week__bg {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    min-height: 104px;
+}
+
+.pc-cell { padding: 4px 6px; }
+.pc-cell + .pc-cell { border-left: 1px solid var(--gray-200); }
+.pc-cell.is-out { background: var(--gray-100); }
+.pc-cell.is-today { background: var(--blue-soft); }
+
+.pc-date { font-size: 12px; font-weight: 600; }
+
+.pc-week__bars {
+    position: absolute;
+    inset: 24px 3px 4px;
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-rows: repeat(var(--pc-lanes, 3), 20px) 18px;
+    gap: 2px;
+    pointer-events: none;
+}
+
+.pc-bar, .pc-more { pointer-events: auto; }
+
+.pc-bar {
+    overflow: hidden;
+    min-width: 0;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+/* 주 경계를 넘는 막대는 잘린 쪽 모서리를 각지게 두어 이어짐을 보인다 */
+.pc-bar.is-start { border-top-left-radius: 9px; border-bottom-left-radius: 9px; }
+.pc-bar.is-end { border-top-right-radius: 9px; border-bottom-right-radius: 9px; }
+
+.pc-bar--gray { background: var(--gray-100); color: var(--gray-700); border-color: var(--gray-300); }
+.pc-bar--blue { background: var(--blue-soft); color: #1d4ed8; border-color: #1d4ed8; }
+.pc-bar--green { background: var(--green-soft); color: var(--green); border-color: var(--green); }
+
+.pc-more {
+    border: none;
+    background: none;
+    color: var(--gray-500);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: left;
+    padding: 0 6px;
+    cursor: pointer;
+}
+
+.pc-more:hover { color: var(--blue); text-decoration: underline; }
+
+@media (max-width: 860px) {
+    .pc-form-grid { grid-template-columns: 1fr; }
+    .pc-week__bg { min-height: 86px; }
+    .pc-bar { font-size: 10px; padding: 0 3px; }
+}
+
+/* 유통가공 상세 팝업의 검수 사진 (앱이 남긴 증빙 · 웹은 보기만 한다) */
+.pc-thumbs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.pc-thumb {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 132px;
+    padding: 6px;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    background: #fff;
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--gray-700);
+    cursor: pointer;
+}
+
+.pc-thumb img {
+    width: 100%;
+    height: 96px;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--gray-100);
+}
+
+.pc-thumb.is-gone {
+    justify-content: center;
+    height: 122px;
+    color: var(--gray-500);
+    cursor: default;
+}
+
+/* 썸네일을 눌렀을 때 원본 크기 */
+.pc-photo { text-align: center; }
+.pc-photo img { max-width: 100%; max-height: 70vh; }

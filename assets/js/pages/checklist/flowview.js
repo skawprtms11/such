@@ -199,9 +199,12 @@ function nodeHtml(p, o) {
     const it = p.item;
     const { state } = o;
     const open = state.open.has(it.id);
+    // 🔑 담당은 **직접 지정한 노드**에만 붙는다(비우면 상위를 따르므로 whoHtml 이 빈 값).
+    // 그래서 접힌 카드에 그대로 내보내면 **담당이 바뀌는 지점에만** 칩이 생기고,
+    // 칩이 없는 카드는 「위 담당이 이어진다」로 읽힌다 - 스윔레인이 하는 일과 같은 정보다.
+    const who = whoHtml(it);
     const detail = [
         it.description ? `<span>${esc(it.description)}</span>` : '',
-        whoHtml(it),
     ].filter(Boolean).join('');
     const linking = !!state.link;
     return `
@@ -213,6 +216,7 @@ function nodeHtml(p, o) {
          ${linking ? `data-target="${esc(it.id)}"` : `data-toggle="${esc(it.id)}" data-pick="${esc(it.id)}"`}>
       ${noHtml(p.no)}
       <span class="pm-card__title">${esc(it.title)}</span>
+      ${who}
       ${it.active === false ? '<span class="tag tag--gray">비활성</span>' : ''}
       ${o.exit ? '<span class="tag tag--amber pm-tip">이후 단계 없음</span>' : ''}
       <span class="toolbar__spacer"></span>

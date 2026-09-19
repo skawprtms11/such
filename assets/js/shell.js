@@ -61,6 +61,9 @@ export function appRoute(hash) {
     if (key === 'shipping') return '#/ship';
     if (key === 'loading') return '#/load';
     if (key === 'inspect') return rest[0] ? `#/load/${rest[0]}` : '#/load';
+    // 웹 유통가공작업은 등록·문서생성이고 앱에는 검수만 있다 (docs/processing.md §17).
+    // 뒷조각(탭 키 등)은 뜻이 달라 물려주지 않는다
+    if (key === 'processing') return '#/pcheck';
     // 이름이 같은 화면은 뒷조각(상세 id 등)을 그대로 물려준다
     if (key === 'status' || key === 'issues' || key === 'notices' || key === 'checklist') {
         return rest.length ? `#/${key}/${rest.join('/')}` : `#/${key}`;

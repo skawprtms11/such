@@ -818,6 +818,62 @@ export function actionDock(host) {
     };
 }
 
+/* --------------------------------- 촬영 칸 --------------------------------- */
+
+/**
+ * 사진 촬영 칸 한 개 (유통가공 작업전·완료 검수가 같이 쓴다 · docs/mobile.md §3-8).
+ *
+ * 🔑 **카메라 스트림(`scanner.js`)을 쓰지 않는다.** `<input capture>` 로 OS 카메라 앱을 띄우면
+ * 초점·노출·플래시를 훨씬 잘 잡고, 스캔용 스트림과 동시에 띄워 카메라가 잠기는 일도 없다.
+ *
+ * @param {{key:string, label:string, note?:string, url?:string, badge?:string,
+ *          readonly?:boolean}} slot
+ *   url - 썸네일 주소 (초안 objectURL 또는 저장된 사진의 서명 URL). 없으면 미촬영 모양
+ */
+export function photoSlot(slot) {
+    const shot = Boolean(slot.url);
+    const body = shot
+        ? `<img class="m-photo__img" src="${esc(slot.url)}" alt="${esc(slot.label)}">`
+        : `<span class="m-photo__ph">${icon('camera', 'm-icon')}<span>촬영</span></span>`;
+    // 읽기 전용(완료된 작업 다시 보기)에서는 파일 선택 자체를 달지 않는다
+    const picker = slot.readonly
+        ? ''
+        : `<input class="m-photo__file" type="file" accept="image/*" capture="environment"
+             data-shot="${esc(slot.key)}" aria-label="${esc(slot.label)} 촬영">`;
+    return `
+<div class="m-photo ${shot ? 'is-shot' : ''}" data-slot="${esc(slot.key)}">
+  <div class="m-photo__head">
+    <span class="m-photo__label">${esc(slot.label)}</span>
+    ${slot.badge ?? ''}
+  </div>
+  ${slot.note ? `<p class="m-photo__note">${esc(slot.note)}</p>` : ''}
+  <label class="m-photo__box">${picker}${body}
+    <span class="m-photo__state">${shot ? '다시 촬영하려면 누르세요' : '눌러서 촬영'}</span>
+  </label>
+</div>`;
+}
+
+/**
+ * 촬영 칸에 이벤트를 건다.
+ * @param {Element} root 촬영 칸이 들어 있는 자리
+ * @param {(key:string, file:File) => Promise|void} onPick 고른 파일 1장
+ */
+export function bindPhotoSlots(root, onPick) {
+    root.querySelectorAll('[data-shot]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            const file = el.files?.[0];
+            // 같은 파일을 다시 골라도 change 가 나도록 값을 비운다 (재촬영이 막히지 않게)
+            el.value = '';
+            if (!file) return;
+            try {
+                await onPick(el.dataset.shot, file);
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        });
+    });
+}
+
 /**
  * 실시간 갱신 콜백 감싸기 - **입력 중에는 다시 그리지 않는다.**
  * 스캔 바에 커서가 늘 있으므로 포커스만으로 막으면 갱신이 멈춘다.

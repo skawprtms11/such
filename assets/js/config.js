@@ -54,33 +54,35 @@ export const COMPANIES = Object.values(COMPANY);
  * closeOrder   : 주문처리현황의 출고 완료처리
  * manageNotice : 공지사항 등록·수정·삭제 (조회와 댓글 등록은 모든 로그인 사용자)
  * manageChecklist : 업무체크리스트 항목 등록·수정·삭제 (체크는 담당자 본인도 한다)
+ * manageProcessing : 유통가공작업·작업마스터 등록·수정·삭제·작업지시서 생성
+ *                    (조회는 로그인 사용자 모두 - viewAll 을 보지 않는다)
  */
 export const PERMISSION = {
     [ROLE.ADMIN]: {
         viewAll: true, download: true, manageUsers: true,
         createOrder: true, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true, manageChecklist: true,
+        manageNotice: true, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.YONGMA]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: true, closeOrder: true,
-        manageNotice: true, manageChecklist: true,
+        manageNotice: true, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.SHIPPER_ADMIN]: {
         viewAll: true, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false, manageChecklist: true,
+        manageNotice: false, manageChecklist: true, manageProcessing: true,
     },
     [ROLE.SHIPPER_SALES]: {
         viewAll: false, download: true, manageUsers: false,
         createOrder: true, updateStatus: false, createIssue: true, closeOrder: false,
-        manageNotice: false, manageChecklist: false,
+        manageNotice: false, manageChecklist: false, manageProcessing: false,
     },
     // 현장작업자 - 출고주문처리·상차리스트만 처리하고 나머지는 조회만 한다
     [ROLE.WORKER]: {
         viewAll: true, download: false, manageUsers: false,
         createOrder: false, updateStatus: true, createIssue: false, closeOrder: false,
-        manageNotice: false, manageChecklist: false,
+        manageNotice: false, manageChecklist: false, manageProcessing: false,
     },
 };
 
@@ -509,6 +511,58 @@ export const CHECK_TEMPLATES = {
     ],
 };
 
+/* ------------------------------ 유통가공작업 ------------------------------ */
+
+/**
+ * 유통가공 작업구분 (process_masters.work_type · process_jobs.work_type).
+ * 작업에는 마스터 값을 **스냅샷**으로 복사한다 (docs/processing.md §3).
+ */
+export const PROCESS_WORK_TYPE = { LABEL: '라벨', DISMANTLE: '해체', SET: '세트' };
+export const PROCESS_WORK_TYPES = Object.values(PROCESS_WORK_TYPE);
+
+/**
+ * 구성품 구분.
+ * 제품만 LOT 을 나눠 적고, 부자재는 수량이 필요수량으로 고정된다 (docs/processing.md §10).
+ */
+export const PROCESS_ITEM_KIND = { PRODUCT: '제품', MATERIAL: '부자재' };
+export const PROCESS_ITEM_KINDS = Object.values(PROCESS_ITEM_KIND);
+
+/**
+ * 유통가공 진행상태 - **저장하지 않고 계산한다** (db.processStatus 가 유일한 출처).
+ *   작업완료 : done_at 있음      (앱 완료 검수 - 사진 3장)
+ *   작업중   : pre_check_at 있음 (앱 작업전 검수 - 구성품 줄마다 사진 1장)
+ *   작업대기 : 그 밖
+ *
+ * 🔑 문서생성(doc_created_at)은 **상태를 바꾸지 않는다** (docs/processing.md §8).
+ * 전날 미리 뽑아 둔 작업지시서 때문에 착수 전인데 진행으로 보이던 문제를 없앤 것이다.
+ */
+export const PROCESS_STATUS = { WAIT: '작업대기', DOING: '작업중', DONE: '작업완료' };
+export const PROCESS_STATUSES = Object.values(PROCESS_STATUS);
+
+/**
+ * 진행상태 색 토큰 🔑 **하나뿐이다.**
+ * 웹은 `.tag--*` `.pc-bar--*` 로, 앱은 ui.js 의 `tag(label, tone)` 로 같은 값을 쓴다.
+ * 화면마다 색을 정하면 같은 상태가 웹·앱에서 다른 색으로 보인다.
+ */
+export const PROCESS_STATUS_TONE = {
+    [PROCESS_STATUS.WAIT]: 'gray',
+    [PROCESS_STATUS.DOING]: 'blue',
+    [PROCESS_STATUS.DONE]: 'green',
+};
+
+/** 검수 사진 단계 (process_photos.phase) - 앱 라우트 `#/pcheck/<phase>/:id` 와 같은 값이다 */
+export const PROCESS_PHASE = { PRE: 'pre', DONE: 'done' };
+export const PROCESS_PHASES = Object.values(PROCESS_PHASE);
+
+/** 검수 단계 표시 문구 - 세그먼트·안내문이 같은 말을 쓰게 한다 */
+export const PROCESS_PHASE_LABEL = {
+    [PROCESS_PHASE.PRE]: '작업전 검수',
+    [PROCESS_PHASE.DONE]: '완료 검수',
+};
+
+/** 완료 검수 사진 장수 - **정확히** 이 수만 받는다 (docs/processing.md A20) */
+export const PROCESS_DONE_PHOTOS = 3;
+
 /**
  * 메뉴 정의
  * icon      : icons.js 의 아이콘 키
@@ -528,6 +582,14 @@ export const MENUS = [
     { key: 'status', path: '#/status', label: '주문처리현황', icon: 'status', mobile: true },
     { key: 'shipping', path: '#/shipping', label: '출고주문처리', icon: 'shipping', mobile: true },
     { key: 'loading', path: '#/loading', label: '상차리스트', icon: 'loading', mobile: true },
+    // 유통가공작업은 현장 작업이 아니라 사무 등록 업무라 앱(m.html)에 넣지 않는다
+    {
+        key: 'processing',
+        path: '#/processing',
+        label: '유통가공작업',
+        icon: 'processing',
+        mobile: false,
+    },
     { key: 'issues', path: '#/issues', label: '이슈등록', icon: 'issues', mobile: true },
     {
         key: 'users',
@@ -574,6 +636,10 @@ export const APP_TABS = [
  * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
  */
 export const APP_MENU = [
+    // 유통가공은 주문 흐름(출고→검수→적치→조정→상차)과 이어지지 않는 독립 업무라 하단 탭이 아니라
+    // 상단바 메뉴에 둔다. 앱에서는 **검수(사진 증빙)만** 한다 - 등록·문서생성은 웹이다
+    // (docs/processing.md §17). 화면 안의 세그 3개(작업전 검수·완료 검수·캘린더)가 하위 탭이다
+    { key: 'pcheck', route: '#/pcheck', title: '유통가공작업', icon: 'processing' },
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'checklist', route: '#/checklist', title: '일일체크리스트', icon: 'checklist' },
     { key: 'process', route: '#/process', title: '업무프로세스', icon: 'sheet' },

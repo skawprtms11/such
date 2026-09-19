@@ -6,13 +6,20 @@
 import {
     CHECK_CYCLE, CHECK_KIND, CHECK_KINDS, CHECK_KIND_CHILDREN,
     CHECK_TEMPLATES, COMPANY, EXTRA_TASK_TYPE, INITIAL_PASSWORD, ISSUE_STATE,
-    LOAD_STATUS, PERMISSION, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
+    LOAD_STATUS, PERMISSION, PROCESS_DONE_PHOTOS, PROCESS_ITEM_KIND, PROCESS_ITEM_KINDS,
+    PROCESS_PHASE, PROCESS_PHASES, PROCESS_STATUS,
+    PROCESS_WORK_TYPES, RESTORE_TYPE, ROLE, WORK_STEPS, YN, LOCATION_FORMAT, FLOOR_LOCATION,
     adjustCategory, formatLocation, isValidLocation, stowStatus,
 } from './config.js';
 import { flowNos } from './checkflow.js';
+import {
+    expandMasterItems, formatDocNo, missingSlots, nextDocSeq, photoLines, validateLots,
+} from './processing-calc.js';
+import { PHOTO, PHOTO_READ_ERROR } from './photo.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
 import {
     loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
+    fileUrls, putFile,
 } from './store.js';
 import { supabase } from './supabase.js';
 import { uid, today, toDateStr, addDays } from './util.js';
@@ -30,6 +37,19 @@ function normalize(db) {
     db.checklistChecks = db.checklistChecks ?? [];
     db.checklistEdges = db.checklistEdges ?? [];
     db.checklistNotes = db.checklistNotes ?? [];
+    db.processMasters = db.processMasters ?? [];
+    db.processMasterItems = db.processMasterItems ?? [];
+    db.processJobs = db.processJobs ?? [];
+    db.processJobItems = db.processJobItems ?? [];
+    db.processPhotos = db.processPhotos ?? [];
+    // 모바일 검수 도입 전에 등록된 작업 - 검수 시각이 없으면 작업대기다
+    db.processJobs.forEach((j) => {
+        j.pre_check_at = j.pre_check_at ?? null;
+        j.pre_check_by = j.pre_check_by ?? null;
+        j.pre_check_by_name = j.pre_check_by_name ?? '';
+        j.done_by = j.done_by ?? null;
+        j.done_by_name = j.done_by_name ?? '';
+    });
     // 종류(kind)가 없는 옛 항목 - 하위가 있으면 프로세스, 없으면 체크항목으로 본다
     const hasKid = new Set(db.checklistItems.map((i) => i.parent_id).filter(Boolean));
     db.checklistItems.forEach((i) => {
@@ -3733,6 +3753,810 @@ export async function checklistBoard(dateStr, f = {}) {
         });
     });
     return board;
+}
+
+/* ═══════════════════════════ 유통가공작업 (docs/processing.md) ═══════════════════════════ */
+/**
+ * 창고에서 출고 전에 하는 유통가공(라벨 부착·세트 구성·해체)을 등록하고,
+ * 구성품(제품 + 부자재)과 LOT 을 확정해 작업지시서를 내는 업무다.
+ * 주문(orders)과 연결되지 않는 **독립 업무**라 주문번호·차수·대표주문번호를 쓰지 않는다.
+ *
+ * 🔑 **업무 규칙은 여기 한 곳에만 둔다.** 화면이 잠근 조건(LOT 합계·문서 생성 후 수정 금지·
+ * 완료건 삭제 금지·마스터 없는 제품코드 거부)을 db 도 똑같이 막는다 - 화면 잠금만 두면
+ * db 를 직접 불러 뚫린다.
+ */
+
+/** 문서번호 채번 재시도 횟수 - unique(doc_no) 충돌 시 번호를 다시 매겨 넣는다 */
+const DOC_NO_RETRY = 5;
+
+/** 유통가공 등록·수정·삭제·문서생성 권한 (조회는 로그인 사용자 모두) */
+export function canManageProcessing(user) {
+    return !!PERMISSION[user?.role]?.manageProcessing;
+}
+
+/** 권한 확인 - 거부 문구를 한 곳에서 만든다 */
+function assertProcessing(user, what) {
+    if (!canManageProcessing(user)) throw new Error(`유통가공 ${what} 권한이 없습니다.`);
+}
+
+/** 유통가공 **검수**(작업전·완료·그 취소) 권한 - 등록 권한과 다른 축이다 (A14) */
+export function canCheckProcessing(user) {
+    return !!PERMISSION[user?.role]?.updateStatus;
+}
+
+/** 검수 권한 확인 */
+function assertCheck(user) {
+    if (!canCheckProcessing(user)) throw new Error('유통가공 검수 권한이 없습니다.');
+}
+
+/**
+ * 진행상태 판정 🔑 **유일한 출처** (docs/processing.md §8).
+ * 상태 컬럼을 두지 않고 완료 시각으로 표현한다 (CLAUDE.md 핵심개념 1 과 같은 원칙).
+ * 화면은 이 값을 그리기만 하고 `pre_check_at`·`done_at` 을 다시 해석하지 않는다.
+ *
+ * 🔑 **문서생성은 상태를 바꾸지 않는다.** 종이를 뽑은 것과 현장이 작업을 시작한 것은 다르다.
+ */
+export function processStatus(job) {
+    if (job?.done_at) return PROCESS_STATUS.DONE;
+    if (job?.pre_check_at) return PROCESS_STATUS.DOING;
+    return PROCESS_STATUS.WAIT;
+}
+
+/* --------------------------------- 작업마스터 --------------------------------- */
+
+/** 살아 있는 마스터만 (soft delete 제외) */
+function aliveMasters(db) {
+    return db.processMasters.filter((m) => !m.deleted_at);
+}
+
+/** 마스터 구성품 (sort_order 순) */
+function masterItemsOf(db, masterId) {
+    return db.processMasterItems
+        .filter((i) => i.master_id === masterId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+}
+
+/** 마스터 기본정보 검증 */
+function masterInput(payload) {
+    const workType = String(payload.work_type ?? '').trim();
+    if (!PROCESS_WORK_TYPES.includes(workType)) throw new Error('작업구분을 선택하세요.');
+    const productCode = String(payload.product_code ?? '').trim();
+    const productName = String(payload.product_name ?? '').trim();
+    if (!productCode) throw new Error('제품코드를 입력하세요.');
+    if (!productName) throw new Error('제품명을 입력하세요.');
+    return { work_type: workType, product_code: productCode, product_name: productName };
+}
+
+/**
+ * 마스터 구성품 검증 (docs/processing.md §13).
+ * 구성품 1건 이상 · 제품 구분 1건 이상 · 품목명 필수 · 제품은 코드 필수 · qty_per 은 1 이상 정수.
+ * 제품이 없으면 작업지시서에 LOT 을 적을 줄이 없다.
+ */
+function masterItemsInput(items) {
+    const rows = (items ?? []).map((it, i) => {
+        const at = `${i + 1}번 구성품`;
+        const kind = String(it.kind ?? '').trim();
+        if (!PROCESS_ITEM_KINDS.includes(kind)) throw new Error(`${at}의 구분을 선택하세요.`);
+        const code = String(it.code ?? '').trim();
+        const name = String(it.name ?? '').trim();
+        const qtyPer = Number(it.qty_per);
+        if (!name) throw new Error(`${at}의 품목명을 입력하세요.`);
+        if (kind === PROCESS_ITEM_KIND.PRODUCT && !code) {
+            throw new Error(`${at}(제품)의 코드를 입력하세요.`);
+        }
+        if (!Number.isInteger(qtyPer) || qtyPer <= 0) {
+            throw new Error(`${at}의 필요수량은 1 이상 정수여야 합니다.`);
+        }
+        return { kind, code, name, qty_per: qtyPer, sort_order: i + 1 };
+    });
+    if (!rows.length) throw new Error('구성품을 1건 이상 등록하세요.');
+    if (!rows.some((r) => r.kind === PROCESS_ITEM_KIND.PRODUCT)) {
+        throw new Error(`구성품에 '${PROCESS_ITEM_KIND.PRODUCT}' 구분이 1건 이상 있어야 합니다.`);
+    }
+    return rows;
+}
+
+/**
+ * 작업마스터 목록. 구성품 수(`item_count`)를 붙여 준다.
+ * @param {{keyword?:string, workType?:string}} f
+ */
+export async function listProcessMasters(f = {}) {
+    const db = (await load());
+    let rows = aliveMasters(db);
+    if (f.workType) rows = rows.filter((m) => m.work_type === f.workType);
+    const k = String(f.keyword ?? '').trim().toLowerCase();
+    if (k) {
+        rows = rows.filter((m) => `${m.product_code} ${m.product_name}`.toLowerCase().includes(k));
+    }
+    return rows
+        .map((m) => ({ ...m, item_count: masterItemsOf(db, m.id).length }))
+        .sort((a, b) => (a.product_code > b.product_code ? 1 : -1));
+}
+
+/** 마스터 1건 + 구성품 */
+export async function getProcessMaster(id) {
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.id === id);
+    if (!master) return null;
+    return { master, items: masterItemsOf(db, master.id) };
+}
+
+/**
+ * 제품코드로 마스터를 찾는다 (작업 등록 폼이 쓴다).
+ * 살아 있는 마스터는 제품코드당 1건이라 작업구분 입력칸 없이 찾을 수 있다.
+ */
+export async function findProcessMasterByCode(code) {
+    const key = String(code ?? '').trim();
+    if (!key) return null;
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.product_code === key);
+    if (!master) return null;
+    return { master, items: masterItemsOf(db, master.id) };
+}
+
+/** 마스터 등록 - 제품코드 중복·구성품 0건·qty_per ≤ 0 을 거부한다 */
+export async function createProcessMaster(payload, user) {
+    assertProcessing(user, '작업마스터 등록');
+    const v = masterInput(payload);
+    const items = masterItemsInput(payload.items);
+
+    const db = (await load());
+    if (aliveMasters(db).some((m) => m.product_code === v.product_code)) {
+        throw new Error(`제품코드 '${v.product_code}' 의 작업마스터가 이미 있습니다.`);
+    }
+    const master = {
+        id: uid('pm'),
+        ...v,
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+        deleted_at: null,
+    };
+    db.processMasters.push(master);
+    items.forEach((it) => {
+        db.processMasterItems.push({ id: uid('pmi'), master_id: master.id, ...it });
+    });
+    await save(db);
+    return master;
+}
+
+/**
+ * 마스터 수정. 구성품은 **통째로 교체**한다(기존 행 삭제 후 재생성).
+ * 이미 만들어진 작업은 구성품을 복사해 두었으므로(스냅샷) 영향을 받지 않는다.
+ */
+export async function updateProcessMaster(id, patch, user) {
+    assertProcessing(user, '작업마스터 수정');
+    const v = masterInput(patch);
+    const items = masterItemsInput(patch.items);
+
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.id === id);
+    if (!master) throw new Error('작업마스터를 찾을 수 없습니다.');
+    if (aliveMasters(db).some((m) => m.id !== id && m.product_code === v.product_code)) {
+        throw new Error(`제품코드 '${v.product_code}' 의 작업마스터가 이미 있습니다.`);
+    }
+    Object.assign(master, v, { updated_at: new Date().toISOString() });
+    db.processMasterItems = db.processMasterItems.filter((i) => i.master_id !== id);
+    items.forEach((it) => {
+        db.processMasterItems.push({ id: uid('pmi'), master_id: id, ...it });
+    });
+    await save(db);
+    return master;
+}
+
+/**
+ * 마스터 삭제 (soft delete).
+ * 이 마스터로 만든 작업이 있어도 막지 않는다 - 작업은 구성품을 복사해 두었다.
+ */
+export async function deleteProcessMaster(id, user) {
+    assertProcessing(user, '작업마스터 삭제');
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.id === id);
+    if (!master) throw new Error('작업마스터를 찾을 수 없습니다.');
+    master.deleted_at = new Date().toISOString();
+    await save(db);
+}
+
+/* ---------------------------------- 작업 ---------------------------------- */
+
+/** 살아 있는 작업만 */
+function aliveJobs(db) {
+    return db.processJobs.filter((j) => !j.deleted_at);
+}
+
+/** 작업 구성품 (line_no → sort_order 순) */
+function jobItemsOf(db, jobId) {
+    return db.processJobItems
+        .filter((i) => i.job_id === jobId)
+        .sort((a, b) => ((a.line_no - b.line_no) || ((a.sort_order ?? 0) - (b.sort_order ?? 0))));
+}
+
+/** 작업 기본정보 검증 - 수량은 1 이상 정수, 완료요청일은 시작예정일 이상 */
+function jobDates(start, due) {
+    const s = String(start ?? '').slice(0, 10);
+    const d = String(due ?? '').slice(0, 10);
+    if (!s) throw new Error('시작예정일을 입력하세요.');
+    if (!d) throw new Error('완료요청일을 입력하세요.');
+    if (d < s) throw new Error('완료요청일은 시작예정일보다 앞설 수 없습니다.');
+    return { start_date: s, due_date: d };
+}
+
+/** 작업수량 검증 */
+function jobQty(v) {
+    const qty = Number(v);
+    if (!Number.isInteger(qty) || qty <= 0) throw new Error('작업수량은 1 이상 정수로 입력하세요.');
+    return qty;
+}
+
+/**
+ * 작업 구성품 스냅샷을 만든다 🔑
+ *
+ * 구분·코드·품명·`qty_per` 은 **마스터에서 다시 읽는다.** 화면이 보낸 값을 그대로 믿으면
+ * 조작된 요청으로 마스터와 다른 작업지시서가 만들어진다. 화면에서 받는 것은 LOT 과 수량뿐이다.
+ * LOT 합계는 `validateLots` 로 **화면과 같은 함수**를 써서 다시 검증한다.
+ *
+ * 🔑 제품 줄에 LOT 행이 하나도 없으면 **거부한다.** 예전에는 `[{lot:'', qty: 필요수량}]` 으로
+ * 조용히 채웠는데, 그러면 LOT 이 빈 작업지시서가 사용자도 모르게 현장에 나간다.
+ * 부자재는 LOT 을 나누지 않으므로 지금도 필요수량 한 행으로 채운다.
+ */
+function buildJobItems(db, master, qty, rows) {
+    const base = expandMasterItems(masterItemsOf(db, master.id), qty);
+    if (!base.length) throw new Error('작업마스터에 구성품이 없습니다.');
+
+    const byLine = new Map();
+    (rows ?? []).forEach((r) => {
+        const line = Number(r.line_no);
+        if (!byLine.has(line)) byLine.set(line, []);
+        byLine.get(line).push(r);
+    });
+    const known = new Set(base.map((b) => b.line_no));
+    if ([...byLine.keys()].some((n) => !known.has(n))) {
+        throw new Error('작업마스터에 없는 구성품 줄이 섞여 있습니다.');
+    }
+
+    const out = [];
+    base.forEach((b) => {
+        const given = byLine.get(b.line_no) ?? [];
+        const isProduct = b.kind === PROCESS_ITEM_KIND.PRODUCT;
+        if (isProduct && !given.length) {
+            throw new Error(`구성품 '${b.name}' - 제품 구성품 줄이 빠졌습니다.`
+                + ' LOT 과 수량을 입력하세요.');
+        }
+        // 부자재는 LOT 을 나누지 않는다 - 수량이 필요수량으로 고정된 한 줄이다
+        const lots = isProduct ? given : [{ lot: '', qty: b.need_qty }];
+        const v = validateLots(lots, b.need_qty);
+        if (!v.ok) {
+            const msg = v.errors[0]?.msg ?? `필요수량 ${b.need_qty} 보다 ${v.sumMsg} 입니다.`;
+            throw new Error(`구성품 '${b.name}' 의 LOT - ${msg}`);
+        }
+        lots.forEach((r, i) => out.push({
+            line_no: b.line_no,
+            kind: b.kind,
+            code: b.code,
+            name: b.name,
+            qty_per: b.qty_per,
+            lot: String(r.lot ?? '').trim(),
+            qty: Number(r.qty),
+            sort_order: i + 1,
+        }));
+    });
+    return out;
+}
+
+/** 작업 목록에 붙일 계산값 */
+function withStatus(job) {
+    return { ...job, status: processStatus(job) };
+}
+
+/**
+ * 작업 목록. 각 행에 `status`(계산값)를 붙인다.
+ * @param {{from?:string, to?:string, status?:string, keyword?:string}} f
+ *   from·to 는 **시작예정일** 범위, keyword 는 문서번호·제품코드·제품명을 본다
+ */
+export async function listProcessJobs(f = {}) {
+    const db = (await load());
+    let rows = aliveJobs(db).map(withStatus);
+    if (f.from) rows = rows.filter((j) => j.start_date >= f.from);
+    if (f.to) rows = rows.filter((j) => j.start_date <= f.to);
+    if (f.status) rows = rows.filter((j) => j.status === f.status);
+    const k = String(f.keyword ?? '').trim().toLowerCase();
+    if (k) {
+        rows = rows.filter((j) => `${j.doc_no ?? ''} ${j.product_code} ${j.product_name}`
+            .toLowerCase().includes(k));
+    }
+    return rows.sort((a, b) => (String(a.created_at) < String(b.created_at) ? 1 : -1));
+}
+
+/** 작업 1건 + 구성품 */
+export async function getProcessJob(id) {
+    const db = (await load());
+    const job = aliveJobs(db).find((j) => j.id === id);
+    if (!job) return null;
+    return { job: withStatus(job), items: jobItemsOf(db, job.id) };
+}
+
+/**
+ * 작업 등록.
+ * 마스터 존재·LOT 합계·날짜 순서를 **다시 검증**하고 `work_type` `product_name` `master_id`
+ * 를 마스터에서 채운다 (docs/processing.md A7 - 마스터 없는 제품코드는 거부).
+ */
+export async function createProcessJob(payload, user) {
+    assertProcessing(user, '작업 등록');
+    const qty = jobQty(payload.qty);
+    const dates = jobDates(payload.start_date, payload.due_date);
+    const code = String(payload.product_code ?? '').trim();
+    if (!code) throw new Error('제품코드를 입력하세요.');
+
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.product_code === code);
+    if (!master) throw new Error(`작업마스터에 없는 제품코드입니다: ${code}`);
+    const items = buildJobItems(db, master, qty, payload.items);
+
+    const job = {
+        id: uid('pj'),
+        doc_no: null,
+        master_id: master.id,
+        work_type: master.work_type,
+        product_code: master.product_code,
+        product_name: master.product_name,
+        qty,
+        ...dates,
+        doc_created_at: null,
+        doc_created_by: null,
+        doc_created_by_name: '',
+        pre_check_at: null,
+        pre_check_by: null,
+        pre_check_by_name: '',
+        done_at: null,
+        done_by: null,
+        done_by_name: '',
+        created_by: user.id,
+        created_by_name: user.name,
+        created_at: new Date().toISOString(),
+        updated_at: null,
+        deleted_at: null,
+    };
+    db.processJobs.push(job);
+    items.forEach((it) => {
+        db.processJobItems.push({ id: uid('pji'), job_id: job.id, ...it });
+    });
+    await save(db);
+    return job;
+}
+
+/**
+ * 작업 수정 (docs/processing.md §11).
+ *   대기(문서 없음) : 제품코드·작업수량·구성품·LOT·일정 모두
+ *   진행(문서 있음) : **일정만** - 인쇄된 작업지시서와 화면 내용이 달라지면 안 된다
+ *   완료           : 거부 (완료취소 후 수정)
+ *
+ * 🔑 수량·제품코드가 바뀌는데 `patch.items` 가 없으면 **거부한다** - LOT 을 다시 받는다.
+ * 둘 다 그대로면 `items` 없이도 기존 구성품을 지킨 채 일정만 고칠 수 있다.
+ */
+export async function updateProcessJob(id, patch, user) {
+    assertProcessing(user, '작업 수정');
+    const db = (await load());
+    const job = aliveJobs(db).find((j) => j.id === id);
+    if (!job) throw new Error('작업을 찾을 수 없습니다.');
+    if (job.done_at) throw new Error('완료된 작업은 수정할 수 없습니다. 완료취소 후 수정하세요.');
+
+    const dates = jobDates(patch.start_date ?? job.start_date, patch.due_date ?? job.due_date);
+    const now = new Date().toISOString();
+
+    if (job.doc_no) {
+        const changedQty = patch.qty !== undefined && Number(patch.qty) !== job.qty;
+        const changedCode = patch.product_code !== undefined
+            && String(patch.product_code).trim() !== job.product_code;
+        if (changedQty || changedCode || patch.items) {
+            throw new Error(`작업지시서(${job.doc_no})가 나간 작업은 일정만 수정할 수 있습니다.`
+                + ' 내용을 바꾸려면 삭제 후 다시 등록하세요.');
+        }
+        Object.assign(job, dates, { updated_at: now });
+        await save(db);
+        return withStatus(job);
+    }
+
+    const code = String(patch.product_code ?? job.product_code).trim();
+    const qty = jobQty(patch.qty ?? job.qty);
+    const master = aliveMasters(db).find((m) => m.product_code === code);
+    if (!master) throw new Error(`작업마스터에 없는 제품코드입니다: ${code}`);
+    // 🔑 수량·제품이 바뀌면 필요수량이 달라져 기존 LOT 을 그대로 쓸 수 없다. 조용히 한 행으로
+    // 채우면 사용자가 나눠 둔 LOT 이 사라진 채 작업지시서가 나가므로 거부하고 다시 받는다.
+    if (!patch.items) {
+        if (qty !== job.qty) throw new Error('작업수량이 바뀌면 LOT 을 다시 입력해야 합니다.');
+        if (master.id !== job.master_id) {
+            throw new Error('제품코드가 바뀌면 LOT 을 다시 입력해야 합니다.');
+        }
+    }
+    // 일정만 고치는 경로 - 넘어온 items 가 없으면 기존 구성품을 그대로 지킨다
+    const items = buildJobItems(db, master, qty, patch.items ?? jobItemsOf(db, job.id));
+
+    db.processJobItems = db.processJobItems.filter((i) => i.job_id !== job.id);
+    items.forEach((it) => {
+        db.processJobItems.push({ id: uid('pji'), job_id: job.id, ...it });
+    });
+    Object.assign(job, dates, {
+        master_id: master.id,
+        work_type: master.work_type,
+        product_code: master.product_code,
+        product_name: master.product_name,
+        qty,
+        updated_at: now,
+    });
+    await save(db);
+    return withStatus(job);
+}
+
+/**
+ * 작업 다중 삭제 (soft delete).
+ * **완료된 건이 섞여 있으면 전부 거부한다** - 일부만 지워지면 무엇이 남았는지 알 수 없다.
+ * 문서번호는 되돌리지 않는다 (unique 가 살아 있어 번호가 재사용되지 않는다).
+ */
+export async function deleteProcessJobs(ids, user) {
+    assertProcessing(user, '작업 삭제');
+    const list = [...new Set(ids ?? [])];
+    if (!list.length) throw new Error('삭제할 작업을 선택하세요.');
+
+    const db = (await load());
+    const rows = list.map((id) => {
+        const job = aliveJobs(db).find((j) => j.id === id);
+        if (!job) throw new Error('작업을 찾을 수 없습니다.');
+        return job;
+    });
+    const done = rows.filter((j) => j.done_at);
+    if (done.length) {
+        const names = done.map((j) => j.doc_no || j.product_code).join(', ');
+        throw new Error(`완료된 작업은 삭제할 수 없습니다 (${names}). 완료취소 후 삭제하세요.`);
+    }
+    // A18 - 현장이 작업전 사진을 남긴 건은 지우지 않는다 (증빙만 남고 작업이 사라진다)
+    const doing = rows.filter((j) => j.pre_check_at);
+    if (doing.length) {
+        const names = doing.map((j) => j.doc_no || j.product_code).join(', ');
+        throw new Error(`작업중인 작업은 삭제할 수 없습니다 (${names}).`
+            + ' 앱에서 작업전검수를 취소한 뒤 삭제하세요.');
+    }
+    const now = new Date().toISOString();
+    rows.forEach((job) => { job.deleted_at = now; });
+    await save(db);
+    return rows.length;
+}
+
+/**
+ * ⚠️ `setProcessDone` 은 **없앴다** (docs/processing.md §8 개정).
+ * 완료는 사진 3장이 있어야 성립하므로 앱 완료검수(`saveDoneCheck` → `completeDoneCheck`)로만
+ * 찍는다. 버튼 하나를 남겨 두면 증빙 없는 완료가 생기고, 그 건은 앱에서 취소하기 전까지
+ * 사진을 붙일 수 없다. 완료취소(`revokeProcessDone`)는 아래 「모바일 검수」 절에 있다.
+ */
+
+/**
+ * 작업지시서 문서번호 채번 + `doc_created_at` 기록 🔑
+ * **상태는 바꾸지 않는다** (§8 개정 - 종이를 뽑은 것과 현장이 착수한 것은 다르다).
+ *
+ * 이미 번호가 있으면 **그대로 돌려준다**(재생성 없음 - 같은 번호의 다른 종이가 돌면 현장 사고다).
+ * 두 사람이 같은 순간에 누르면 같은 번호가 나올 수 있어 방어가 두 겹이다.
+ *   1 서버의 `unique(doc_no)` 가 두 번째 저장을 거부한다 (최후 방어선)
+ *   2 여기서 오류 문구에 `duplicate`/`unique` 가 있으면 다시 읽어 번호를 새로 매긴다 (최대 5회)
+ */
+export async function issueProcessDoc(id, user) {
+    assertProcessing(user, '작업지시서 생성');
+    for (let tries = 0; tries < DOC_NO_RETRY; tries += 1) {
+        const db = (await load());
+        const job = aliveJobs(db).find((j) => j.id === id);
+        if (!job) throw new Error('작업을 찾을 수 없습니다.');
+        if (job.doc_no) return withStatus(job);
+
+        const date = today();
+        // 삭제된 작업의 번호도 센다 - 번호는 되돌아오지 않는다
+        const used = db.processJobs.map((j) => j.doc_no).filter(Boolean);
+        const now = new Date().toISOString();
+        Object.assign(job, {
+            doc_no: formatDocNo(date, nextDocSeq(used, date)),
+            doc_created_at: now,
+            doc_created_by: user.id,
+            doc_created_by_name: user.name,
+            updated_at: now,
+        });
+        try {
+            await save(db);
+            return withStatus(job);
+        } catch (err) {
+            // 🔑 실패하면 **무조건** 캐시를 버린다. `db` 는 store 의 캐시와 같은 객체라,
+            // 번호가 박힌 채 남으면 뒤이은 다른 저장이 그 번호를 서버로 밀어 넣는다
+            invalidate();
+            if (!/duplicate|unique/i.test(String(err?.message ?? ''))) throw err;
+        }
+    }
+    throw new Error('문서번호 채번에 실패했습니다. 다시 시도해 주세요.');
+}
+
+/* ----------------------------- 모바일 검수 (§17) ----------------------------- */
+/**
+ * 현장이 휴대폰으로 남기는 **사진 증빙**. 상태를 움직이는 유일한 경로다.
+ *
+ *   작업대기 ─(작업전 검수: 구성품 줄마다 1장)→ 작업중 ─(완료 검수: 3장)→ 작업완료
+ *
+ * 🔑 **화면이 잠그는 조건을 여기에도 둔다.** 「사진이 다 찼을 때만 검수완료」 는 표현이 아니라
+ * 쓰기 허용 조건이라, 화면 버튼만 잠그면 db 를 직접 불러 뚫린다.
+ * 🔑 **되돌릴 수 없는 저장(업로드·시각 기록)은 실패 경로마다 `invalidate()`** 한다 -
+ * `db` 객체는 store 캐시와 같은 객체라 실패한 값이 남으면 다음 저장이 밀어 넣는다.
+ */
+
+/**
+ * 사진 Storage 경로 🔑 **만드는 곳은 여기 한 곳뿐이다.**
+ * 결정적이라 재촬영·재저장이 같은 파일을 덮어쓴다(고아 파일이 쌓이지 않는다).
+ */
+function photoPath(jobId, phase, slot) {
+    return `jobs/${jobId}/${phase}/${slot}.jpg`;
+}
+
+/** 이 작업·단계의 사진 메타 (line_no → seq 순) */
+function photosOf(db, jobId, phase) {
+    return db.processPhotos
+        .filter((p) => p.job_id === jobId && p.phase === phase)
+        .sort((a, b) => ((a.line_no ?? 0) - (b.line_no ?? 0)) || ((a.seq ?? 1) - (b.seq ?? 1)));
+}
+
+/** 검수 대상 작업 - 없음·삭제됨·문서 없음(A17)을 한 곳에서 거른다 */
+function checkJob(db, jobId) {
+    const job = aliveJobs(db).find((j) => j.id === jobId);
+    if (!job) throw new Error('작업을 찾을 수 없습니다.');
+    if (!job.doc_no) throw new Error('작업지시서를 생성한 뒤에 검수할 수 있습니다.');
+    return job;
+}
+
+/** 촬영 결과 검증 - 이미지가 아니거나 비었거나 상한(1MB)을 넘으면 거부한다 */
+function checkBlob(blob) {
+    const size = Number(blob?.size ?? 0);
+    const type = String(blob?.type ?? '');
+    if (!size || !type.startsWith('image/') || size > PHOTO.maxBytes) {
+        throw new Error(PHOTO_READ_ERROR);
+    }
+    return size;
+}
+
+/**
+ * 업로드 → 메타 upsert (커밋 지점 ①).
+ * 일부만 올라가면 **성공한 것만 메타에 남기고 오류를 던진다.** 다시 저장하면 남은 것만
+ * 올라간다(경로가 결정적이라 중복이 없다). 시각 기록은 여기서 하지 않는다.
+ *
+ * @param {Array<{slot:number, blob:Blob, size:number}>} rows
+ */
+async function commitPhotos(jobId, phase, rows, user) {
+    const saved = [];
+    let failed = null;
+    for (const r of rows) {
+        const path = photoPath(jobId, phase, r.slot);
+        try {
+            // 폰 회선에서 동시 업로드는 더 잘 깨진다
+            await putFile(path, r.blob);
+            saved.push({ ...r, path });
+        } catch (err) {
+            failed = err;
+            break;
+        }
+    }
+
+    // 한 장도 못 올렸으면 남길 메타가 없다 - 캐시를 버리고 그대로 던진다
+    if (!saved.length) {
+        invalidate();
+        throw failed;
+    }
+
+    // 업로드가 도는 동안(수 초) 캐시가 낡는다. 메타는 **다시 읽은** 값 위에 얹는다
+    invalidate();
+    const db = (await load());
+    const now = new Date().toISOString();
+    saved.forEach((r) => {
+        const line = phase === PROCESS_PHASE.PRE ? r.slot : null;
+        const seq = phase === PROCESS_PHASE.PRE ? 1 : r.slot;
+        const cur = db.processPhotos.find((p) => p.job_id === jobId && p.phase === phase
+            && (p.line_no ?? null) === line && Number(p.seq) === seq);
+        const patch = {
+            path: r.path,
+            size: r.size,
+            taken_by: user.id,
+            taken_by_name: user.name,
+            taken_at: now,
+        };
+        // 🔑 같은 자리는 **같은 행을 고친다.** 새 행을 만들면 unique 슬롯 제약에 걸린다
+        if (cur) Object.assign(cur, patch);
+        else {
+            db.processPhotos.push({
+                id: uid('pp'), job_id: jobId, phase, line_no: line, seq, ...patch,
+            });
+        }
+    });
+    try {
+        await save(db);
+    } catch (err) {
+        invalidate();
+        throw err;
+    }
+    if (failed) throw failed;
+    return photosOf(db, jobId, phase);
+}
+
+/** 시각 기록 - 실패하면 캐시를 버린다 (찍힌 시각이 남아 다음 저장에 섞이지 않게) */
+async function stamp(db, job, patch) {
+    Object.assign(job, patch, { updated_at: new Date().toISOString() });
+    try {
+        await save(db);
+    } catch (err) {
+        invalidate();
+        throw err;
+    }
+    return withStatus(job);
+}
+
+/**
+ * 검수 대상 작업 목록 (앱 `#/pcheck`).
+ * 🔑 **`doc_no` 가 있는 작업만** 본다 (A17). 목록·문서번호 입력·바코드 스캔이 같은 모집단이라
+ * 같은 작업이 경로에 따라 열리거나 안 열리는 일이 없다.
+ *
+ * @param {'pre'|'done'} phase
+ * @param {{keyword?:string}} f keyword - 문서번호·제품코드·제품명
+ */
+export async function listProcessJobsForCheck(phase, f = {}) {
+    if (!PROCESS_PHASES.includes(phase)) throw new Error('검수 단계가 올바르지 않습니다.');
+    const db = (await load());
+    let rows = aliveJobs(db).filter((j) => j.doc_no).filter((j) => (phase === PROCESS_PHASE.PRE
+        ? !j.pre_check_at
+        : j.pre_check_at && !j.done_at));
+    const k = String(f.keyword ?? '').trim().toLowerCase();
+    if (k) {
+        rows = rows.filter((j) => `${j.doc_no} ${j.product_code} ${j.product_name}`
+            .toLowerCase().includes(k));
+    }
+    return rows
+        .map((j) => ({
+            ...withStatus(j),
+            photo_count: photosOf(db, j.id, phase).length,
+        }))
+        .sort((a, b) => (a.start_date === b.start_date
+            ? (a.doc_no > b.doc_no ? 1 : -1)
+            : (a.start_date > b.start_date ? 1 : -1)));
+}
+
+/**
+ * 문서번호로 작업 1건 (앱의 직접 입력·바코드 스캔).
+ * **주문번호는 보지 않는다** - 유통가공은 주문과 이어지지 않는 독립 업무다.
+ */
+export async function findProcessJobByDocNo(docNo) {
+    const key = String(docNo ?? '').trim();
+    if (!key) return null;
+    const db = (await load());
+    const job = aliveJobs(db).find((j) => j.doc_no === key);
+    if (!job) return null;
+    return { job: withStatus(job), items: jobItemsOf(db, job.id) };
+}
+
+/** 사진 메타 목록 (화면이 「무엇이 저장됐나」를 판단하는 유일한 근거) */
+export async function listProcessPhotos(jobId, phase) {
+    const db = (await load());
+    return photosOf(db, jobId, phase);
+}
+
+/**
+ * 사진 주소 발급. 화면은 정리 함수에서 반드시 `release()` 를 부른다
+ * (mock 의 objectURL 은 지우지 않으면 샌다).
+ */
+export function processPhotoUrls(paths) {
+    return fileUrls(paths);
+}
+
+/**
+ * 작업전 검수 사진 저장 (커밋 지점 ① - 서버에 남는 첫 시점).
+ * @param {Array<{line_no:number, blob:Blob}>} photos 이번에 올릴 것만
+ */
+export async function savePreCheck(jobId, photos, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+    // 🔑 검수완료된 건은 화면이 읽기 전용이다. 같은 조건을 여기에도 둔다 -
+    // 없으면 db 를 직접 불러 증빙 사진을 **소리 없이 갈아끼울** 수 있다
+    if (job.pre_check_at) throw new Error('작업전 검수를 취소한 뒤에 다시 촬영할 수 있습니다.');
+
+    const lines = photoLines(jobItemsOf(db, job.id));
+    const rows = (photos ?? []).map((p) => {
+        const slot = Number(p.line_no);
+        if (!lines.includes(slot)) throw new Error('구성품에 없는 줄의 사진입니다.');
+        return { slot, blob: p.blob, size: checkBlob(p.blob) };
+    });
+    if (!rows.length) return photosOf(db, jobId, PROCESS_PHASE.PRE);
+    return commitPhotos(jobId, PROCESS_PHASE.PRE, rows, user);
+}
+
+/**
+ * 작업전 검수완료 (커밋 지점 ② - 상태가 바뀐다) → `작업중`.
+ * 🔑 판정은 화면 상태가 아니라 **저장된 사진 메타**로 한다.
+ */
+export async function completePreCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const lines = photoLines(jobItemsOf(db, job.id));
+    // 🔑 `miss.length === 0` 은 구성품이 0줄이어도 참이다. 그 경우 사진 한 장 없이
+    // 작업중이 되므로 따로 막는다 (학습로그 2026-09-16 「b === 0 이면 늘 통과」)
+    if (!lines.length) throw new Error('구성품이 없어 검수할 수 없습니다.');
+    const have = photosOf(db, jobId, PROCESS_PHASE.PRE).map((p) => Number(p.line_no));
+    const miss = missingSlots(lines, have);
+    if (miss.length) {
+        throw new Error(`구성품 ${lines.length}줄 중 ${miss.length}줄의 사진이 없습니다.`);
+    }
+    if (job.pre_check_at) return withStatus(job);
+    return stamp(db, job, {
+        pre_check_at: new Date().toISOString(),
+        pre_check_by: user.id,
+        pre_check_by_name: user.name,
+    });
+}
+
+/**
+ * 완료 검수 사진 저장 (정확히 `PROCESS_DONE_PHOTOS` 칸 중 이번에 찍은 것).
+ * @param {Array<{seq:number, blob:Blob}>} photos
+ */
+export async function saveDoneCheck(jobId, photos, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.pre_check_at) throw new Error('작업전 검수를 먼저 마쳐야 합니다.');
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const rows = (photos ?? []).map((p) => {
+        const slot = Number(p.seq);
+        if (!Number.isInteger(slot) || slot < 1 || slot > PROCESS_DONE_PHOTOS) {
+            throw new Error(`완료 사진 ${PROCESS_DONE_PHOTOS}장을 모두 촬영해 주세요.`);
+        }
+        return { slot, blob: p.blob, size: checkBlob(p.blob) };
+    });
+    if (!rows.length) return photosOf(db, jobId, PROCESS_PHASE.DONE);
+    return commitPhotos(jobId, PROCESS_PHASE.DONE, rows, user);
+}
+
+/** 완료처리 → `작업완료`. 작업전 검수를 건너뛴 작업은 거부한다 */
+export async function completeDoneCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.pre_check_at) throw new Error('작업전 검수를 먼저 마쳐야 합니다.');
+    if (job.done_at) throw new Error('이미 완료된 작업입니다.');
+
+    const want = Array.from({ length: PROCESS_DONE_PHOTOS }, (_, i) => i + 1);
+    const have = photosOf(db, jobId, PROCESS_PHASE.DONE).map((p) => Number(p.seq));
+    if (missingSlots(want, have).length) {
+        throw new Error(`완료 사진 ${PROCESS_DONE_PHOTOS}장을 모두 촬영해 주세요.`);
+    }
+    return stamp(db, job, {
+        done_at: new Date().toISOString(),
+        done_by: user.id,
+        done_by_name: user.name,
+    });
+}
+
+/**
+ * 작업전검수 취소 → `작업대기`.
+ * **사진은 지우지 않는다** (A22 - 다시 찍으면 같은 경로를 덮어쓴다).
+ */
+export async function revokePreCheck(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (job.done_at) throw new Error('완료를 먼저 취소해야 합니다.');
+    if (!job.pre_check_at) return withStatus(job);
+    return stamp(db, job, { pre_check_at: null, pre_check_by: null, pre_check_by_name: '' });
+}
+
+/** 완료취소 → `작업중`. 켜는 쪽과 같은 권한(`updateStatus`)이 끈다 */
+export async function revokeProcessDone(jobId, user) {
+    assertCheck(user);
+    const db = (await load());
+    const job = checkJob(db, jobId);
+    if (!job.done_at) return withStatus(job);
+    return stamp(db, job, { done_at: null, done_by: null, done_by_name: '' });
 }
 
 /* --------------------------------- 실시간 구독 -------------------------------- */

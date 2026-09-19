@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "graft": {
+      "source": "trailhq/graft",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/graft/SKILL.md",
+      "computedHash": "0cbf7dc1f228bef00ef78ea656e4186c1c7dad7a6a8ba9f4332557dd7c6ee34d"
+    }
+  }
+}
