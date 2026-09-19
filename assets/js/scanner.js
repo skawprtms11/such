@@ -14,8 +14,10 @@
  *   ① 시작 자가 진단 - 우리가 그린 Code128 한 장을 먹여 본다 (`selfTest`)
  *   ② 런타임 - `detect()` 가 던지면 그 자리에서 ZXing 으로 갈아탄다 (`swapEngine`)
  *   ③ 그림자 디코딩 - 한참 못 잡으면 같은 프레임을 ZXing 으로도 본다 (`shadowDue`)
- * 한 번이라도 걸러진 기기는 `localStorage.tpl_scan_engine='zxing'` 으로 기억한다
- * (지우는 곳은 앱 계정 화면의 `스캔 엔진 재검사` 하나뿐이다).
+ * ⚠️ **다음 실행까지 기억하는 것은 ②③ 런타임 전환뿐이다**
+ * (`localStorage.tpl_scan_engine='zxing'` · 지우는 곳은 앱 계정 화면의 `스캔 엔진 재검사`).
+ * ①자가 진단 실패는 **이번 페이지 동안만** 유효하다 - 진단이 잘못 실패하면 그 기억이
+ * 배포를 넘어 살아남아, 고친 뒤에도 멀쩡한 기기가 버튼을 누르기 전까지 ZXing 을 쓴다.
  *
  * 카메라 API 자체는 HTTPS 또는 localhost 에서만 동작한다.
  *
@@ -136,6 +138,14 @@ function rememberZxing() {
     }
 }
 
+/**
+ * 이번 **페이지**에서 내장 인식기가 자가 진단에 떨어졌는지 🔑
+ * `localStorage` 와 달리 새로고침하면 사라진다 - 진단은 카메라가 아니라 캔버스로 하는
+ * 간접 확인이라 오판 여지가 있고, 그 오판이 영구가 되면 배포로도 못 고친다.
+ * 영구 기억은 실제 카메라 프레임에서 실패한 런타임 전환(`swapEngine`)에만 남긴다.
+ */
+let nativeBroken = false;
+
 /** 이 기기에서 내장 인식기를 건너뛰기로 기억해 두었는지 */
 export function zxingRemembered() {
     try {
@@ -148,6 +158,7 @@ export function zxingRemembered() {
 
 /** 기억을 지운다 (계정 화면) - 다음 스캔에서 내장 인식기를 다시 진단한다 */
 export function resetScanEngine() {
+    nativeBroken = false;
     try {
         localStorage.removeItem(ENGINE_KEY);
     } catch (err) {
@@ -157,7 +168,7 @@ export function resetScanEngine() {
 
 /** 이번 실행에서 내장 인식기를 시도할지 (기능이 있고 + 못 쓴다고 기억하지 않았다) */
 function useNative() {
-    return hasNativeDetector() && !zxingRemembered();
+    return hasNativeDetector() && !nativeBroken && !zxingRemembered();
 }
 
 /* -------------------------------- 인식기 만들기 -------------------------------- */
@@ -280,12 +291,20 @@ async function nativeReader(canceled) {
     }
 
     // 🔑 여기부터가 자가 진단이다 - 만들어 놓고 동작하지 않는 기기를 걸러낸다
-    if ((await selfTest(one, canceled)) === false) {
-        rememberZxing();
+    const ok = await selfTest(one, canceled);
+    if (ok === false) {
+        nativeBroken = true;      // 이번 페이지만 - 위 `nativeBroken` 주석 참고
         return null;
     }
     return {
         native: true,
+        /**
+         * 자가 진단을 **끝냈는지** 🔑 기다리는 사이 화면을 떠나 건너뛴 경우만 false 다.
+         * 그대로 캐시하면 검증되지 않은 내장 인식기가 자리 잡아 **다시는 진단하지 않는다**
+         * (`start()` 가 이 값을 보고 다시 만든다). 이미지를 못 그려 건너뛴 경우는 다시
+         * 해도 같은 결과이므로 검증된 것으로 본다.
+         */
+        tested: ok === true || !canceled?.(),
         async decode(img, useWide) {
             return pickCenter(await (useWide ? wide : one).detect(img), img);
         },
@@ -507,6 +526,8 @@ export function createScanner(video, onCode) {
     let running = false;
     let torchOn = false;
     let readerP = null;
+    /** 지금 `readerP` 가 자가 진단을 끝낸 인식기인지 (아니면 다음 start() 가 다시 만든다) */
+    let readerTested = true;
     let starting = false;
     let gen = 0;
     let last = '';
@@ -670,6 +691,7 @@ export function createScanner(video, onCode) {
             return;
         }
         readerP = Promise.resolve(zx);
+        readerTested = true;        // ZXing 은 진단 대상이 아니다
         rememberZxing();
         setEngine('zxing');
     }
@@ -791,6 +813,11 @@ export function createScanner(video, onCode) {
             }
         }
 
+        // 🔑 판정 시각은 그림자 디코딩 **뒤**에 읽는다 (앞으로 당기지 말 것).
+        // `repeatMs` 는 「마지막으로 센 뒤 흐른 실시간」이라 실제 시계여야 비프 간격이
+        // 정확히 2.5초로 유지된다. `reArmGap` 쪽은 그림자를 돈 tick 만 최대 1회
+        // 디코딩만큼 늦게 읽히지만, **같은 시간이 `used`→`cost`→`reArmGap`(5배)로
+        // 들어가 문턱이 더 크게 올라가** 상쇄된다 (그래서 `used` 에서 빼면 안 된다).
         const now = performance.now();
         missStreak = code ? 0 : missStreak + 1;
         cost = nextCost(cost, used, Boolean(code), TUNE);
@@ -899,10 +926,20 @@ export function createScanner(video, onCode) {
         stream = mineStream;
 
         // 프리뷰가 뜨는 동안 디코더를 준비한다 (실패해도 직접 입력 경로는 살아 있다)
-        if (!readerP) {
-            readerP = createReader(canceled).catch((err) => {
+        // 🔑 **자가 진단을 못 끝낸 인식기는 다시 만든다.** 진단을 기다리는 사이 화면을
+        // 떠나면 검증되지 않은 내장 인식기가 캐시에 남아 그 뒤로 영영 진단하지 않는다.
+        if (!readerP || !readerTested) {
+            // 🔑 진단이 **끝난 뒤**가 아니라 **시작할 때** 미검증으로 표시한다.
+            // 끝난 뒤에 표시하면 진단 중에 중지→재시작한 세대가 「검증됐다」 로 보고
+            // 미검증 인식기를 그대로 물려받는다 (이 경로가 바로 막으려던 것이다).
+            readerTested = !useNative();      // ZXing 경로는 진단할 것이 없다
+            const mineReader = createReader(canceled).catch((err) => {
                 console.warn('바코드 디코더를 불러오지 못했습니다.', err);
                 return null;
+            });
+            readerP = mineReader;
+            mineReader.then((r) => {
+                if (readerP === mineReader) readerTested = r?.tested !== false;
             });
         }
 

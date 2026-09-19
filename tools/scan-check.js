@@ -24,14 +24,19 @@
  *   S9 합의(consensus)는 **연속** 프레임을 뜻한다 - 미검출이 끼면 처음부터 다시 센다
  *  S10 내장 인식기가 **예외를 던지면** ZXing 으로 갈아타고 인식이 재개된다 (과다 계수 0)
  *  S11 내장이 **늘 빈 결과**면 그림자 디코딩으로 읽고, 전환 전후의 계수가 어긋나지 않는다
+ *  S12 시작 자가 진단 - 떨어지면 ZXing 으로 돌고, 그 실패를 **다음 실행까지 기억하지 않으며**,
+ *      진단 도중 화면을 떠나 **건너뛴 인식기는 캐시하지 않는다**
  *
  * 🔑 **검사기를 믿기 전에 변이로 검사기를 검증한다.** `--mutate=이름` 은 원본을 건드리지 않고
  * 임시 폴더에 고친 사본을 만들어 돌린다 (`--mutate=list` 로 목록).
  *
  * 🔑 **ZXing 은 가짜로 갈아끼운다.** 실제 패키지는 브라우저 전용이라 노드에서 돌지 않는다.
  * 사본을 만들 때 `@zxing/*` 임포트만 아래 `ZXING_FAKE` 로 바꾼다 (변이와 같은 방식이고,
- * 바꾸는 곳은 **임포트 지정자 두 줄뿐**이다). 시작 자가 진단(`selfTest`)은 `Image`·`Blob`
- * 가 필요해 노드에서 모사할 수 없으므로 **브라우저에서 확인한다** (docs/testing.md).
+ * 바꾸는 곳은 **임포트 지정자 두 줄뿐**이다).
+ *
+ * 🔑 **자가 진단도 센다.** `Image` 와 `URL.createObjectURL` 만 흉내내고 `barcode.js` 는
+ * 진짜를 그대로 쓴다 (`util.js` 는 `esc` 만 필요해 토막으로 대신한다). 가짜 인식기는
+ * 캔버스에 붙은 표시로 진단용과 카메라 프레임을 가르고, 진단 호출은 예산·계수에 넣지 않는다.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -137,6 +142,19 @@ const MUTATIONS = {
             + '                shadowHit = Boolean(code);',
         to: '                shadowHit = Boolean(code);',
     },
+    'selftest-remember': {
+        why: 'S12 - 자가 진단 실패를 localStorage 에 영구 기억한다'
+            + ' (진단 오판이 배포를 넘어 살아남는다)',
+        file: 'scanner.js',
+        find: '        nativeBroken = true;      // 이번 페이지만 - 위 `nativeBroken` 주석 참고',
+        to: '        rememberZxing();',
+    },
+    'selftest-cache': {
+        why: 'S12 - 진단을 못 끝낸 인식기를 그대로 캐시한다 (그 뒤로 영영 진단하지 않는다)',
+        file: 'scanner.js',
+        find: '        if (!readerP || !readerTested) {',
+        to: '        if (!readerP) {',
+    },
     'downgrade-again': {
         why: 'S6 - 초과할 때마다 강등한다 (진동)',
         file: 'scan-calc.js',
@@ -166,6 +184,16 @@ export const BarcodeFormat = {
 `;
 
 /**
+ * `util.js` 토막 - `barcode.js` 는 `esc` 하나만 쓴다 (진짜 `util.js` 는 DOM 을 부른다).
+ */
+const UTIL_STUB = `export function esc(v) {
+    return String(v ?? '').replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+}
+`;
+
+/**
  * 돌릴 사본을 임시 폴더에 만들고 그 경로를 돌려준다 (원본은 건드리지 않는다).
  * 변이가 없어도 사본을 만든다 - ZXing 임포트를 가짜로 바꿔야 하기 때문이다.
  */
@@ -177,6 +205,9 @@ function sourceDir() {
     }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-check-'));
     fs.writeFileSync(path.join(dir, 'zxing-fake.js'), ZXING_FAKE);
+    fs.writeFileSync(path.join(dir, 'util.js'), UTIL_STUB);
+    // 자가 진단은 **진짜 바코드 생성기**로 그린 SVG 를 쓴다 (그대로 복사한다)
+    fs.copyFileSync(path.join(SRC, 'barcode.js'), path.join(dir, 'barcode.js'));
     ['scanner.js', 'scan-calc.js'].forEach((f) => {
         let code = fs.readFileSync(path.join(SRC, f), 'utf8');
         if (m && f === m.file) {
@@ -255,7 +286,18 @@ class FakeDetector {
         return Promise.resolve([...FORMATS]);
     }
 
-    detect() {
+    detect(src) {
+        // 🔑 자가 진단(우리 바코드를 그린 캔버스)과 카메라 프레임을 가른다.
+        // 진단 호출은 예산·계수의 대상이 아니므로 `sim.decodes` 에 넣지 않는다
+        if (src?.selfTest) {
+            sim.selfTestCalls += 1;
+            if (sim.selfTestThrows) {
+                return Promise.reject(Object.assign(new Error('unavailable'),
+                    { name: 'NotSupportedError' }));
+            }
+            return Promise.resolve(sim.selfTestFails
+                ? [] : [{ rawValue: TUNE.selfTestText }]);
+        }
         // 🔑 현장 기기 재현 - nativeThrows: Play 바코드 모듈이 없어 매번 던진다 ·
         // nativeBlind: 던지지도 않고 늘 빈 배열만 준다 (전환 신호가 없는 쪽이 더 고약하다)
         const label = sim.nativeBlind ? null : sim.present(clock);
@@ -283,15 +325,46 @@ class FakeDetector {
 }
 
 function fakeCanvas() {
-    return {
+    const c = {
         width: 0,
         height: 0,
+        /** 자가 진단용 이미지가 그려졌는지 - 가짜 인식기가 이걸 보고 진단을 가른다 */
+        selfTest: false,
         getContext: () => ({
-            drawImage() {},
+            fillStyle: '',
+            fillRect() {},
+            drawImage(img) { if (img?.selfTest) c.selfTest = true; },
             getImageData: (x, y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) }),
             putImageData() {},
         }),
     };
+    return c;
+}
+
+/**
+ * 가짜 이미지 - 자가 진단은 SVG 문자열을 이미지로 디코딩해 캔버스에 그린다.
+ * 노드에는 `Image` 가 없으므로 크기만 흉내내고 가상 시계로 `onload` 를 부른다
+ * (`sim.imgMs` 를 늘리면 진단을 기다리는 동안 화면을 떠나는 상황을 만들 수 있다).
+ */
+class FakeImage {
+    constructor() {
+        this.selfTest = true;
+        this.width = 748;
+        this.height = 98;
+        sim.selfTestImages += 1;
+    }
+
+    set src(v) {
+        this.href = v;
+        vSetTimeout(() => {
+            if (sim.selfTestImageFails) this.onerror?.(new Error('그릴 수 없다'));
+            else this.onload?.();
+        }, sim.imgMs);
+    }
+
+    get src() {
+        return this.href;
+    }
 }
 
 /**
@@ -326,6 +399,10 @@ function installGlobals() {
         setItem(k, v) { this.store.set(k, String(v)); },
         removeItem(k) { this.store.delete(k); },
     });
+    def('Image', FakeImage);
+    // 진짜 URL 클래스는 살려 두고(노드 내부가 쓴다) 블롭 두 개만 얹는다
+    globalThis.URL.createObjectURL = () => 'blob:selftest';
+    globalThis.URL.revokeObjectURL = () => {};
     def('window', { BarcodeDetector: FakeDetector });
     def('document', {
         hidden: false,
@@ -407,9 +484,12 @@ function rnd() {
 const pick = (n) => Math.floor(rnd() * n);
 
 const DIR = sourceDir();
-const { createScanner, TUNE } = await import(url.pathToFileURL(
+const { createScanner, TUNE, resetScanEngine } = await import(url.pathToFileURL(
     path.join(DIR, 'scanner.js')).href);
 const calc = await import(url.pathToFileURL(path.join(DIR, 'scan-calc.js')).href);
+// 🔑 자가 진단이 쓰는 `barcode.js` 를 **미리** 불러 둔다. 지연 로드는 실제 이벤트 루프에서
+// 풀리는데 가상 시계는 그것을 기다려 주지 않아, 첫 시나리오만 디코더 없이 도는 일이 생긴다
+await import(url.pathToFileURL(path.join(DIR, 'barcode.js')).href);
 
 installGlobals();
 
@@ -421,6 +501,7 @@ async function run(opt) {
     clock = 0;
     timers = [];
     localStorage.store.clear();     // 엔진 기억은 시나리오마다 처음부터 (기기를 새로 잡는다)
+    resetScanEngine();              // 자가 진단 결과(페이지 한정 기억)도 함께 지운다
     sim = {
         present: opt.present,
         hitCost: opt.hitCost ?? 30,
@@ -446,31 +527,46 @@ async function run(opt) {
         zxingBlind: opt.zxingBlind ?? false,
         zxingCost: opt.zxingCost ?? 40,
         zxingCalls: 0,
+        /** 시작 자가 진단 - 빈 결과 / 예외 / 이미지를 못 그림 · 이미지가 뜨는 데 걸리는 시간 */
+        selfTestFails: opt.selfTestFails ?? false,
+        selfTestThrows: opt.selfTestThrows ?? false,
+        selfTestImageFails: opt.selfTestImageFails ?? false,
+        imgMs: opt.imgMs ?? 0,
+        selfTestCalls: 0,
+        selfTestImages: 0,
     };
     const video = makeVideo(opt.rvfc ?? true);
     const sc = createScanner(video, (code) => sim.codes.push({ at: clock, code }));
     const started = sc.start().catch(() => {});
 
+    let again = null;
     if (opt.stopAt != null) {
         await advance(opt.stopAt);
         sim.stopped = true;
         sc.stop();
         sim.stopAtClock = clock;
+        // 🔑 중지한 **직후에 다시** 시작하는 경우 (준비 중 이탈 뒤 재시작 재현)
+        if (opt.restart) {
+            sim.stopped = false;
+            again = sc.start().catch(() => {});
+        }
     }
     await advance(opt.ms ?? 6000);
     await started;
-    if (opt.stopAt == null) sc.stop();
+    if (again) await again;
+    if (opt.stopAt == null || opt.restart) sc.stop();
     return { sim, sc, video };
 }
 
 /* ---------------------------------- 채점 ---------------------------------- */
 
 const fails = {
-    S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S6: 0, S7: 0, S8: 0, S9: 0, S10: 0, S11: 0, EX: 0,
+    S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S6: 0, S7: 0, S8: 0, S9: 0, S10: 0, S11: 0,
+    S12: 0, EX: 0,
 };
 const cover = {
     hold: 0, gapRuns: 0, slowTick: 0, stopMid: 0, stopThrow: 0,
-    downgrade: 0, zoom1: 0, consensus: 0, swap: 0, shadow: 0,
+    downgrade: 0, zoom1: 0, consensus: 0, swap: 0, shadow: 0, selftest: 0,
 };
 const first = {};
 function note(k, msg) {
@@ -1007,6 +1103,60 @@ async function s11gap() {
     }
 }
 
+/* ----------------------------------- S12 ----------------------------------- */
+
+/**
+ * 🔑 시작 자가 진단 - 내장 인식기에 **우리가 그린 Code128** 한 장을 먹여 본다.
+ * 「만들 수 있다 ≠ 동작한다」 를 시작할 때 한 번에 가르는 곳이라, 여기가 잘못 판정하면
+ * 멀쩡한 기기가 통째로 ZXing 으로 내려간다. 세는 것은 셋이다.
+ *   ① 진단에 떨어지면 **처음부터** ZXing 으로 돌고 인식이 살아 있다
+ *   ② 진단 실패를 **다음 실행까지 기억하지 않는다** - 진단은 카메라가 아니라 캔버스로
+ *      하는 간접 확인이라 오판 여지가 있고, 기억하면 그 오판이 배포를 넘어 살아남는다
+ *      (영구 기억은 카메라 프레임에서 실제로 실패한 런타임 전환에만 남긴다 · S10)
+ *   ③ 진단을 기다리는 사이 화면을 떠나 **건너뛴 인식기는 캐시하지 않는다** -
+ *      캐시하면 검증되지 않은 내장 인식기가 자리 잡아 그 뒤로 영영 진단하지 않는다
+ */
+async function s12() {
+    // ①② 진단에 떨어지는 기기 (생성은 되는데 우리 바코드를 못 읽는다)
+    const bad = await run({
+        present: (t) => (t % 4000 < 900 ? 'PO-9' : null),
+        selfTestFails: true,
+        ms: 9000,
+    });
+    cover.selftest += 1;
+    if (!bad.sim.selfTestCalls) note('S12', '자가 진단을 한 번도 하지 않았다');
+    if (bad.sc.engine() !== 'zxing') {
+        note('S12', `자가 진단에 떨어졌는데 engine()=${bad.sc.engine()} (내장으로 헛돈다)`);
+    }
+    if (!bad.sim.codes.length) note('S12', '진단에 떨어진 뒤 ZXing 으로도 한 건도 못 셌다');
+    if (localStorage.getItem('tpl_scan_engine') !== null) {
+        note('S12', '자가 진단 실패를 다음 실행까지 기억했다 (오판이 배포를 넘어 살아남는다)');
+    }
+
+    // 진단을 통과하는 기기는 내장 그대로다 (진단이 멀쩡한 기기를 떨어뜨리지 않는다)
+    const good = await run({
+        present: (t) => (t % 4000 < 900 ? 'PO-9' : null),
+        ms: 5000,
+    });
+    if (good.sc.engine() !== 'native') {
+        note('S12', `진단을 통과했는데 engine()=${good.sc.engine()}`);
+    }
+    if (good.sim.zxingCalls) note('S12', '진단을 통과했는데 ZXing 을 내려받았다');
+
+    // ③ 진단용 이미지를 기다리는 사이에 중지 → 곧바로 재시작. 다시 진단해야 한다
+    const again = await run({
+        present: () => null,
+        imgMs: 400,          // 진단용 이미지가 늦게 뜬다 (그 사이에 중지한다)
+        stopAt: 100,
+        restart: true,
+        ms: 4000,
+    });
+    if (again.sim.selfTestImages < 2) {
+        note('S12', `진단 시도가 ${again.sim.selfTestImages}회 - 중지로 건너뛴 인식기를`
+            + ' 그대로 캐시했다 (검증되지 않은 내장 인식기가 자리 잡는다)');
+    }
+}
+
 /* ---------------------------------- 실행 ---------------------------------- */
 
 try {
@@ -1027,6 +1177,7 @@ try {
     await s10();
     await s11();
     await s11gap();
+    await s12();
 } catch (err) {
     note('EX', `${err.message}`);
     process.stderr.write(`${err.stack}\n`);
@@ -1042,6 +1193,6 @@ process.stdout.write(`  커버리지 - 한 장 들기 ${cover.hold} · 떼었다
     + `· 중간 중지 ${cover.stopMid} · 예외 중지 ${cover.stopThrow} `
     + `· 다중 ROI tick ${cover.slowTick} · 강등 ${cover.downgrade} `
     + `· 줌 단계 1개 ${cover.zoom1} · 합의 ${cover.consensus} `
-    + `· 엔진 전환 ${cover.swap} · 그림자 ${cover.shadow}\n`);
+    + `· 엔진 전환 ${cover.swap} · 그림자 ${cover.shadow} · 자가 진단 ${cover.selftest}\n`);
 process.stdout.write(`${bad ? 'FAIL' : 'PASS'}\n`);
 process.exitCode = bad ? 1 : 0;
