@@ -9,6 +9,7 @@
 import { code128Svg } from '../../barcode.js';
 import { PROCESS_ITEM_KIND } from '../../config.js';
 import { needQty } from '../../processing-calc.js';
+import { qrSvg } from '../../qrcode.js';
 import { esc, num, today, toast } from '../../util.js';
 import { groupLines } from './common.js';
 
@@ -61,15 +62,24 @@ export function docHtml(job, items) {
     font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
   }
   /* 🔑 문서 맨 위의 바코드 띠 - 현장이 앱에서 스캔해 검수 화면을 여는 바코드다
-     (docs/processing.md §17-1). 접힌 문서에서도 바로 보이게 제목보다 위에 크게 둔다 */
+     (docs/processing.md §17-1). 접힌 문서에서도 바로 보이게 제목보다 위에 크게 둔다.
+     **하이브리드** - 좌 Code128 · 우 QR 로 같은 문서번호를 함께 찍는다 */
   .bcband {
-    display: flex; flex-direction: column; align-items: center; gap: 1mm;
+    display: flex; flex-direction: column; align-items: stretch; gap: 1mm;
     padding: 3mm 0 4mm; border-bottom: 1px solid #000; margin-bottom: 5mm;
   }
-  /* 가로는 인쇄 폭을 꽉 채우고 세로는 고정한다 (preserveAspectRatio=none - 모듈이 같은 배율로
+  .bcband__row { display: flex; align-items: stretch; gap: 4mm; height: 28mm; }
+  /* 가로는 남는 폭을 꽉 채우고 세로는 고정한다 (preserveAspectRatio=none - 모듈이 같은 배율로
      늘어나므로 바코드 규격은 유지된다). 스캔 거리가 멀어도 읽히게 가능한 한 크게 */
-  .bcband svg { display: block; width: 100%; height: 28mm; }
-  .bcband .no { font-size: 18pt; font-weight: 700; letter-spacing: 4px; font-family: monospace; }
+  .bcband__1d { flex: 1 1 auto; min-width: 0; }
+  .bcband__1d svg { display: block; width: 100%; height: 100%; }
+  /* ⚠️ QR 은 정사각형이어야 읽힌다 - 한 변을 띠 높이에 맞춘다 */
+  .bcband__qr { flex: 0 0 28mm; }
+  .bcband__qr svg { display: block; width: 100%; height: 100%; }
+  .bcband .no {
+    text-align: center; font-size: 18pt; font-weight: 700;
+    letter-spacing: 4px; font-family: monospace;
+  }
   .head { display: flex; align-items: flex-end; justify-content: space-between; }
   .head h1 { margin: 0; font-size: 20pt; letter-spacing: 2px; }
   .head .meta { text-align: right; font-size: 11pt; }
@@ -88,8 +98,11 @@ export function docHtml(job, items) {
 </style></head>
 <body onload="window.print()">
   ${job.doc_no ? `<div class="bcband">
-    ${code128Svg(job.doc_no, { height: 60, moduleWidth: 2, showText: false })
-        .replace('<svg ', '<svg preserveAspectRatio="none" ')}
+    <div class="bcband__row">
+      <div class="bcband__1d">${code128Svg(job.doc_no, { height: 60, moduleWidth: 2, showText: false })
+        .replace('<svg ', '<svg preserveAspectRatio="none" ')}</div>
+      <div class="bcband__qr">${qrSvg(job.doc_no, { module: 4 })}</div>
+    </div>
     <div class="no">${esc(job.doc_no)}</div>
   </div>` : ''}
   <div class="head">

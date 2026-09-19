@@ -22,6 +22,8 @@
     background: #fff;
   }
   .bc__cap { font-size: 11px; color: var(--gray-500); margin-bottom: 4px; }
+  /* 하이브리드 라벨과 같은 배치 - 왼쪽 Code128, 오른쪽 QR */
+  .bc__pair { display: flex; align-items: center; justify-content: center; gap: 10px; }
   /* 인식 테스트 카드 - 규격·거리·조도를 바꿔 가며 어디서부터 안 읽히는지 본다 */
   .bc--test { border-color: var(--gray-400); }
   .bc__scale { overflow: hidden; margin: 0 auto; }
@@ -45,7 +47,9 @@
 <div class="sheet">
   <h1>테스트용 바코드</h1>
   <p class="sheet__desc">
-    출고주문처리(주문번호)와 검수(파렛트 바코드) 화면 테스트에 쓰는 Code128 바코드입니다.<br>
+    출고주문처리(주문번호)와 검수(파렛트 바코드) 화면 테스트에 쓰는 바코드입니다.<br>
+    실물 라벨과 같이 <b>Code128 옆에 같은 값의 QR</b> 을 나란히 찍습니다(하이브리드) —
+    휴대폰 카메라는 QR 을, 1D 전용 하드웨어 스캐너는 Code128 을 읽습니다.<br>
     맨 위 <b>인식 테스트 카드</b>는 규격·거리·조도를 바꿔 가며 인식 한계를 재는 용도입니다.<br>
     화면에 띄운 뒤 휴대폰으로 스캔하거나, 인쇄해서 사용하세요.
     현재 저장된 샘플 데이터 기준으로 생성됩니다.
@@ -59,16 +63,20 @@
 
 <script type="module">
 import { code128Svg } from './assets/js/barcode.js';
+import { qrSvg } from './assets/js/qrcode.js';
 import * as db from './assets/js/db.js';
 import { esc } from './assets/js/util.js';
 
 const out = document.getElementById('out');
 
-/** 바코드 카드 1개 */
+/** 바코드 카드 1개 - 실물 라벨과 같이 Code128 옆에 QR 을 나란히 둔다(하이브리드) */
 const card = (code, caption) => `
 <div class="bc">
   <div class="bc__cap">${esc(caption)}</div>
-  ${code128Svg(code, { height: 60, moduleWidth: 2 })}
+  <div class="bc__pair">
+    ${code128Svg(code, { height: 60, moduleWidth: 2 })}
+    ${qrSvg(code, { module: 3 })}
+  </div>
 </div>`;
 
 /** 원거리 모사 - 표준 카드를 그대로 축소한다 (모듈 픽셀이 줄어드는 상황이 핵심이다) */
@@ -106,6 +114,8 @@ const testGroup = `
     ${testCard('초원거리 6~8m 모사 (표준 ×0.18)', scaled(std, 0.18))}
     ${testCard('저조도 (표준 + 회색 45%)', `<div class="bc__dim">${std}</div>`)}
     ${testCard('권장 규격 (모듈 3px · 높이 70 = 기본값)', code128Svg(TEST_CODE))}
+    ${testCard('QR 표준 (모듈 4px)', qrSvg(TEST_CODE, { module: 4 }))}
+    ${testCard('QR 소형 (모듈 2px)', qrSvg(TEST_CODE, { module: 2 }))}
   </div>
 </div>`;
 

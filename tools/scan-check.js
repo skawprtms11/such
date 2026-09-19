@@ -18,7 +18,8 @@
  *   S4 한 tick 의 디코딩 총시간이 **예산 + 1회분**을 넘지 않는다
  *   S5 `stop()` 이 어느 `await` 사이에 와도 콜백·디코딩이 더 나오지 않는다 (세대 토큰)
  *   S6 강등이 진동하지 않는다 (2회 연속 초과에서만 1번 · 복귀 없음)
- *   S7 ROI 계획 - **가로 ≥ 0.72**(quiet zone) · 계획은 순열 · 1순위만 CODE_128 전용
+ *   S7 ROI 계획 - **1D 가로 ≥ 0.72**(quiet zone) · QR 용 정사각 2D ROI · 계획은 순열 ·
+ *      1순위만 QR+CODE_128 전용
  *   S8 줌 - 쓸 수 있는 단계가 2개 미만이면 **빈 배열**(UI 가 버튼을 숨긴다) · 범위 클램프
  *      + 안정화 대기 중에 멈춰도 `setZoomRaw` 가 끝난다 (UI 의 `zoomBusy` 가 풀린다)
  *   S9 합의(consensus)는 **연속** 프레임을 뜻한다 - 미검출이 끼면 처음부터 다시 센다
@@ -838,19 +839,28 @@ async function s6() {
 
 /* ------------------------------------ S7 ------------------------------------ */
 
-/** ROI 계획 - 가로 하한 · 순열 · 1순위만 좁은 포맷 · 전처리 시점 */
+/** ROI 계획 - 1D 가로 하한 · 2D 정사각 · 순열 · 1순위만 좁은 포맷 · 전처리 시점 */
 function s7() {
     [true, false].forEach((native) => {
         const base = native ? TUNE.roiNative : TUNE.roiZxing;
+        // 🔑 QR 용 정사각 ROI 가 계획에 반드시 하나는 있어야 한다 (하이브리드 라벨)
+        if (!base.some((r) => r.kind === '2d')) {
+            note('S7', `${native ? '내장' : 'ZXing'} 계획에 2D(QR) ROI 가 없다`);
+        }
         for (let miss = 0; miss <= 40; miss += 1) {
             const plan = calc.roiPlan(native, miss, TUNE);
             if (plan.length !== base.length) {
                 note('S7', `계획 길이 ${plan.length} ≠ ${base.length}`);
             }
             plan.forEach((r, i) => {
-                if (r.w < calc.ROI_MIN_W - 1e-9) {
+                // 🔑 가로 하한(quiet zone)은 **1D 에만** 건다. 2D 는 정사각이어야 뜻이 있다
+                if (r.kind === '1d' && r.w < calc.ROI_MIN_W - 1e-9) {
                     note('S7', `가로 ${r.w} < ${calc.ROI_MIN_W} (quiet zone 이 잘린다)`);
                 }
+                if (r.kind === '2d' && Math.abs(r.w - r.h) > 1e-9) {
+                    note('S7', `2D ROI 가 정사각이 아니다 ${r.w}×${r.h}`);
+                }
+                if (r.kind !== '1d' && r.kind !== '2d') note('S7', `ROI 종류가 이상하다 ${r.kind}`);
                 if (r.w > 1 || r.h > 1 || r.h <= 0) note('S7', `ROI 범위 밖 ${r.w}×${r.h}`);
                 if ((i === 0) === r.wide) note('S7', `1순위/후순위 포맷 폭이 뒤집혔다 (i=${i})`);
                 const wantPre = !native && miss >= TUNE.preMissN;

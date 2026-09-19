@@ -10,6 +10,7 @@
 import { can } from '../auth.js';
 import { code128Svg } from '../barcode.js';
 import * as db from '../db.js';
+import { qrSvg } from '../qrcode.js';
 import { visibleSteps, stepRate, currentStep, stepsFlowHtml, loadDone } from '../steps.js';
 import { WORK_STEPS } from '../config.js';
 import {
@@ -823,11 +824,14 @@ export function labelHtml(o, g) {
     const no = rep ? o.rep_no : o.order_no;                // 바코드 · 주문번호 칸
     const members = rep ? (g?.rows ?? [o]).map((r) => r.order_no) : [];
     const total = labelTotal(o, g);
-    // 🔑 바코드는 라벨 가로를 꽉 채우고 세로는 표 아래 남는 높이를 전부 쓴다.
-    // preserveAspectRatio="none" 이라 짧은 주문번호도 가로로 늘어나는데, 모든 모듈이 같은
-    // 배율로 늘어나므로 Code128 규격은 그대로다 (세로 높이는 규격과 무관)
+    // 🔑 **하이브리드** - 같은 번호를 왼쪽 Code128 · 오른쪽 QR 로 나란히 찍는다.
+    // 휴대폰 카메라는 QR 을, 1D 전용 하드웨어 스캐너는 Code128 을 읽는다.
+    // Code128 은 preserveAspectRatio="none" 으로 남는 가로를 꽉 채운다 - 짧은 주문번호도
+    // 가로로 늘어나지만 모든 모듈이 같은 배율이라 규격은 그대로다 (세로 높이는 규격과 무관).
+    // ⚠️ QR 은 정사각형이어야 읽히므로 비율을 깨지 않는다 (한 변 = 바코드 칸의 높이)
     const barcode = code128Svg(no, { height: 120, moduleWidth: 3, showText: false })
         .replace('<svg ', '<svg preserveAspectRatio="none" ');
+    const qr = qrSvg(no, { module: 4 });
     // 항목명 · 값 · 값의 최대 글자 크기(pt)
     const lines = [
         ['출고일자', src.ship_req_date, 55],
@@ -884,7 +888,12 @@ export function labelHtml(o, g) {
     flex: 1; min-height: 0; display: flex; flex-direction: column;
     align-items: stretch; justify-content: center; padding: 3mm 0 0;
   }
-  .barcode svg { flex: 1 1 0; min-height: 0; width: 100%; display: block; }
+  /* 🔑 좌 Code128 · 우 QR 두 칸. QR 은 정사각(한 변 = 이 줄의 높이)이고 나머지를 1D 가 먹는다 */
+  .barcode__row { flex: 1 1 0; min-height: 0; display: flex; align-items: stretch; gap: 4mm; }
+  .barcode__1d { flex: 1 1 auto; min-width: 0; }
+  .barcode__1d svg { width: 100%; height: 100%; display: block; }
+  .barcode__qr { flex: 0 0 auto; align-self: stretch; aspect-ratio: 1 / 1; }
+  .barcode__qr svg { width: 100%; height: 100%; display: block; }
   .barcode__no {
     flex: 0 0 auto; margin-top: 2mm; text-align: center;
     font-family: monospace; font-size: 22pt; font-weight: 700; letter-spacing: 4px;
@@ -901,7 +910,10 @@ ${labelPages(o, g).map((page) => `
       ${lines.map(([label, value, maxPt]) => row(label, value, maxPt)).join('')}
     </table>
     <div class="barcode">
-      ${barcode}
+      <div class="barcode__row">
+        <div class="barcode__1d">${barcode}</div>
+        <div class="barcode__qr">${qr}</div>
+      </div>
       <div class="barcode__no">${esc(no)}</div>
     </div>
     <div class="seq">${page}</div>

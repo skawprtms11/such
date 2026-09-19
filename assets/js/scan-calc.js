@@ -11,9 +11,13 @@
  */
 
 /**
- * ROI 가로 하한 🔑
+ * ROI 가로 하한 🔑 — **1D(`kind: '1d'`) ROI 에만 건다.**
  * Code128 은 좌우 여백(quiet zone · 모듈 10개)이 잘리면 디코딩이 **실패**한다.
  * 1D 바코드는 스캔라인 하나면 되므로 줄이려면 세로를 줄인다. 가로는 이 아래로 자르지 않는다.
+ *
+ * QR(`kind: '2d'`)은 사정이 반대다 - 정사각형이라 가로만 넓은 밴드는 위아래를 잘라 먹고,
+ * 좌우 여백도 4모듈이면 된다. 그래서 2D ROI 는 이 하한을 적용하지 않는다
+ * (하이브리드 라벨 · [docs/testing.md](../../docs/testing.md) 참고).
  */
 export const ROI_MIN_W = 0.72;
 
@@ -32,8 +36,9 @@ export const DOWNGRADE_AFTER = 2;
  * @param {boolean} native 내장 BarcodeDetector 경로인지 (false = ZXing)
  * @param {number} missStreak 연속 미검출 횟수
  * @param {object} tune `scanner.js` 의 TUNE
- * @returns {{w:number, h:number, wide:boolean, pre:boolean}[]}
- *          `wide` = 전 포맷 디코더로 본다(첫 시도는 CODE_128 전용) ·
+ * @returns {{w:number, h:number, kind:string, wide:boolean, pre:boolean}[]}
+ *          `kind` = `'1d'`(가로 하한을 지킨다) / `'2d'`(QR 용 정사각) ·
+ *          `wide` = 전 포맷 디코더로 본다(첫 시도는 QR + CODE_128 전용) ·
  *          `pre` = 전처리(그레이+대비)를 붙인다
  */
 export function roiPlan(native, missStreak, tune) {
@@ -45,9 +50,13 @@ export function roiPlan(native, missStreak, tune) {
     const pre = !native && miss >= tune.preMissN;
     return base.map((_, i) => {
         const roi = base[(i + shift) % n];
+        const kind = roi.kind === '2d' ? '2d' : '1d';
+        // 🔑 가로 하한은 1D 에만 건다 - QR 에 걸면 정사각 ROI 가 밴드로 펴져 위아래가 잘린다
+        const w = kind === '1d' ? Math.max(ROI_MIN_W, roi.w) : Math.max(0.05, roi.w);
         return {
-            w: Math.min(1, Math.max(ROI_MIN_W, roi.w)),
+            w: Math.min(1, w),
             h: Math.min(1, Math.max(0.05, roi.h)),
+            kind,
             wide: i > 0,
             pre,
         };

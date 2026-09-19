@@ -145,6 +145,7 @@ thefurerap/
 │     ├─ scanner.js      바코드 스캔 공통 모듈 (카메라·프레임·줌 · 조정값 TUNE)
 │     ├─ scan-calc.js    스캔 계산 순수 함수 (ROI 계획·예산·중복 문턱·줌 단계 · 웹/앱 공용)
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
+│     ├─ qrcode.js       QR 코드 생성 (SVG · 바이트모드·오류정정 M·버전 1~10 · 의존성 0)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     ├─ pages/           웹 화면 모듈
 │     │  ├─ checklist/    업무체크리스트 화면 분할 (common·daily·register·process·flowview·form)
@@ -464,6 +465,23 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 스캔하는 방식이다. 파렛트 레코드는 여전히 `{주문번호}-P01` 형식으로 자동 생성되고
 (`mock-data.js` 의 `makePallets`), 그 개별 바코드도 계속 인식한다.
 실제 용마물류 파렛트 라벨 체계가 확정되면 교체한다.
+
+🔑 **심볼 체계는 결정되었다 — 1D + QR 하이브리드** (2026-09-19 대표님 결정).
+우리가 인쇄하는 라벨·문서는 **같은 문자열**을 Code128 과 QR 로 나란히 찍는다.
+휴대폰 카메라는 QR 을, 1D 전용 하드웨어 스캐너는 Code128 을 읽는다.
+
+| 인쇄물 | 담기는 값 | 코드 |
+|---|---|---|
+| 상차라벨 (좌 1D · 우 QR) | 주문번호 / 대표주문번호 | `pages/status.js` 의 `labelHtml` |
+| 유통가공 작업지시서 상단 띠 | 문서번호 | `pages/processing/doc.js` 의 `.bcband` |
+| 테스트 시트 | 카드의 값 | `barcodes.html` |
+
+- QR 생성은 **`assets/js/qrcode.js` 자체 구현**이다 (의존성 0 · 오류정정 M · 버전 1~10).
+  `barcode.js`(Code128)와 대칭이고, 라이브러리를 늘리지 않는다는 전제를 지킨다
+- 스캐너의 1순위 패스는 `['qr_code', 'code_128']` 이고 ROI 계획에 **QR 용 정사각 ROI**가 있다
+  (`scan-calc.js` 의 `kind: '2d'`). **업무 로직(`db.js`)은 바뀌지 않았다**
+- 남은 것은 **파렛트 라벨의 번호 체계**뿐이다 (심볼이 아니라 값의 형식).
+  자세한 내용은 [docs/testing.md](docs/testing.md) 「QR 하이브리드」 참고
 
 ### 3. 조정요청 메일 발송 미구현 🟡
 
