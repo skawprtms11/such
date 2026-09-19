@@ -72,7 +72,16 @@ npm run preview    빌드 결과물 확인 (http://localhost:4173)
 npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 트리 · docs/checklist.md)
 npm run check:processing 유통가공 순수 계산(캘린더 배치·LOT·문서번호)의 불변식 검사 (docs/processing.md)
+graft build        코드 그래프 재생성 (graft/ · 로컬 캐시라 커밋하지 않는다)
 ```
+
+**graft** — 저장소를 심볼·호출 관계 그래프로 색인해 두는 도구다 (`npm i -g @nanonets/graft`).
+`.mcp.json` 이 MCP 서버(`graft_find_code` `graft_trace_calls` 등 6개)를 등록하고, 스킬은
+`.agents/skills/graft/` (→ `.claude/skills/graft` 심링크) 에 있다. `graft/` 는 `graft build` 로
+각자 만드는 로컬 캐시라 `.gitignore` 되어 있고, `.ignore` 가 ripgrep 검색에는 다시 넣어 준다.
+⚠️ `graft init` 은 쓰지 않는다 — `--no-global` 을 줘도 `~/.claude/settings.json` 과
+`~/.claude.json` (기기 전체) 을 함께 고친다. 프로젝트 안에서만 쓰려면 위 세 파일로 충분하다.
+무료 빌드의 `graft ask` 는 LLM 없이 식별자로 찾으므로 **영어 심볼명**으로 묻는다.
 
 ⚠️ **카메라는 HTTPS 또는 localhost 에서만 동작한다.**
 휴대폰에서 `http://192.168.x.x:5173` 으로 접속하면 카메라가 차단되므로
