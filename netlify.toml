@@ -17,8 +17,8 @@
   for = "/*"
   [headers.values]
     # 화면을 innerHTML 로 그리므로 CSP 가 XSS 의 마지막 방어선이다.
-    # Supabase(REST·Realtime), Google Fonts 만 허용한다.
-    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://atshpmifefrsfzjmjsbj.supabase.co wss://atshpmifefrsfzjmjsbj.supabase.co; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    # Supabase(REST·Realtime·Storage 서명 URL 이미지), Google Fonts 만 허용한다.
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://atshpmifefrsfzjmjsbj.supabase.co; connect-src 'self' https://atshpmifefrsfzjmjsbj.supabase.co wss://atshpmifefrsfzjmjsbj.supabase.co; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
