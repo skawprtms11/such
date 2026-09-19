@@ -66,9 +66,10 @@ export function docHtml(job, items) {
     display: flex; flex-direction: column; align-items: center; gap: 1mm;
     padding: 3mm 0 4mm; border-bottom: 1px solid #000; margin-bottom: 5mm;
   }
-  .bcband svg { display: block; max-width: 100%; height: auto; }
-  .bcband .no { font-size: 16pt; font-weight: 700; letter-spacing: 3px; font-family: monospace; }
-  .bcband .cap { font-size: 9pt; color: #444; }
+  /* 가로는 인쇄 폭을 꽉 채우고 세로는 고정한다 (preserveAspectRatio=none - 모듈이 같은 배율로
+     늘어나므로 바코드 규격은 유지된다). 스캔 거리가 멀어도 읽히게 가능한 한 크게 */
+  .bcband svg { display: block; width: 100%; height: 28mm; }
+  .bcband .no { font-size: 18pt; font-weight: 700; letter-spacing: 4px; font-family: monospace; }
   .head { display: flex; align-items: flex-end; justify-content: space-between; }
   .head h1 { margin: 0; font-size: 20pt; letter-spacing: 2px; }
   .head .meta { text-align: right; font-size: 11pt; }
@@ -87,9 +88,9 @@ export function docHtml(job, items) {
 </style></head>
 <body onload="window.print()">
   ${job.doc_no ? `<div class="bcband">
-    ${code128Svg(job.doc_no, { height: 60, moduleWidth: 2.2, showText: false })}
+    ${code128Svg(job.doc_no, { height: 60, moduleWidth: 2, showText: false })
+        .replace('<svg ', '<svg preserveAspectRatio="none" ')}
     <div class="no">${esc(job.doc_no)}</div>
-    <div class="cap">앱 「유통가공작업」에서 이 바코드를 스캔하면 검수 화면이 열립니다</div>
   </div>` : ''}
   <div class="head">
     <h1>유통가공 작업지시서</h1>
