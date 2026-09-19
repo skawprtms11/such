@@ -71,6 +71,7 @@ npm run build      프로덕션 빌드 → dist/
 npm run preview    빌드 결과물 확인 (http://localhost:4173)
 npm run lint       코드 검사  /  npm run lint:fix  자동 수정
 npm run check:flow 업무프로세스 도식 배치의 불변식 검사 (랜덤 DAG · docs/checklist.md)
+npm run check:scan 바코드 스캔 루프의 불변식 검사 (가짜 디코더 S1~S9 · docs/testing.md)
 npm run check:processing 유통가공 순수 계산(캘린더 배치·LOT·문서번호)의 불변식 검사 (docs/processing.md)
 graft build        코드 그래프 재생성 (graft/ · 로컬 캐시라 커밋하지 않는다)
 ```
@@ -141,7 +142,8 @@ thefurerap/
 │     ├─ processing-calc.js  유통가공 순수 계산 (구성품 전개·LOT 분할·문서번호·캘린더 레인·사진 슬롯)
 │     ├─ photo.js        검수 사진 압축 (긴 변 1280 · JPEG · 목표 200KB)
 │     ├─ idb.js          IndexedDB 래퍼 (mock 사진 저장소 + 촬영 초안)
-│     ├─ scanner.js      바코드 스캔 공통 모듈
+│     ├─ scanner.js      바코드 스캔 공통 모듈 (카메라·프레임·줌 · 조정값 TUNE)
+│     ├─ scan-calc.js    스캔 계산 순수 함수 (ROI 계획·예산·중복 문턱·줌 단계 · 웹/앱 공용)
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     ├─ pages/           웹 화면 모듈

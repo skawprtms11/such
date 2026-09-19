@@ -22,6 +22,18 @@
     background: #fff;
   }
   .bc__cap { font-size: 11px; color: var(--gray-500); margin-bottom: 4px; }
+  /* 인식 테스트 카드 - 규격·거리·조도를 바꿔 가며 어디서부터 안 읽히는지 본다 */
+  .bc--test { border-color: var(--gray-400); }
+  .bc__scale { overflow: hidden; margin: 0 auto; }
+  .bc__dim { position: relative; }
+  /* 저조도 - 회색을 덮어 대비를 떨어뜨린다 (어두운 창고를 흉내낸다) */
+  .bc__dim::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: #808080;
+    opacity: .45;
+  }
   @media print {
     .no-print { display: none; }
     body { padding: 0; }
@@ -34,6 +46,7 @@
   <h1>테스트용 바코드</h1>
   <p class="sheet__desc">
     출고주문처리(주문번호)와 검수(파렛트 바코드) 화면 테스트에 쓰는 Code128 바코드입니다.<br>
+    맨 위 <b>인식 테스트 카드</b>는 규격·거리·조도를 바꿔 가며 인식 한계를 재는 용도입니다.<br>
     화면에 띄운 뒤 휴대폰으로 스캔하거나, 인쇄해서 사용하세요.
     현재 저장된 샘플 데이터 기준으로 생성됩니다.
   </p>
@@ -58,10 +71,48 @@ const card = (code, caption) => `
   ${code128Svg(code, { height: 60, moduleWidth: 2 })}
 </div>`;
 
+/** 원거리 모사 - 표준 카드를 그대로 축소한다 (모듈 픽셀이 줄어드는 상황이 핵심이다) */
+function scaled(svg, s) {
+    // 모듈 굵기가 소수면 치수도 소수라 `\d+` 로는 못 잡는다
+    const w = Number(svg.match(/width="([\d.]+)"/)[1]);
+    const h = Number(svg.match(/height="([\d.]+)"/)[1]);
+    return `<div class="bc__scale" style="width:${Math.round(w * s)}px;height:${Math.round(h * s)}px">
+  <div style="transform:scale(${s});transform-origin:0 0;width:${w}px;height:${h}px">${svg}</div>
+</div>`;
+}
+
+/** 인식 테스트 카드 1개 */
+const testCard = (caption, body) => `
+<div class="bc bc--test">
+  <div class="bc__cap">${esc(caption)}</div>
+  ${body}
+</div>`;
+
+const TEST_CODE = 'SCAN-TEST-01';
+const std = code128Svg(TEST_CODE, { height: 60, moduleWidth: 2 });
+const testGroup = `
+<div class="bc-group">
+  <h2>인식 테스트 카드 <span class="tag tag--gray">${esc(TEST_CODE)}</span></h2>
+  <p class="sheet__desc" style="margin-bottom:10px">
+    카메라 인식 강화(줌·해상도·ROI)를 확인할 때 씁니다. 화면에 띄워 두고
+    <b>어느 카드부터 안 읽히는지</b>를 봅니다 — 안 읽히는 카드가 그 기기·거리의 한계입니다.
+    바코드는 <b>가장 가는 바가 이미지에서 2px 이상</b>이어야 읽힙니다.
+    (판정 기준·조정 방법은 <a href="docs/testing.md">docs/testing.md</a>)
+  </p>
+  <div class="bc-list">
+    ${testCard('표준 (모듈 2px · 높이 60)', std)}
+    ${testCard('소형 (모듈 1px · 높이 20)', code128Svg(TEST_CODE, { height: 20, moduleWidth: 1 }))}
+    ${testCard('원거리 3m 모사 (표준 ×0.35)', scaled(std, 0.35))}
+    ${testCard('초원거리 6~8m 모사 (표준 ×0.18)', scaled(std, 0.18))}
+    ${testCard('저조도 (표준 + 회색 45%)', `<div class="bc__dim">${std}</div>`)}
+    ${testCard('권장 규격 (모듈 3px · 높이 70 = 기본값)', code128Svg(TEST_CODE))}
+  </div>
+</div>`;
+
 const orders = await db.listOrders({});
 const active = orders.filter((o) => !o.canceled_at);
 
-const groups = [`
+const groups = [testGroup, `
 <div class="bc-group">
   <h2>주문번호 <span class="tag tag--gray">${active.length}건</span></h2>
   <p class="sheet__desc" style="margin-bottom:10px">

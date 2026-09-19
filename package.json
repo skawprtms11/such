@@ -12,6 +12,7 @@
         "lint:fix": "eslint . --fix",
         "dev:https": "HTTPS=true vite",
         "check:flow": "node tools/checkflow-check.js",
+        "check:scan": "node tools/scan-check.js",
         "check:processing": "node tools/processing-check.js"
     },
     "dependencies": {
