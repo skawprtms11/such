@@ -61,16 +61,18 @@ export function openBtn(item, what) {
 }
 
 /**
- * 빠른 추가 줄 - 「+ 체크항목」 「+ 상황」 … 을 누르면 이름 입력칸이 열리고 Enter 로 바로 등록된다.
+ * 빠른 추가 줄 - 「+ 상황」 … 을 누르면 이름 입력칸이 열리고 Enter 로 바로 등록된다.
  * 등록 뒤에도 입력칸이 열린 채라 연달아 넣을 수 있다 (state.quick).
+ *
+ * 🔑 **체크항목(kind=check)은 여기서 만들지 않는다.** 업무프로세스 탭은 흐름만 다루고,
+ * 체크항목 등록은 일일체크리스트 탭이 맡는다 (docs/checklist.md).
  */
 export function quickBar(item, main = false) {
-    const kinds = db.allowedChildKinds(item.kind);
+    const kinds = db.allowedChildKinds(item.kind).filter((k) => k !== CHECK_KIND.CHECK);
+    if (!kinds.length) return '';
     const label = {
-        [CHECK_KIND.CHECK]: item.kind === CHECK_KIND.GROUP ? '단독 체크항목' : '체크항목',
         [CHECK_KIND.SITUATION]: '상황',
-        [CHECK_KIND.PROCESS]: item.kind === CHECK_KIND.GROUP ? '다음 프로세스'
-            : (item.kind === CHECK_KIND.SITUATION ? '대응 프로세스' : '하위 프로세스'),
+        [CHECK_KIND.PROCESS]: item.kind === CHECK_KIND.GROUP ? '다음 단계' : '대응 프로세스',
     };
     return `
 <div class="pm-quick ${main ? 'pm-quick--main' : ''}" data-quick-host="${esc(item.id)}">

@@ -30,7 +30,9 @@ const state = {
     edit: false,                       // 탭2: 편집 모드 (도구 표시)
     quick: null,                       // 탭2: 열려 있는 빠른 추가 입력칸 {hostId, kind, label}
     open: new Set(),                   // 탭2: 상세를 펼쳐 둔 프로세스·상황 id
-    pick: null,                        // 탭2: 도식에서 고른 프로세스 (우측 표가 그 구간을 보여 준다)
+    pick: null,                        // 탭2: 도식에서 고른 단계 (우측 설명 표가 그 단계를 보여 준다)
+    step: null,                        // 탭2: 열려 있는 「다음 단계」 입력칸 {fromId}
+    link: null,                        // 탭2: 연결 모드 {fromId, block:Set, caption}
     pane: 'flow',                      // 탭2: 좁은 화면에서 보는 칸 ('nav' | 'flow' | 'side')
     side: false,                       // 탭2: 중간 폭에서 우측 서랍을 열어 둘지
 };
@@ -77,6 +79,9 @@ export async function render(root, { user }) {
             headSum.textContent = '';
             await drawManage({ state, body, user, users, reload });
         } else {
+            // 🔑 업무프로세스 탭을 떠나면 문서 리스너(연결 모드 Esc·인쇄)를 걷는다
+            state.link = null;
+            disposeManage();
             await drawToday({ state, body, headSum, user, users, canManage, reload });
         }
     }
@@ -89,8 +94,9 @@ export async function render(root, { user }) {
         const el = document.activeElement;
         if (el && body.contains(el) && el.matches('input, textarea, select')) return;
         if (document.querySelector('.modal-back')) return;
-        // 빠른 추가 입력칸 · 아직 저장하지 않은 우측 체크리스트 표의 입력값
-        if (body.querySelector('.pm-quick__form, .pm-side input.is-dirty')) return;
+        // 빠른 추가·단계 입력칸 · 간선 팝오버 · 아직 저장하지 않은 우측 설명 표의 입력값
+        const editing = '.pm-quick__form, .pm-port--form, .pm-epop, .pm-side .is-dirty';
+        if (body.querySelector(editing)) return;
         reload();
     }
 

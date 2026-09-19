@@ -116,6 +116,8 @@ const TABLES = [
     {
         key: 'checklistItems',
         name: 'checklist_items',
+        // ⚠️ `child_flow` 는 간선 테이블(checklistEdges)로 옮기며 **쓰지 않는 컬럼**이 되었다.
+        // 옛 행이 서버에 남아 있어 목록에서만 빼지 않는다 (지우려면 마이그레이션이 필요하다)
         cols: [
             'id', 'category', 'parent_id', 'kind', 'child_flow', 'title', 'description',
             'cycle', 'weekday', 'monthday', 'assignee_id', 'assignee_name', 'sub_assignees',
@@ -129,6 +131,24 @@ const TABLES = [
         cols: [
             'id', 'item_id', 'check_date', 'memo',
             'checked_by', 'checked_by_name', 'checked_at',
+        ],
+    },
+    // 업무 흐름 간선 - 프로세스 순서의 유일한 출처 (from_id 가 null 이면 흐름의 시작)
+    {
+        key: 'checklistEdges',
+        name: 'checklist_edges',
+        cols: [
+            'id', 'group_id', 'from_id', 'to_id', 'label', 'sort_order',
+            'created_by', 'created_by_name', 'created_at',
+        ],
+    },
+    // 프로세스 설명 표 (구분·내용·비고) - 체크리스트에서 유일하게 하드 삭제한다
+    {
+        key: 'checklistNotes',
+        name: 'checklist_notes',
+        cols: [
+            'id', 'item_id', 'label', 'content', 'remark', 'sort_order',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
         ],
     },
     // ── 유통가공작업 (docs/processing.md) ──
@@ -226,6 +246,7 @@ function mockLoad() {
     const empty = {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
         notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
+        checklistEdges: [], checklistNotes: [],
         processMasters: [], processMasterItems: [], processJobs: [], processJobItems: [],
         processPhotos: [],
     };

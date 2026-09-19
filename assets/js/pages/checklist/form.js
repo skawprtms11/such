@@ -2,16 +2,18 @@
  * 업무프로세스 탭의 속성 모달 - 종류별 폼 + 삭제 · 순서(↑↓).
  * 등록(item 없음)과 수정(item 있음)이 같은 폼을 쓴다.
  *
- * 종류별 필드는 docs/checklist.md 의 표와 같다. 업무항목·프로세스는 **하위 프로세스 연결
- * 방식(순차/갈래)** 을 함께 고른다 (config.js 의 CHECK_FLOW).
+ * 종류별 필드는 docs/checklist.md 의 표와 같다.
+ * 🔑 **흐름(다음 단계·갈래·합류)은 이 폼에 없다** - 도식에서 선을 그어 정한다
+ * (checklist/process.js). 그래서 순서(↑↓)도 체크항목·상황에만 있다 -
+ * 단계 순서는 간선이 유일한 출처다.
  */
 import * as db from '../../db.js';
 import { icon } from '../../icons.js';
 import {
-    CHECK_CYCLE, CHECK_CYCLES, CHECK_FLOW, CHECK_FLOWS, CHECK_KIND, CHECK_KINDS, WEEKDAYS,
+    CHECK_CYCLE, CHECK_CYCLES, CHECK_KIND, CHECK_KINDS, WEEKDAYS,
 } from '../../config.js';
 import { esc, num, toast, confirmDialog, openModal } from '../../util.js';
-import { UNSORTED_ID, iconBtn, textBtn } from './common.js';
+import { UNSORTED_ID, circled, iconBtn, textBtn } from './common.js';
 
 /**
  * 속성 모달을 연다.
@@ -29,9 +31,10 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
 <div class="pm-mfoot">
   ${item ? `
   <button class="btn btn--sm btn--danger" type="button" data-del>${icon('trash', 'icon icon--sm')}<span>삭제</span></button>
+  ${canMove(item) ? `
   <span class="pm-mfoot__order">순서
     ${iconBtn('up', '순서 위로', 'data-move="up"')}
-    ${iconBtn('down', '순서 아래로', 'data-move="down"')}</span>` : ''}
+    ${iconBtn('down', '순서 아래로', 'data-move="down"')}</span>` : ''}` : ''}
   <span class="toolbar__spacer"></span>
   <button class="btn btn--sm" type="button" data-cancel>취소</button>
   <button class="btn btn--sm btn--primary" type="submit" form="pm-form">${icon('save', 'icon icon--sm')}<span>저장</span></button>
@@ -78,7 +81,6 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
             parent_id: kind === CHECK_KIND.GROUP && f.has('parent_id')
                 ? (f.get('parent_id') || null) : (parentId ?? null),
         };
-        if (f.has('child_flow')) payload.child_flow = f.get('child_flow');
         try {
             if (item) {
                 await db.updateChecklistItem(item.id, payload, user);
@@ -114,9 +116,10 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
         const kids = item.kind === CHECK_KIND.DIVISION || item.kind === CHECK_KIND.GROUP
             ? (await db.listChecklistItems({ root: item.id, includeInactive: true })).length - 1
             : countDescendants(rows, item.id);
-        const msg = kids
+        const msg = (kids
             ? `${label} 「${item.title}」 아래 항목 ${num(kids)}개도 함께 삭제됩니다. 계속할까요?`
-            : `${label} 「${item.title}」을(를) 삭제할까요?`;
+            : `${label} 「${item.title}」을(를) 삭제할까요?`)
+            + await bridgeText(item);
         if (!(await confirmDialog(msg))) return;
         try {
             await db.deleteChecklistItem(item.id, user);
@@ -127,6 +130,34 @@ export function openForm({ item = null, parentId = null, kind }, ctx) {
             toast(err.message, 'error');
         }
     });
+}
+
+/**
+ * 순서(↑↓)를 쓸 수 있는 종류인가 🔑 - **단계(프로세스)만 아니다.**
+ * 단계 순서는 간선이 정하므로 형제 순서를 바꿔도 흐름이 달라지지 않는다 (오해를 부른다).
+ * ⚠️ 업무구분·업무항목은 나열 순서가 곧 화면 순서라 반드시 바꿀 수 있어야 한다
+ * (한때 프로세스와 함께 빠져 순서를 못 바꿨다).
+ */
+function canMove(item) {
+    return item.kind !== CHECK_KIND.PROCESS;
+}
+
+/** 번호 캡션 - `③` · 갈래 줄이면 `4.1` 그대로 (window.confirm 용 평문) */
+function noText(n) {
+    return n.no == null ? n.title : `${circled(n.no)} ${n.title}`;
+}
+
+/**
+ * 「지우면 ③ 와 ⑤ 를 잇습니다」 🔑 - 단계를 지울 때 흐름이 어떻게 이어지는지 미리 알린다.
+ * 잇는 일은 `db.deleteChecklistItem` 이 하고(bridgeEdges), 여기서는 그 결과만 읽는다.
+ */
+async function bridgeText(item) {
+    if (item.kind !== CHECK_KIND.PROCESS) return '';
+    const { prev, next } = await db.bridgeInfo(item.id);
+    if (!next.length) return '\n\n흐름의 마지막 단계입니다.';
+    const to = next.map(noText).join(' · ');
+    if (!prev.length) return `\n\n지우면 ${to} 이(가) 흐름의 시작이 됩니다.`;
+    return `\n\n지우면 ${prev.map(noText).join(' · ')} 와(과) ${to} 를 잇습니다.`;
 }
 
 /** 하위 항목 수 (자기 제외) */
@@ -154,12 +185,6 @@ function formHtml(item, kind, parent, users, divisions = []) {
     const isCheck = kind === CHECK_KIND.CHECK;
     const isSit = kind === CHECK_KIND.SITUATION;
     const isGroup = kind === CHECK_KIND.GROUP;
-    // 하위 프로세스를 둘 수 있는 종류만 연결 방식을 고른다
-    const hasFlow = isGroup || kind === CHECK_KIND.PROCESS;
-    const flow = item?.child_flow ?? CHECK_FLOW.SEQ;
-    // 업무항목은 흐름의 맨 위라 모일 다음 형제가 없다 - 합류를 고를 수 있으면 조용히 갈래로 동작한다
-    const flowOpts = Object.entries(CHECK_FLOWS)
-        .filter(([k]) => !(isGroup && k === CHECK_FLOW.JOIN));
     const titleLabel = {
         [CHECK_KIND.DIVISION]: '업무구분 이름',
         [CHECK_KIND.GROUP]: '업무항목 이름',
@@ -204,14 +229,6 @@ function formHtml(item, kind, parent, users, divisions = []) {
     <input type="text" name="description" maxlength="200"
            value="${esc(item?.description ?? '')}">
   </label>
-  ${hasFlow ? `
-  <label class="field field--full">
-    <span class="field__label">하위 프로세스 연결 (갈래면 번호 대신 갈래 이름으로 읽습니다)</span>
-    <select name="child_flow">
-      ${flowOpts.map(([k, v]) => `
-      <option value="${esc(k)}" ${k === flow ? 'selected' : ''}>${esc(v)}</option>`).join('')}
-    </select>
-  </label>` : ''}
   ${isCheck ? `
   <label class="field">
     <span class="field__label">주기</span>

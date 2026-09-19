@@ -429,53 +429,22 @@ export const CHECK_KINDS = {
  *   최상위    : 업무구분만 (사용자가 「업무구분 추가」로 만든다)
  *   업무구분  : 업무항목
  *   업무항목  : 프로세스(업무 흐름) · 체크항목(흐름 없는 단독 업무)
- *   프로세스  : 체크항목 · 상황 · 하위 프로세스(세부 단계)
+ *   프로세스  : 체크항목 · 상황
  *   상황      : 대응 프로세스 · 체크항목(간단한 상황은 프로세스 없이 바로)
  *   체크항목  : 없음 (말단)
+ *
+ * 🔑 **프로세스 아래 프로세스는 두지 않는다.** 단계 사이의 순서는 트리 중첩이 아니라
+ * 간선 테이블(checklist_edges)이 정한다 - 흐름은 사슬이지 계층이 아니다.
+ * (상황 아래 대응 프로세스는 그대로 둔다. 상황은 그날 생긴 일이라 흐름과 층이 다르다)
  */
 export const CHECK_KIND_CHILDREN = {
     root: [CHECK_KIND.DIVISION],
     [CHECK_KIND.DIVISION]: [CHECK_KIND.GROUP],
     [CHECK_KIND.GROUP]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
-    [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION, CHECK_KIND.PROCESS],
+    [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION],
     [CHECK_KIND.SITUATION]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
     [CHECK_KIND.CHECK]: [],
 };
-
-/**
- * 하위 프로세스를 잇는 방식 - 저장값 (checklist_items.child_flow) 🔑
- * **부모 노드에 붙는다.** "내 하위 프로세스들을 순차로 볼지 갈래로 볼지" 를 정한다.
- *   seq  : 순차 - ①②③ 번호를 매겨 한 줄기로 잇는다 (기본값 · 지금까지의 모양)
- *   fork : 갈래 - 번호 없이 갈래 이름으로 나란히 벌린다 (조건에 따라 한 갈래만 탄다)
- *   join : 갈래 + 합류 - 벌린 갈래들이 **자기 다음 형제** 한 단계로 다시 모인다
- * 하위 프로세스를 둘 수 있는 업무항목·프로세스에만 뜻이 있다 (체크항목·상황은 현행 그대로).
- */
-export const CHECK_FLOW = {
-    SEQ: 'seq',
-    FORK: 'fork',
-    JOIN: 'join',
-};
-
-/** 연결 방식 표시 문구 */
-export const CHECK_FLOWS = {
-    [CHECK_FLOW.SEQ]: '순차 ①②③',
-    [CHECK_FLOW.FORK]: '갈래 (조건 분기)',
-    [CHECK_FLOW.JOIN]: '갈래 → 합류 (다시 한 단계로)',
-};
-
-/**
- * 하위 프로세스를 갈래로 벌리는 부모인가 (갈래면 번호 대신 갈래 이름을 쓴다).
- * 🔑 **합류(join)도 벌리는 것은 갈래와 같다.** 다른 것은 그린 뒤 다시 모으느냐뿐이라
- * 번호 규칙(`no: null`)·채번은 `seq` 가 아닌 모든 값에 그대로 걸린다.
- */
-export function isFork(item) {
-    return !!item?.child_flow && item.child_flow !== CHECK_FLOW.SEQ;
-}
-
-/** 갈래를 다음 형제 한 단계로 다시 모으는 부모인가 (도식 렌더에서만 갈라진다) */
-export function isJoin(item) {
-    return item?.child_flow === CHECK_FLOW.JOIN;
-}
 
 /**
  * 업무항목 견본. 업무프로세스 탭의 「견본: 이름」 버튼이 **보고 있는 업무구분 아래에** 같은 이름의
