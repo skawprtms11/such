@@ -13,15 +13,18 @@ import { qrSvg } from '../../qrcode.js';
 import { esc, num, today, toast } from '../../util.js';
 import { groupLines } from './common.js';
 
-/** 작업지시서를 새 창에 그리고 인쇄 대화상자를 띄운다 */
-export function printProcessDoc(job, items) {
+/**
+ * 작업지시서를 새 창에 그리고 인쇄 대화상자를 띄운다.
+ * @param {Array<object>} [guides] 작업가이드 파일 (`db.listProcessMasterFiles` + `data_url`)
+ */
+export function printProcessDoc(job, items, guides = []) {
     if (!job) return;
     const win = window.open('', '_blank', 'width=900,height=1100');
     if (!win) {
         toast('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.', 'error');
         return;
     }
-    win.document.write(docHtml(job, items));
+    win.document.write(docHtml(job, items, guides));
     win.document.close();
     win.focus();
 }
@@ -44,8 +47,37 @@ function itemRows(items, jobQty) {
     }).join('')).join('');
 }
 
+/**
+ * 작업가이드 페이지 (지시서 **뒤에** 한 장씩 이어 붙인다 · docs/processing.md §15).
+ *
+ * 🔑 그림은 `data_url` 로 **문서 안에 박아 넣는다.** 인쇄 창은 이 문서와 수명이 달라
+ * objectURL·서명 URL 을 쓰면 미리보기가 비거나 10분 뒤 깨진다 (`db.processGuideDataUrls`).
+ * ⚠️ **PDF 는 인쇄 페이지에 합칠 수 없다.** 브라우저 인쇄는 다른 문서를 페이지로 끼워
+ * 넣지 못하므로, 여기에는 「무엇이 있는지」만 적고 실제 파일은 새 탭으로 연다.
+ */
+function guidePages(guides) {
+    const images = guides.filter((g) => String(g.mime ?? '').startsWith('image/') && g.data_url);
+    const pdfs = guides.filter((g) => !String(g.mime ?? '').startsWith('image/'));
+    const imgPages = images.map((g, i) => `
+  <section class="guide">
+    <h2>작업가이드 (${i + 1}/${images.length})</h2>
+    <p class="guide__name">${esc(g.name)}</p>
+    <img src="${esc(g.data_url)}" alt="${esc(g.name)}">
+  </section>`).join('');
+    const pdfPage = pdfs.length ? `
+  <section class="guide">
+    <h2>작업가이드 PDF ${num(pdfs.length)}건</h2>
+    <ul class="guide__list">
+      ${pdfs.map((g) => `<li>${esc(g.name)}</li>`).join('')}
+    </ul>
+    <p class="guide__note">PDF 는 인쇄 문서에 합칠 수 없어 파일명만 적었습니다.
+      문서생성 시 새 탭으로 함께 열리며, 작업 상세 팝업과 앱 작업가이드에서도 열 수 있습니다.</p>
+  </section>` : '';
+    return imgPages + pdfPage;
+}
+
 /** 작업지시서 A4 인쇄용 HTML (export 는 검사 스크립트용) */
-export function docHtml(job, items) {
+export function docHtml(job, items, guides = []) {
     const info = [
         ['작업구분', job.work_type, '제품코드', job.product_code],
         ['제품명', job.product_name, '작업수량', `${num(job.qty)} 개`],
@@ -95,6 +127,13 @@ export function docHtml(job, items) {
   .sign { margin-top: 10mm; }
   .sign td { height: 22mm; vertical-align: top; }
   .sign th { width: 28mm; vertical-align: middle; }
+  /* 작업가이드 - 지시서 뒤에 한 장씩 (A4 한 면에 한 파일) */
+  .guide { page-break-before: always; break-before: page; text-align: center; }
+  .guide h2 { margin: 0 0 2mm; font-size: 16pt; letter-spacing: 1px; }
+  .guide__name { margin: 0 0 4mm; font-size: 11pt; word-break: break-all; }
+  .guide img { max-width: 100%; max-height: 235mm; object-fit: contain; }
+  .guide__list { margin: 0; padding-left: 8mm; text-align: left; font-size: 13pt; }
+  .guide__note { margin-top: 6mm; font-size: 10pt; text-align: left; }
 </style></head>
 <body onload="window.print()">
   ${job.doc_no ? `<div class="bcband">
@@ -130,5 +169,6 @@ export function docHtml(job, items) {
   <table class="sign">
     <tr><th>작업자 서명</th><td></td><th>확인자 서명</th><td></td></tr>
   </table>
+  ${guidePages(guides)}
 </body></html>`;
 }

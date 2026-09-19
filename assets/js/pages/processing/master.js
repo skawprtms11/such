@@ -10,8 +10,22 @@
 import { can } from '../../auth.js';
 import * as db from '../../db.js';
 import { PROCESS_ITEM_KIND, PROCESS_ITEM_KINDS, PROCESS_WORK_TYPES } from '../../config.js';
-import { confirmDialog, esc, num, openModal, toast } from '../../util.js';
+import { icon } from '../../icons.js';
+import { confirmDialog, esc, fmtBytes, num, openModal, toast } from '../../util.js';
 import { emptyRow, iconBtn, openSafe, workTypeOptions } from './common.js';
+
+/**
+ * 목록의 작업가이드 썸네일 주소 🔑 **다시 그리기 전에 반드시 놓는다.**
+ * 이 탭은 실시간 갱신으로 5초마다 다시 그려져, 놓지 않으면 mock 의 objectURL 이
+ * 그 주기로 쌓인다 (화면을 떠날 때는 셸이 `releaseMasterThumbs` 를 부른다).
+ */
+let thumbPack = null;
+
+/** 썸네일 주소 해제 - 여러 번 불러도 안전하다 (셸의 정리 함수가 함께 부른다) */
+export function releaseMasterThumbs() {
+    thumbPack?.release();
+    thumbPack = null;
+}
 
 /** 작업마스터 탭을 그린다 */
 export async function drawMaster({ state, body, user, reload }) {
@@ -20,6 +34,8 @@ export async function drawMaster({ state, body, user, reload }) {
         keyword: state.masterKeyword,
         workType: state.masterWorkType,
     });
+    releaseMasterThumbs();
+    thumbPack = await db.processGuideUrls(rows.map((m) => m.guide_thumb).filter(Boolean));
 
     body.innerHTML = `
 <div class="toolbar">
@@ -40,11 +56,13 @@ export async function drawMaster({ state, body, user, reload }) {
 <div class="table-wrap"><table class="grid" id="pm-tbl">
   <colgroup>
     <col style="width:56px"><col style="width:90px"><col style="width:160px"><col>
-    <col style="width:90px"><col style="width:110px"><col style="width:110px">
+    <col style="width:90px"><col style="width:110px"><col style="width:120px">
+    <col style="width:110px">
   </colgroup>
   <thead><tr>
     <th>연번</th><th>작업구분</th><th>제품코드</th><th>제품명</th>
-    <th class="center">구성품</th><th>등록자</th><th>등록일</th>
+    <th class="center">구성품</th><th>등록자</th>
+    <th class="center">작업가이드</th><th>등록일</th>
   </tr></thead>
   <tbody>
     ${rows.length ? rows.map((m, i) => `
@@ -55,8 +73,9 @@ export async function drawMaster({ state, body, user, reload }) {
       <td class="wrap"><span class="link">${esc(m.product_name)}</span></td>
       <td class="center">${num(m.item_count)}</td>
       <td>${esc(m.created_by_name)}</td>
+      <td class="center">${guideCellHtml(m)}</td>
       <td>${esc(String(m.created_at).slice(0, 10))}</td>
-    </tr>`).join('') : emptyRow(7, '등록된 작업마스터가 없습니다.')}
+    </tr>`).join('') : emptyRow(8, '등록된 작업마스터가 없습니다.')}
   </tbody>
 </table></div>`;
 
@@ -78,6 +97,15 @@ export async function drawMaster({ state, body, user, reload }) {
                     : toast('작업마스터를 찾을 수 없습니다.', 'error'))));
         });
     });
+}
+
+/** 목록의 작업가이드 칸 - 파일 수와 첫 이미지 썸네일 (없으면 `-`) */
+function guideCellHtml(m) {
+    if (!m.file_count) return '-';
+    const url = thumbPack?.urls.get(m.guide_thumb);
+    return `<span class="pc-gcell">
+  ${url ? `<img src="${esc(url)}" alt="작업가이드 미리보기">` : ''}
+  <span>${num(m.file_count)}개</span></span>`;
 }
 
 /** 구성품 표의 한 행 (등록·수정 폼 안) */
@@ -152,6 +180,18 @@ export function openMasterForm(found, user, onSaved) {
     <tbody>${(items.length ? items : [{ kind: PROCESS_ITEM_KIND.PRODUCT, qty_per: 1 }])
         .map((it) => itemRowHtml(it)).join('')}</tbody>
   </table></div>
+</div>
+<div class="pc-sec">
+  <div class="pc-sec__head">
+    <h4>작업가이드</h4>
+    <span class="pc-hint">이미지·PDF (한 파일 5MB). 작업지시서를 인쇄하면
+      이미지가 뒤에 함께 나온다.</span>
+    <span class="toolbar__spacer"></span>
+    ${canManage && edit ? `<label class="btn btn--sm">파일 첨부
+      <input type="file" id="pm-file" multiple accept="image/*,application/pdf"
+             hidden></label>` : ''}
+  </div>
+  <div class="pc-files" id="pm-guide"></div>
 </div>`, {
         wide: true,
         footer: canManage ? `
@@ -186,13 +226,90 @@ ${edit ? '<button class="btn btn--danger" id="pm-del" type="button">삭제</butt
         m.body.querySelectorAll('[data-del]').forEach((el) => el.remove());
     }
 
-    m.root.querySelector('#pm-cancel').addEventListener('click', () => m.close());
+    /* ── 작업가이드 파일 ──
+       🔑 경로가 `guides/{master_id}/…` 라 **마스터가 저장된 뒤에만** 첨부할 수 있다.
+       새로 등록할 때는 저장 후 이 팝업을 수정 모드로 다시 열어 준다 (아래 submit). */
+    const guideHost = m.body.querySelector('#pm-guide');
+    let guidePack = null;
+    let guideChanged = false;
+
+    async function drawGuide() {
+        if (!master) {
+            guideHost.innerHTML = '<span class="pc-hint">'
+                + '작업마스터를 저장하면 작업가이드를 첨부할 수 있습니다.</span>';
+            return;
+        }
+        const files = await db.listProcessMasterFiles(master.id);
+        guidePack?.release();
+        guidePack = await db.processGuideUrls(files.map((f) => f.path));
+        guideHost.innerHTML = files.length
+            ? files.map((f) => fileTileHtml(f, guidePack.urls.get(f.path), canManage)).join('')
+            : '<span class="pc-hint">첨부된 작업가이드가 없습니다.</span>';
+    }
+
+    /** 주소 해제 - 닫는 길이 여럿이라(취소·×·배경·저장·삭제) 한 함수로 모은다 */
+    function closeGuide() {
+        guidePack?.release();
+        guidePack = null;
+    }
+
+    guideHost.addEventListener('click', async (e) => {
+        const open = e.target.closest('[data-gopen]');
+        if (open) {
+            openGuideFile(guidePack?.urls.get(open.dataset.gopen),
+                open.dataset.gname, open.dataset.gmime);
+            return;
+        }
+        const del = e.target.closest('[data-gdel]');
+        if (!del) return;
+        if (!(await confirmDialog(`작업가이드 '${del.dataset.gname}' 를 삭제할까요?`))) return;
+        try {
+            await db.removeProcessMasterFile(del.dataset.gdel, user);
+            guideChanged = true;
+            await drawGuide();
+            toast('작업가이드를 삭제했습니다.', 'success');
+        } catch (err) {
+            toast(err.message, 'error');
+        }
+    });
+
+    m.body.querySelector('#pm-file')?.addEventListener('change', async (e) => {
+        const files = [...(e.target.files ?? [])];
+        // 같은 파일을 다시 골라도 change 가 나도록 값을 비운다
+        e.target.value = '';
+        if (!files.length) return;
+        try {
+            await db.addProcessMasterFiles(master.id, files, user);
+            guideChanged = true;
+            await drawGuide();
+            toast(`작업가이드 ${files.length}건을 첨부했습니다.`, 'success');
+        } catch (err) {
+            await drawGuide();      // 일부만 올라갔을 수 있다 - 서버 값을 그대로 보여준다
+            toast(err.message, 'error');
+        }
+    });
+
+    openSafe(drawGuide());
+
+    // 팝업을 닫을 때 주소를 놓는다. 파일이 바뀌었으면 목록의 「작업가이드」 칸도 새로 그린다
+    m.root.addEventListener('click', (e) => {
+        if (e.target !== m.root && !e.target.closest('.modal__close')) return;
+        closeGuide();
+        if (guideChanged) openSafe(Promise.resolve(onSaved?.()));
+    });
+
+    m.root.querySelector('#pm-cancel').addEventListener('click', () => {
+        closeGuide();
+        m.close();
+        if (guideChanged) openSafe(Promise.resolve(onSaved?.()));
+    });
     m.root.querySelector('#pm-del')?.addEventListener('click', async () => {
         if (!(await confirmDialog(
             `작업마스터 '${master.product_code}' 를 삭제할까요?`
             + '\n이미 등록된 작업의 구성품은 복사되어 있어 영향받지 않습니다.'))) return;
         try {
             await db.deleteProcessMaster(master.id, user);
+            closeGuide();
             m.close();
             toast('작업마스터를 삭제했습니다.', 'success');
             await onSaved?.();
@@ -216,15 +333,68 @@ ${edit ? '<button class="btn btn--danger" id="pm-del" type="button">삭제</butt
             })),
         };
         try {
-            if (edit) await db.updateProcessMaster(master.id, payload, user);
-            else await db.createProcessMaster(payload, user);
+            if (edit) {
+                await db.updateProcessMaster(master.id, payload, user);
+                closeGuide();
+                m.close();
+                toast('작업마스터를 수정했습니다.', 'success');
+                await onSaved?.(payload.product_code);
+                return;
+            }
+            const created = await db.createProcessMaster(payload, user);
+            closeGuide();
             m.close();
-            toast(edit ? '작업마스터를 수정했습니다.' : '작업마스터를 등록했습니다.', 'success');
+            toast('작업마스터를 등록했습니다. 이어서 작업가이드를 첨부할 수 있습니다.', 'success');
             await onSaved?.(payload.product_code);
+            // 🔑 가이드 파일 경로에 마스터 id 가 들어가므로 **저장 전에는 첨부할 수 없다.**
+            // 같은 팝업을 수정 모드로 다시 열어 그 자리에서 이어 붙이게 한다
+            const saved = await db.getProcessMaster(created.id);
+            if (saved) openMasterForm(saved, user, onSaved);
         } catch (err) {
             toast(err.message, 'error');
         }
     });
 
     return m;
+}
+
+/** 작업가이드 파일 한 칸 (썸네일 · 이름 · 크기 · 삭제) */
+function fileTileHtml(f, url, canManage) {
+    const image = db.isGuideImage(f);
+    const thumb = image && url
+        ? `<img src="${esc(url)}" alt="${esc(f.name)}">`
+        : `<span class="pc-file__ext">${image ? '이미지' : 'PDF'}</span>`;
+    return `
+<div class="pc-file">
+  <button class="pc-file__view" type="button" data-gopen="${esc(f.path)}"
+          data-gname="${esc(f.name)}" data-gmime="${esc(f.mime)}"
+          title="${esc(f.name)}">${thumb}</button>
+  <span class="pc-file__name" title="${esc(f.name)}">${esc(f.name)}</span>
+  <span class="pc-file__size">${esc(fmtBytes(f.size))}</span>
+  ${canManage ? `<button class="btn btn--icon btn--sm" type="button"
+    data-gdel="${esc(f.id)}" data-gname="${esc(f.name)}"
+    aria-label="작업가이드 삭제" title="작업가이드 삭제"
+    >${icon('trash', 'icon icon--sm')}</button>` : ''}
+</div>`;
+}
+
+/**
+ * 가이드 파일 열기 - 이미지는 팝업, PDF 는 새 탭.
+ * 🔑 **PDF 를 화면 안에 끼워 넣지 않는다.** 뷰어가 브라우저마다 다르고 모달 안에서는
+ * 확대·인쇄가 막히는 기기가 있어, OS 가 잘하는 일(새 탭)을 그대로 쓴다.
+ */
+function openGuideFile(url, name, mime) {
+    if (!url) {
+        toast('작업가이드 주소를 받지 못했습니다. 팝업을 닫았다가 다시 열어 주세요.', 'error');
+        return;
+    }
+    if (String(mime).startsWith('image/')) {
+        openModal(name, `<div class="pc-photo"><img src="${esc(url)}" alt="${esc(name)}"></div>`, {
+            wide: true,
+        });
+        return;
+    }
+    if (!window.open(url, '_blank', 'noopener')) {
+        toast('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.', 'error');
+    }
 }

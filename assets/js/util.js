@@ -28,6 +28,16 @@ export function fmtDateTime(iso) {
         `${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
+/**
+ * 파일 크기 표기 (작업가이드 파일 목록 - 웹·앱이 같은 말을 쓴다).
+ * 1KB 미만도 `1KB` 로 올려 적는다 - `0KB` 는 「없는 파일」처럼 보인다.
+ */
+export function fmtBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)}MB`;
+    return `${Math.max(1, Math.round(n / 1024))}KB`;
+}
+
 /** 숫자에 천단위 구분자를 붙인다 */
 export function num(n) {
     return Number(n || 0).toLocaleString('ko-KR');

@@ -177,11 +177,46 @@ async function handleDoc(id, user, reload) {
             await db.issueProcessDoc(id, user);
         }
         const after = await db.getProcessJob(id);
-        printProcessDoc(after.job, after.items);
+        // 작업가이드는 **현재 마스터의 파일**을 붙인다 (구성품처럼 스냅샷하지 않는다 · §15)
+        const guides = await loadGuidesForDoc(after.job);
+        printProcessDoc(after.job, after.items, guides);
+        openGuidePdfs(guides);
         await reload();
     } catch (err) {
         toast(err.message, 'error');
     }
+}
+
+/**
+ * 인쇄에 붙일 작업가이드 - 이미지는 **data URL** 로 바꿔 문서 안에 박는다.
+ * (인쇄 창은 이 문서와 수명이 달라 objectURL·서명 URL 을 쓰면 그림이 깨진다 · doc.js)
+ */
+async function loadGuidesForDoc(job) {
+    const files = await db.listProcessMasterFiles(job.master_id);
+    if (!files.length) return [];
+    const data = await db.processGuideDataUrls(files.filter(db.isGuideImage).map((f) => f.path));
+    return files.map((f) => ({ ...f, data_url: data.get(f.path) ?? '' }));
+}
+
+/**
+ * PDF 작업가이드를 새 탭으로 연다.
+ * ⚠️ 브라우저 인쇄는 다른 PDF 를 페이지로 합치지 못한다. 인쇄물에는 파일명만 적고(doc.js)
+ * 실물은 여기서 연다. 주소는 새 탭이 파일을 받아 갈 시간을 준 뒤에 놓는다 -
+ * 바로 놓으면 mock 의 objectURL 이 그 자리에서 끊긴다.
+ */
+async function openGuidePdfs(guides) {
+    const pdfs = guides.filter((g) => !db.isGuideImage(g));
+    if (!pdfs.length) return;
+    const pack = await db.processGuideUrls(pdfs.map((f) => f.path));
+    const blocked = pdfs.filter((f) => {
+        const url = pack.urls.get(f.path);
+        return !url || !window.open(url, '_blank', 'noopener');
+    }).length;
+    if (blocked) {
+        toast(`PDF 작업가이드 ${blocked}건을 열지 못했습니다(팝업 차단). `
+            + '작업 상세 팝업에서 열 수 있습니다.', 'error');
+    }
+    setTimeout(() => pack.release(), 60000);
 }
 
 /** 선택한 작업 삭제 - 완료건이 섞여 있으면 db 가 전부 거부한다 */
@@ -247,6 +282,7 @@ export async function openJobDetail(jobId, user, reload) {
     const { job, items } = found;
     const canManage = can(user, 'manageProcessing');
     const photos = await loadPhotos(job.id);
+    const guides = await loadGuideFiles(job);
 
     const m = openModal(`${job.product_code} · ${job.product_name}`, `
 <table class="grid pc-detail">
@@ -261,6 +297,7 @@ export async function openJobDetail(jobId, user, reload) {
   <tr><th>작업전 검수</th><td>${checkedCell(job.pre_check_by_name, job.pre_check_at)}</td>
       <th>완료 검수</th><td>${checkedCell(job.done_by_name, job.done_at)}</td></tr>
 </table>
+${guidesHtml(guides)}
 ${photosHtml(photos)}
 <div class="pc-sec">
   <div class="pc-sec__head"><h4>구성품</h4></div>
@@ -289,10 +326,13 @@ ${canManage ? '<button class="btn" id="pd-edit" type="button">수정</button>' :
     // 여러 번 불러도 안전하다
     const close = () => {
         photos.release();
+        guides.release();
         m.close();
     };
     m.root.addEventListener('click', (e) => {
-        if (e.target === m.root || e.target.closest('.modal__close')) photos.release();
+        if (e.target !== m.root && !e.target.closest('.modal__close')) return;
+        photos.release();
+        guides.release();
     });
     m.root.querySelector('#pd-close').addEventListener('click', close);
     m.root.querySelector('#pd-edit')?.addEventListener('click', () => {
@@ -308,7 +348,56 @@ ${canManage ? '<button class="btn" id="pd-edit" type="button">수정</button>' :
         el.addEventListener('click', () => openPhoto(photos.urls.get(el.dataset.path),
             el.dataset.cap));
     });
+    // 가이드는 이미지면 팝업, PDF 면 새 탭이라 사진 썸네일과 핸들러를 나눈다
+    m.root.querySelectorAll('button[data-gpath]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const url = guides.urls.get(el.dataset.gpath);
+            if (!url) {
+                toast('작업가이드 주소를 받지 못했습니다. 다시 열어 주세요.', 'error');
+                return;
+            }
+            if (el.dataset.gmime.startsWith('image/')) openPhoto(url, el.dataset.cap);
+            else if (!window.open(url, '_blank', 'noopener')) {
+                toast('팝업이 차단되었습니다. 팝업 허용 후 다시 시도하세요.', 'error');
+            }
+        });
+    });
     bindPhotoRetry(m.root, photos);
+}
+
+/**
+ * 작업가이드 파일 + 주소 (마스터에 붙어 있는 것을 **보여주기만** 한다).
+ * 마스터가 지워졌거나 붙은 파일이 없으면 빈 묶음이라 절 자체가 나오지 않는다.
+ */
+async function loadGuideFiles(job) {
+    const files = await db.listProcessMasterFiles(job.master_id);
+    const pack = await db.processGuideUrls(files.map((f) => f.path));
+    return { files, urls: pack.urls, release: pack.release };
+}
+
+/** 작업가이드 절 - 이미지는 썸네일, PDF 는 이름 칸 (누르면 새 탭) */
+function guidesHtml({ files, urls }) {
+    if (!files.length) return '';
+    return `
+<div class="pc-sec">
+  <div class="pc-sec__head">
+    <h4>작업가이드 <span class="tag tag--gray">${files.length}건</span></h4>
+    <span class="pc-hint">작업지시서를 인쇄하면 이미지가 뒤에 함께 나온다.</span>
+  </div>
+  <div class="pc-thumbs">${files.map((f) => guideThumbHtml(f, urls.get(f.path))).join('')}</div>
+</div>`;
+}
+
+/** 가이드 썸네일 한 칸 */
+function guideThumbHtml(f, url) {
+    if (!url) return `<span class="pc-thumb is-gone"><span>${esc(f.name)} (없음)</span></span>`;
+    const body = db.isGuideImage(f)
+        ? `<img src="${esc(url)}" alt="${esc(f.name)}">`
+        : '<span class="pc-file__ext">PDF</span>';
+    return `
+<button class="pc-thumb" type="button" data-gpath="${esc(f.path)}"
+        data-gmime="${esc(f.mime)}" data-cap="${esc(f.name)}">
+  ${body}<span>${esc(f.name)}</span></button>`;
 }
 
 /**
