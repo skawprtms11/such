@@ -11,7 +11,8 @@
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
         "dev:https": "HTTPS=true vite",
-        "check:flow": "node tools/checkflow-check.js"
+        "check:flow": "node tools/checkflow-check.js",
+        "check:processing": "node tools/processing-check.js"
     },
     "dependencies": {
         "@supabase/supabase-js": "^2.112.4",

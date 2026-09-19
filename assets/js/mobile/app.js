@@ -60,6 +60,7 @@ const SCREENS = {
     stow: () => import('./screens/stow.js'),
     adjust: () => import('./screens/adjust.js'),
     load: () => import('./screens/load.js'),
+    pcheck: () => import('./screens/pcheck.js'),
     status: () => import('./screens/status.js'),
     issues: () => import('./screens/issues.js'),
     notices: () => import('./screens/notices.js'),

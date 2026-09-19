@@ -9,6 +9,7 @@
  */
 import { PERMISSION, ROLE_LABEL } from './config.js';
 import { listUsers } from './db.js';
+import { STORE, idbClear } from './idb.js';
 import { isSupabase } from './store.js';
 import { supabase } from './supabase.js';
 
@@ -77,8 +78,23 @@ export async function signIn({ userId, email, password, keepLogin = false }) {
     return profile;
 }
 
+/**
+ * 로그아웃.
+ * 🔑 **세션만 지우면 사진이 남는다.** 유통가공 검수의 촬영 초안(과 mock 모드의 사진 파일)은
+ * IndexedDB 에 있어 세션 저장소를 비워도 그대로다. 공용 단말에서 다음 사용자가 앞사람의
+ * 현장 사진을 그대로 보게 되므로 여기서 함께 지운다.
+ * 저장소를 못 열어도(사파리 프라이빗 모드 등) **로그아웃은 진행한다** - 지울 것도 없다.
+ */
 export async function signOut() {
     clearUser();
+    const stores = isSupabase ? [STORE.DRAFTS] : [STORE.DRAFTS, STORE.FILES];
+    for (const store of stores) {
+        try {
+            await idbClear(store);
+        } catch (err) {
+            console.warn('사진 저장소 정리 실패', err);
+        }
+    }
     if (isSupabase) {
         try {
             await supabase().auth.signOut();

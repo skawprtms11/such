@@ -11,6 +11,7 @@
  */
 import { DATA_SOURCE } from './config.js';
 import { supabase } from './supabase.js';
+import { STORE, idbGet, idbPut } from './idb.js';
 
 const KEY = 'tpl_order_db_v1';
 
@@ -21,6 +22,11 @@ export const isSupabase = DATA_SOURCE === 'supabase';
  * 테이블 정의.
  * `cols` 는 **화이트리스트**다. 여기 없는 필드는 서버로 보내지 않으므로,
  * 화면이 임시로 붙인 값(예: 파렛트의 label)이 섞여도 저장이 깨지지 않는다.
+ *
+ * 🔑 `scopedSelect` 는 **서버 select 정책이 「로그인 사용자 전부」보다 좁은** 테이블이다.
+ * `pushChanges` 가 쓰기 결과를 되읽어 0행을 잡아내는데(RLS 무음 실패 탐지), 이 테이블들은
+ * 쓰기가 성공해도 되읽기가 0행일 수 있어 **그 검사에서 뺀다.**
+ * (예: orders 는 `can_view_all() or created_by = auth.uid()` 라 남의 주문은 되읽히지 않는다)
  */
 const TABLES = [
     {
@@ -31,6 +37,7 @@ const TABLES = [
     {
         key: 'orders',
         name: 'orders',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: [
             'id', 'reg_date', 'send_date', 'seq', 'order_no', 'base_no', 'rep_no', 'customer',
             'ship_req_date', 'vehicle_type', 'team_name', 'region',
@@ -48,11 +55,13 @@ const TABLES = [
     {
         key: 'pallets',
         name: 'pallets',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: ['id', 'order_id', 'barcode', 'scanned_at', 'location', 'picked_at'],
     },
     {
         key: 'history',
         name: 'order_history',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: [
             'id', 'order_id', 'rev', 'field', 'before', 'after', 'memo',
             'changed_by', 'changed_by_name', 'changed_at',
@@ -62,6 +71,7 @@ const TABLES = [
     {
         key: 'restores',
         name: 'restore_requests',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: [
             'id', 'order_id', 'type', 'category', 'reason', 'product_code', 'qty',
             'created_by', 'created_by_name', 'created_at',
@@ -71,6 +81,7 @@ const TABLES = [
     {
         key: 'issues',
         name: 'issues',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: [
             'id', 'type', 'work_type', 'title', 'order_no', 'content', 'due_date', 'status',
             'assignee_id', 'assignee_name', 'closed_at', 'canceled_at', 'auto_created',
@@ -80,6 +91,7 @@ const TABLES = [
     {
         key: 'comments',
         name: 'issue_comments',
+        scopedSelect: true,  // 본인 등록건만 보이거나(orders·issues) 주문 조회에 딸린다
         cols: [
             'id', 'issue_id', 'parent_id', 'content',
             'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
@@ -139,7 +151,56 @@ const TABLES = [
             'created_by', 'created_by_name', 'created_at', 'updated_at',
         ],
     },
+    // ── 유통가공작업 (docs/processing.md) ──
+    {
+        key: 'processMasters',
+        name: 'process_masters',
+        cols: [
+            'id', 'work_type', 'product_code', 'product_name',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    {
+        key: 'processMasterItems',
+        name: 'process_master_items',
+        cols: ['id', 'master_id', 'kind', 'code', 'name', 'qty_per', 'sort_order'],
+    },
+    {
+        key: 'processJobs',
+        name: 'process_jobs',
+        cols: [
+            'id', 'doc_no', 'master_id', 'work_type', 'product_code', 'product_name',
+            'qty', 'start_date', 'due_date',
+            'doc_created_at', 'doc_created_by', 'doc_created_by_name',
+            // 모바일 검수 (docs/processing.md §17) - 상태를 움직이는 두 시각
+            'pre_check_at', 'pre_check_by', 'pre_check_by_name',
+            'done_at', 'done_by', 'done_by_name',
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 'deleted_at',
+        ],
+    },
+    // ⚠️ 작업 1건이 구성품 행 수십 개를 만들어 가장 빨리 커지는 테이블이다.
+    // 운영 6개월치를 넘기면 이 테이블만 기간 조건 조회로 빼는 것을 검토한다
+    {
+        key: 'processJobItems',
+        name: 'process_job_items',
+        cols: [
+            'id', 'job_id', 'line_no', 'kind', 'code', 'name',
+            'qty_per', 'lot', 'qty', 'sort_order',
+        ],
+    },
+    // 검수 사진은 **메타만** 이 테이블에 둔다. 파일은 Storage 버킷(process-photos)이다
+    {
+        key: 'processPhotos',
+        name: 'process_photos',
+        cols: [
+            'id', 'job_id', 'phase', 'line_no', 'seq', 'path', 'size',
+            'taken_by', 'taken_by_name', 'taken_at',
+        ],
+    },
 ];
+
+/** 검수 사진 Storage 버킷 (private · JPEG 만 · 1MB) */
+const PHOTO_BUCKET = 'process-photos';
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
 
@@ -186,6 +247,8 @@ function mockLoad() {
         users: [], orders: [], issues: [], pallets: [], history: [], restores: [], comments: [],
         notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
         checklistEdges: [], checklistNotes: [],
+        processMasters: [], processMasterItems: [], processJobs: [], processJobItems: [],
+        processPhotos: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;
@@ -227,6 +290,12 @@ async function fetchAll() {
  * 🔑 **신규 등록(insert)과 수정(update)을 반드시 나눈다.**
  * upsert 는 INSERT 로 취급되어 등록 권한(RLS insert 정책)을 요구하는데,
  * 남이 만든 주문의 단계를 처리하는 것은 수정이지 등록이 아니다.
+ *
+ * 🔑 **RLS 에 막힌 수정·삭제는 오류가 아니라 「0행」으로 돌아온다.** PostgREST 는 그것을
+ * 성공으로 준다. 그대로 두면 화면은 「저장됐습니다」 를 띄우는데 서버 값은 그대로다
+ * (현장작업자의 유통가공 검수가 실제로 이렇게 조용히 실패했다). 그래서 쓰기 결과를
+ * `.select('id')` 로 되읽어 **반영된 행 수를 확인한다.**
+ * `scopedSelect` 테이블은 쓰기가 성공해도 되읽기가 막힐 수 있어 이 검사에서 뺀다.
  */
 async function pushChanges(db) {
     const sb = supabase();
@@ -251,13 +320,21 @@ async function pushChanges(db) {
             if (error) throw new Error(`${t.name} 등록 실패: ${error.message}`);
         }
         for (const r of updates) {
-            const { error } = await sb.from(t.name)
-                .update(toRow(r, t.cols)).eq('id', r.id);
+            const { data, error } = await sb.from(t.name)
+                .update(toRow(r, t.cols)).eq('id', r.id).select('id');
             if (error) throw new Error(`${t.name} 저장 실패: ${error.message}`);
+            if (!t.scopedSelect && !(data ?? []).length) {
+                throw new Error(`${t.name} 수정이 반영되지 않았습니다 (권한 또는 삭제된 행)`);
+            }
         }
         if (removed.length) {
-            const { error } = await sb.from(t.name).delete().in('id', removed);
+            const { data, error } = await sb.from(t.name)
+                .delete().in('id', removed).select('id');
             if (error) throw new Error(`${t.name} 삭제 실패: ${error.message}`);
+            if (!t.scopedSelect && (data ?? []).length !== removed.length) {
+                throw new Error(`${t.name} 삭제가 반영되지 않았습니다 `
+                    + `(${removed.length}건 중 ${(data ?? []).length}건 · 권한 또는 이미 지워진 행)`);
+            }
         }
     }
 }
@@ -300,6 +377,66 @@ export async function saveDb(db) {
     keepSnapshot(db);      // 저장한 값이 새 기준이 된다
     cache = db;
     cacheAt = Date.now();
+}
+
+/* -------------------------------- 파일 저장 -------------------------------- */
+/**
+ * 사진 **바이너리**는 행 diff 엔진(pushChanges)을 타지 않는다.
+ * 파일 전용 API 둘만 두고 `db.js` 가 부른다 - 화면은 여전히 `db.*` 만 본다.
+ * **지우는 API 는 두지 않는다.** 검수 취소도 사진을 남기고(A22) 경로가 결정적이라 재촬영이
+ * 덮어쓰므로 부를 곳이 없었다. 고아 파일 정리가 필요해지면 그때 서버 쪽 일괄 작업으로 만든다.
+ *
+ *   mock     : IndexedDB (localStorage 한도를 사진이 채우면 주문 저장까지 막힌다)
+ *   supabase : Storage 버킷 `process-photos` (private · 서명 URL 로만 본다)
+ */
+
+/** 파일 저장 - 같은 경로면 덮어쓴다 (경로가 결정적이라 재촬영이 고아를 남기지 않는다) */
+export async function putFile(path, blob) {
+    if (!isSupabase) {
+        await idbPut(STORE.FILES, path, blob);
+        return;
+    }
+    const { error } = await supabase().storage.from(PHOTO_BUCKET)
+        .upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+    if (error) throw new Error(`사진 업로드 실패: ${error.message}`);
+}
+
+/**
+ * 경로 → 보여줄 수 있는 주소.
+ * 🔑 **Map 과 `release()` 를 함께** 돌려준다. mock 의 objectURL 은 화면을 떠날 때 revoke
+ * 하지 않으면 새므로, 두 모드의 뒷정리 모양을 같게 해 화면이 저장소를 알지 못하게 한다.
+ * @returns {Promise<{urls:Map<string,string>, release:Function}>}
+ */
+export async function fileUrls(paths) {
+    const list = [...new Set(paths ?? [])].filter(Boolean);
+    const urls = new Map();
+    if (!list.length) return { urls, release() {} };
+
+    if (!isSupabase) {
+        const made = [];
+        for (const p of list) {
+            // IndexedDB 는 건별 조회뿐이다
+            const blob = await idbGet(STORE.FILES, p);
+            if (!blob) continue;
+            const url = URL.createObjectURL(blob);
+            urls.set(p, url);
+            made.push(url);
+        }
+        return {
+            urls,
+            release() {
+                made.splice(0).forEach((u) => URL.revokeObjectURL(u));
+            },
+        };
+    }
+
+    const { data, error } = await supabase().storage.from(PHOTO_BUCKET)
+        .createSignedUrls(list, 600);
+    if (error) throw new Error(`사진 주소 발급 실패: ${error.message}`);
+    (data ?? []).forEach((d) => {
+        if (d.signedUrl) urls.set(d.path, d.signedUrl);
+    });
+    return { urls, release() {} };
 }
 
 /** 저장 데이터를 시드 상태로 되돌린다 (개발용) */
