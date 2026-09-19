@@ -1283,7 +1283,7 @@ SQL 은 문법·의미를 눈으로 검토했을 뿐이고 **실 Supabase 적용
 | A20 | 완료 사진은 **정확히 3장** (더도 덜도 안 된다) | `PROCESS_DONE_PHOTOS` 상수 1곳 |
 | A21 | 사진은 **JPEG · 긴 변 1280px · 목표 200KB · 상한 1MB**. 원본은 보관하지 않는다 | `photo.js` 의 `PHOTO` 상수 · 버킷 `file_size_limit` |
 | A22 | 검수·완료를 **취소해도 사진은 지우지 않는다** (다시 찍으면 덮어쓴다) | `revokePreCheck` · Storage 정리 배치 필요 여부 |
-| A23 | 앱 탭은 **6번째(상차 뒤)** 에 두고 라벨은 2글자 `가공` | `APP_TABS` 순서 1줄 |
+| A23 | ~~앱 탭 6번째~~ → **상단바 메뉴(`APP_MENU`) 첫 항목 「유통가공작업」** (대표님 지시 2026-09-19 · 하단 탭은 5개 유지) | `APP_MENU` 순서 1줄 |
 | A24 | mock 모드 사진은 **IndexedDB** 에 둔다 (localStorage 아님) | `store.js` 파일 API · `idb.js` |
 
 ### 개발팀 주의사항 5가지 🔑
