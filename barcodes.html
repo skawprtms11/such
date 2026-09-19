@@ -90,6 +90,22 @@ for (const o of active) {
 </div>`);
 }
 
+// 유통가공 작업지시서의 문서번호 - 앱 「가공」 탭에서 스캔해 검수 화면을 연다
+const jobs = (await db.listProcessJobs({})).filter((j) => j.doc_no);
+if (jobs.length) {
+    groups.push(`
+<div class="bc-group">
+  <h2>유통가공 문서번호 <span class="tag tag--gray">${jobs.length}건</span></h2>
+  <p class="sheet__desc" style="margin-bottom:10px">
+    작업지시서에 인쇄되는 바코드와 같습니다. 앱 <b>가공 탭 → 작업전 검수 · 완료 검수</b>에서
+    스캔하면 그 작업의 사진 검수 화면이 열립니다.
+  </p>
+  <div class="bc-list">
+    ${jobs.map((j) => card(j.doc_no, `${j.product_name} · ${j.status}`)).join('')}
+  </div>
+</div>`);
+}
+
 out.innerHTML = groups.join('');
 </script>
 </body>

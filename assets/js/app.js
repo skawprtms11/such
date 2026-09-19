@@ -30,6 +30,7 @@ const ROUTES = {
     status: () => import('./pages/status.js'),
     shipping: () => import('./pages/shipping.js'),
     loading: () => import('./pages/loading.js'),
+    processing: () => import('./pages/processing.js'),
     inspect: () => import('./pages/inspect.js'),
     issues: () => import('./pages/issues.js'),
     notices: () => import('./pages/notices.js'),
