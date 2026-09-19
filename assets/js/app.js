@@ -1,5 +1,6 @@
 /** 앱 셸 - 메뉴 렌더링, 해시 라우팅, 공통 헤더 처리 */
 import { MENUS, ROLE, appOnlyCompany } from './config.js';
+import { APP_VERSION } from './version.js';
 import { requireLogin, signOut, roleLabel } from './auth.js';
 import { icon } from './icons.js';
 import { esc, isMobile, MOBILE_QUERY, confirmDialog } from './util.js';
@@ -74,6 +75,7 @@ function renderNav() {
         <span class="role role--${user.role}">${esc(roleLabel(user.role))}</span>
         <strong>${esc(user.name)}</strong>`;
     document.getElementById('side-me').innerHTML = meHtml;
+    document.getElementById('side-ver').textContent = APP_VERSION;
     document.getElementById('top-me').innerHTML = meHtml;
     document.getElementById('btn-menu').innerHTML = icon('menu', 'icon');
     document.getElementById('btn-top-logout').innerHTML = icon('logout', 'icon');

@@ -196,6 +196,8 @@ button { font: inherit; }
 .topbar__right { display: flex; align-items: center; gap: 12px; }
 
 .me { font-size: 13px; display: flex; align-items: center; gap: 8px; }
+/* 빌드 버전 - 현장 기기가 옛 캐시를 쓰는지 볼 때 */
+.sidebar__ver { margin-top: 8px; font-size: 11px; opacity: .55; font-family: monospace; }
 .me strong { color: #fff; }
 .me--sm strong { color: var(--gray-900); }
 
