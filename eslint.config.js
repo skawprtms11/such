@@ -13,6 +13,7 @@ export default [
             globals: {
                 ...globals.browser,
                 ...globals.serviceworker,
+                __APP_VERSION__: 'readonly',   // vite.config.js 의 define
             },
         },
         rules: {

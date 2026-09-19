@@ -11,6 +11,7 @@ import { signOut, roleLabel } from '../../auth.js';
 import { icon } from '../../icons.js';
 import { esc, confirmDialog } from '../../util.js';
 import { forceShell, WEB_SHELL } from '../../shell.js';
+import { APP_VERSION } from '../../version.js';
 
 export async function render(root, { user }) {
     root.innerHTML = `
@@ -23,6 +24,8 @@ export async function render(root, { user }) {
     <span class="m-kv__v">${esc(roleLabel(user.role))}</span></div>
   <div class="m-kv__row"><span class="m-kv__k">이메일</span>
     <span class="m-kv__v">${esc(user.email ?? '-')}</span></div>
+  <div class="m-kv__row"><span class="m-kv__k">빌드</span>
+    <span class="m-kv__v m-kv__v--mono">${esc(APP_VERSION)}</span></div>
 </div>
 
 <p class="m-listtitle">화면</p>

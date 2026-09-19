@@ -6,6 +6,28 @@ import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+/**
+ * 빌드 버전 문자열. 앱 계정 화면·웹 사이드바에 표시해 현장 기기가 어느 판을 쓰는지 알 수 있게 한다.
+ *   형식: <package.json version>+<커밋 7자리> · <빌드 시각 KST>
+ * 커밋은 Netlify 가 주는 COMMIT_REF 를 우선 쓰고, 로컬 빌드는 git 에서 읽는다 (둘 다 없으면 local).
+ */
+function buildVersion() {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8'));
+    let sha = (process.env.COMMIT_REF || '').slice(0, 7);
+    if (!sha) {
+        try {
+            sha = execSync('git rev-parse --short=7 HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+                .toString().trim();
+        } catch {
+            sha = 'local';
+        }
+    }
+    const at = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' }).slice(0, 16);
+    return `${pkg.version}+${sha} · ${at}`;
+}
 
 /**
  * HTTPS 로 띄울지 여부 (npm run dev:https).
@@ -54,6 +76,9 @@ function devUnregisterSw() {
 export default defineConfig({
     // 하위 경로에 배포해도 동작하도록 상대 경로를 사용한다
     base: './',
+
+    // 빌드 시점에 문자열로 박힌다 (assets/js/version.js 가 읽는다)
+    define: { __APP_VERSION__: JSON.stringify(buildVersion()) },
 
     server: {
         port: 5173,
