@@ -308,3 +308,22 @@ db 함수를 직접 부르면 주기 밖 기록이 들어가 `late`·`checklistS
      문서에 적어 둔다 (`docs/processing.md` §17-8).
 **파일**: `supabase/schema.sql`(`process_jobs_update` `enforce_process_check_cols`) ·
 `assets/js/store.js`(`pushChanges` `scopedSelect`) · `docs/processing.md`
+
+---
+
+### 2026-09-19 — [dev-team] 프로젝트 경로의 줄바꿈없는공백(U+00A0)을 손으로 쳐 사본 트리를 만들었다
+
+**무엇**: 스캔 인식 강화 작업에서 파일 생성 도구에 절대경로를 **손으로 입력**했다.
+저장소 폴더명 `문서 - 서민호의 MacBook Pro` 의 `MacBook`·`Pro` 사이는 보통 공백이 아니라
+**U+00A0(줄바꿈없는공백)** 인데, 눈으로는 구분되지 않아 일반 공백으로 쳤다. 그 결과
+**같은 이름처럼 보이는 빈 폴더가 하나 더 생기고** 새 파일 2개가 그쪽에 쓰였다.
+`ls -d .../thefurerap` 이 갑자기 두 줄을 뱉어 알아챘다 (git 저장소가 아닌 쪽이 가짜).
+**원인**: 경로를 「보이는 대로」 옮겼다. 보이지 않는 문자는 눈으로 검증할 수 없다.
+**교훈**:
+  1. **이 저장소에서는 절대경로를 손으로 치지 않는다.** 작업 시작 시 심볼릭 링크를
+     만들고(`ln -s "$(git rev-parse --show-toplevel)" <스크래치>/repo`) 그 경로만 쓴다.
+  2. 경로가 의심스러우면 `ls ... | od -c` 로 바이트를 본다. 같은 글로브가 **두 줄**을
+     뱉으면 이미 사본이 생긴 것이다 — `git rev-parse --git-dir` 로 진짜를 가린다.
+  3. 파일을 만든 뒤 **`git status` 로 추적되는지 확인**한다. 새 파일이 `??` 로도 안 뜨면
+     저장소 밖에 쓴 것이다.
+**파일**: `assets/js/scan-calc.js` · `assets/js/scanner.js` (진짜 저장소로 옮기고 사본 트리 삭제)

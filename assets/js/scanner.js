@@ -12,18 +12,45 @@
  *
  * 🔑 인식률에 관계된 값은 전부 아래 `TUNE` 한 곳에 모아 두었다.
  * 현장에서 잘 안 읽히면 이 상수만 조정하거나 되돌리면 된다.
+ * "어디를 · 얼마나 · 언제" 를 정하는 계산은 `scan-calc.js` 의 순수 함수가 하고
+ * (브라우저 없이 `npm run check:scan` 으로 검사한다), 이 파일은 카메라와 프레임만 다룬다.
  */
+import {
+    AIM_ROI, aimRect, clampZoom, nextCost, nextGap, nextOverrun, reArmGap,
+    roiPlan, shouldDowngrade, stepBudget, zoomSteps,
+} from './scan-calc.js';
 
 /** 인식률 조정값 - 바꿀 일이 있으면 여기만 본다 */
-const TUNE = {
-    /** 내장 인식기용 요청 해상도. 가는 바가 뭉개지지 않도록 기본값(대개 640×480)보다 높게 잡는다 */
-    nativeSize: { width: 1920, height: 1080 },
-    /** ZXing 용 요청 해상도. 디코딩을 CPU 로 하므로 한 단계 낮춰 프레임 수를 지킨다 */
-    zxingSize: { width: 1280, height: 720 },
-    /** ZXing 에 넘길 중앙 밴드 비율 (가로, 세로) - 조준선 주변만 잘라 넘긴다 */
-    roi: { w: 1, h: 0.45 },
-    /** 밴드에서 못 찾은 횟수가 이만큼 쌓이면 한 번은 전체 화면으로 시도한다 */
-    fullFrameEvery: 4,
+export const TUNE = {
+    /**
+     * 내장 인식기용 요청 해상도. 가는 바가 뭉개지지 않도록 기본값(대개 640×480)보다 높게 잡는다.
+     * 🔑 인식은 **가장 가는 바가 이미지에서 몇 픽셀인가**로 거의 결정된다(경험칙 2px 이상).
+     * 작은 라벨을 살리는 유일한 수단이 해상도라 내장 경로는 2560×1440 까지 올린다.
+     */
+    nativeSize: { width: 2560, height: 1440 },
+    /** ZXing 용 요청 해상도. 디코딩을 CPU 로 하지만 ROI 로 잘라 넘기므로 실제 픽셀은 더 적다 */
+    zxingSize: { width: 1920, height: 1080 },
+    /** 프레임 예산을 연속으로 넘길 때 낮출 해상도 (한 번 낮추면 되돌리지 않는다) */
+    downSize: { width: 1280, height: 720 },
+    /**
+     * 한 프레임에서 시도할 ROI (가로, 세로 비율) - 순서대로 보고 **첫 성공에 멈춘다**.
+     * ⚠️ 가로는 0.72 아래로 자르지 않는다 - Code128 은 좌우 여백(quiet zone)이 잘리면
+     * 디코딩이 실패한다. 1D 는 스캔라인 하나면 되므로 줄이려면 세로를 줄인다.
+     */
+    roiNative: [{ w: 1, h: 1 }, { w: 1, h: 0.45 }, { w: 0.8, h: 0.6 }],
+    roiZxing: [{ w: 1, h: 0.45 }, { w: 1, h: 0.22 }, { w: 0.8, h: 0.6 }, { w: 1, h: 1 }],
+    /** 내장 인식기 경로의 프레임당 디코딩 예산(ms) - 8fps 이상을 지킨다 */
+    budgetNativeMs: 120,
+    /** ZXing 경로의 프레임당 디코딩 예산(ms) - iOS 는 1회가 100~400ms 다 */
+    budgetZxingMs: 260,
+    /** 줌 버튼 배율 - 기기가 주는 `caps.zoom.max` 로 잘라낸다. 없는 기기는 버튼이 숨는다 */
+    zoomSteps: [1, 2, 3],
+    /** 줌을 바꾼 뒤 초점이 안정될 때까지 기다리는 시간(ms) */
+    zoomSettleMs: 300,
+    /** 연속 미검출이 이만큼 쌓이면 ROI 순서를 돌리고 ZXing 에 전처리를 붙인다 */
+    preMissN: 3,
+    /** 같은 값을 몇 프레임 연속 봐야 받아들이는지 - 오인식 신고가 오면 2로 올린다 */
+    consensus: 1,
     /** 프레임 처리 사이 최소 간격(ms) - 바코드를 찾고 있는 동안. 발열이 심하면 올린다 */
     minGapMs: 60,
     /** 아무것도 안 잡힌 채 시간이 흐를 때의 간격(ms) - 발열·배터리를 아낀다 */
@@ -55,6 +82,8 @@ const TUNE = {
 };
 
 const FORMATS = ['code_128', 'code_39', 'ean_13', 'qr_code', 'codabar', 'itf'];
+/** 현장에서 실제로 쓰는 포맷 - 1순위 패스는 이것 하나만 본다 (빠르고 오인식이 적다) */
+const MAIN_FORMAT = 'code_128';
 
 /** 내장 BarcodeDetector 를 쓸 수 있는지 */
 export function hasNativeDetector() {
@@ -69,31 +98,46 @@ export function scanSupported() {
 /* -------------------------------- 인식기 만들기 -------------------------------- */
 
 /**
- * 내장 BarcodeDetector 인식기.
- * 한 프레임에 여러 바코드가 잡히면 **조준선(화면 중앙)에 가장 가까운 것**을 고른다.
+ * 한 프레임에 여러 바코드가 잡히면 **조준선(가운데)에 가장 가까운 것**을 고른다.
  * (라벨 여러 장이 한 화면에 들어오면 엉뚱한 것이 읽히는 일을 막는다)
- * @returns {Promise<Function|null>} 지원하지 않으면 null
+ * @param {Array} found 검출 결과
+ * @param {HTMLVideoElement|HTMLCanvasElement} img 넘긴 이미지 (좌표 기준)
+ */
+function pickCenter(found, img) {
+    if (!found?.length) return null;
+    if (found.length === 1) return found[0].rawValue || null;
+    const cx = (img.videoWidth ?? img.width) / 2;
+    const cy = (img.videoHeight ?? img.height) / 2;
+    const dist = (b) => {
+        const r = b.boundingBox;
+        if (!r) return Number.MAX_SAFE_INTEGER;
+        return Math.hypot(r.x + r.width / 2 - cx, r.y + r.height / 2 - cy);
+    };
+    return [...found].sort((a, b) => dist(a) - dist(b))[0].rawValue || null;
+}
+
+/**
+ * 내장 BarcodeDetector 인식기.
+ * 🔑 디코더를 **둘** 만든다 - 1순위는 CODE_128 전용(포맷을 줄이면 후보 탐색이 줄어 빠르다),
+ * 2순위부터 전 포맷. 파렛트·로케이션 라벨은 모두 Code128 이라 1순위에서 거의 끝난다.
+ * @returns {Promise<{native:boolean, decode:Function}|null>} 지원하지 않으면 null
  */
 async function nativeReader() {
     if (!hasNativeDetector()) return null;
     try {
         const supported = await window.BarcodeDetector.getSupportedFormats?.() ?? FORMATS;
-        const formats = FORMATS.filter((f) => supported.includes(f));
-        if (!formats.length) return null;
-        const detector = new window.BarcodeDetector({ formats });
-
-        return async (video) => {
-            const found = await detector.detect(video);
-            if (!found.length) return null;
-            if (found.length === 1) return found[0].rawValue || null;
-            const cx = video.videoWidth / 2;
-            const cy = video.videoHeight / 2;
-            const dist = (b) => {
-                const r = b.boundingBox;
-                if (!r) return Number.MAX_SAFE_INTEGER;
-                return Math.hypot(r.x + r.width / 2 - cx, r.y + r.height / 2 - cy);
-            };
-            return [...found].sort((a, b) => dist(a) - dist(b))[0].rawValue || null;
+        const all = FORMATS.filter((f) => supported.includes(f));
+        if (!all.length) return null;
+        const narrow = all.includes(MAIN_FORMAT) ? [MAIN_FORMAT] : all;
+        const one = new window.BarcodeDetector({ formats: narrow });
+        const wide = narrow.length === all.length
+            ? one
+            : new window.BarcodeDetector({ formats: all });
+        return {
+            native: true,
+            async decode(img, useWide) {
+                return pickCenter(await (useWide ? wide : one).detect(img), img);
+            },
         };
     } catch (err) {
         // 기기가 이 포맷 조합을 못 만드는 경우 - ZXing 으로 넘긴다
@@ -104,8 +148,9 @@ async function nativeReader() {
 
 /**
  * ZXing 인식기 (내장 기능이 없는 기기 전용).
- * 전체 프레임 대신 **조준선 주변 가로 밴드**만 잘라 넘긴다 - 픽셀이 줄어 빨라지고,
- * 주변 잡음이 빠져 1D 바코드 인식이 붙는다. 가끔 전체 화면도 한 번씩 시도한다.
+ * 내장 경로와 같이 **1순위는 CODE_128 전용**, 2순위부터 전 포맷을 본다.
+ * `TRY_HARDER` 는 양쪽 모두 켠다 - 후보 포맷이 하나뿐인 1순위에서는 비용이 크지 않고,
+ * 라벨이 기울어졌을 때 이 힌트가 있어야 붙는다.
  */
 async function zxingReader() {
     const [{ BrowserMultiFormatReader }, { DecodeHintType, BarcodeFormat }] = await Promise.all([
@@ -113,61 +158,157 @@ async function zxingReader() {
         import('@zxing/library'),
     ]);
 
-    // 쓰는 포맷으로 후보를 좁히고, 어렵게라도 찾도록 힌트를 준다
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+    const hint = (formats) => new Map([
+        [DecodeHintType.POSSIBLE_FORMATS, formats],
+        [DecodeHintType.TRY_HARDER, true],
+    ]);
+    const one = new BrowserMultiFormatReader(hint([BarcodeFormat.CODE_128]));
+    const wide = new BrowserMultiFormatReader(hint([
         BarcodeFormat.CODE_128,
         BarcodeFormat.CODE_39,
         BarcodeFormat.ITF,
         BarcodeFormat.CODABAR,
         BarcodeFormat.EAN_13,
         BarcodeFormat.QR_CODE,
-    ]);
-    hints.set(DecodeHintType.TRY_HARDER, true);
+    ]));
 
-    const zxing = new BrowserMultiFormatReader(hints);
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    let misses = 0;
-
-    /** 프레임의 일부(또는 전체)를 캔버스에 옮겨 디코딩한다 */
-    const decode = (video, ratio) => {
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        const w = Math.max(1, Math.round(vw * ratio.w));
-        const h = Math.max(1, Math.round(vh * ratio.h));
-        if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w;
-            canvas.height = h;
-        }
-        ctx.drawImage(video, (vw - w) / 2, (vh - h) / 2, w, h, 0, 0, w, h);
-        try {
-            return zxing.decodeFromCanvas(canvas)?.getText() ?? null;
-        } catch {
-            return null;   // 프레임에서 못 찾은 경우 (정상)
-        }
-    };
-
-    return async (video) => {
-        if (!video.videoWidth) return null;
-        const whole = misses >= TUNE.fullFrameEvery;
-        const code = decode(video, whole ? { w: 1, h: 1 } : TUNE.roi);
-        misses = code ? 0 : (whole ? 0 : misses + 1);
-        return code;
+    return {
+        native: false,
+        async decode(canvas, useWide) {
+            try {
+                return (useWide ? wide : one).decodeFromCanvas(canvas)?.getText() ?? null;
+            } catch {
+                return null;   // 프레임에서 못 찾은 경우 (정상)
+            }
+        },
     };
 }
 
 /**
  * 프레임에서 바코드를 읽는 인식기를 만든다.
- * @returns {Promise<{read:Function, native:boolean}>}
+ * @returns {Promise<{native:boolean, decode:Function}>}
  */
 async function createReader() {
-    const native = await nativeReader();
-    if (native) return { read: native, native: true };
-    return { read: await zxingReader(), native: false };
+    return await nativeReader() ?? zxingReader();
+}
+
+/* ------------------------------ 프레임 공급 (frameSource) ------------------------------ */
+
+/**
+ * 프레임 캔버스 - ROI 를 잘라 담고, 필요하면 전처리한다.
+ * `willReadFrequently` 를 켜야 `getImageData`(전처리)가 GPU↔CPU 왕복으로 느려지지 않는다.
+ */
+function frameCanvas() {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    return {
+        /** 프레임 가운데의 ROI 만 캔버스로 옮긴다 */
+        crop(video, roi) {
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const w = Math.max(1, Math.round(vw * roi.w));
+            const h = Math.max(1, Math.round(vh * roi.h));
+            if (canvas.width !== w || canvas.height !== h) {
+                canvas.width = w;
+                canvas.height = h;
+            }
+            ctx.drawImage(video, (vw - w) / 2, (vh - h) / 2, w, h, 0, 0, w, h);
+            return canvas;
+        },
+        /**
+         * 그레이 + 대비 스트레치 - 저조도·인쇄 흐림에서 가는 바를 살린다.
+         * 🔑 **미검출이 쌓였을 때만** 부른다. 잘 읽히는 프레임에 붙이면 비용만 늘고,
+         * 과대비는 오히려 가는 바를 지운다.
+         */
+        stretch() {
+            if (!canvas.width || !canvas.height) return;
+            const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const d = img.data;
+            let lo = 255;
+            let hi = 0;
+            for (let i = 0; i < d.length; i += 4) {
+                const g = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
+                d[i] = g;
+                if (g < lo) lo = g;
+                if (g > hi) hi = g;
+            }
+            if (hi - lo < 8) return;   // 거의 평평한 화면 - 늘리면 잡음만 커진다
+            const k = 255 / (hi - lo);
+            for (let i = 0; i < d.length; i += 4) {
+                const v = Math.min(255, Math.max(0, Math.round((d[i] - lo) * k)));
+                d[i] = v;
+                d[i + 1] = v;
+                d[i + 2] = v;
+            }
+            ctx.putImageData(img, 0, 0);
+        },
+        /**
+         * 뒷면 버퍼를 놓는다 (`stop()` 전용).
+         * 2560×1440 한 장이 RGBA 로 14MB 라, 화면을 떠난 뒤에도 들고 있으면
+         * 폰에서 다른 화면이 메모리 때문에 느려진다.
+         */
+        release() {
+            canvas.width = 0;
+            canvas.height = 0;
+        },
+    };
+}
+
+/**
+ * 프레임 공급 - 새 프레임이 올 때 깨우는 `requestVideoFrameCallback` 을 쓰되,
+ * 그 콜백이 오지 않는 상황(백그라운드·숨겨진 프리뷰)에 대비해 예비 타이머를 함께 건다.
+ * 처리가 끝난 뒤에만 `next()` 를 부르므로 **호출이 겹치지 않는다.**
+ * @param {HTMLVideoElement} el 프리뷰
+ * @param {Function} onFrame 프레임이 준비됐을 때 할 일
+ */
+function frameSource(el, onFrame) {
+    let timer = null;
+    let req = 0;
+    let turn = 0;
+
+    function cancel() {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        if (req && el.cancelVideoFrameCallback) el.cancelVideoFrameCallback(req);
+        req = 0;
+    }
+
+    function next(waitMs) {
+        cancel();
+        if (waitMs > 0) {
+            timer = setTimeout(next, waitMs, 0);
+            return;
+        }
+        turn += 1;
+        const mine = turn;
+        const run = () => {
+            if (mine !== turn) return;   // 예비 타이머와 프레임 콜백 중 먼저 온 쪽만 실행한다
+            turn += 1;
+            cancel();
+            onFrame();
+        };
+        if (el.requestVideoFrameCallback) {
+            req = el.requestVideoFrameCallback(run);
+            timer = setTimeout(run, TUNE.stallMs);
+        } else {
+            timer = setTimeout(run, 0);
+        }
+    }
+
+    return { next, cancel };
 }
 
 /* --------------------------------- 카메라 제어 --------------------------------- */
+
+/** getUserMedia 제약 - 해상도는 **ideal 로만** 요청한다 (못 맞추는 기기도 거절하지 않는다) */
+function videoConstraints(size) {
+    return {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: size.width },
+        height: { ideal: size.height },
+    };
+}
 
 /** 트랙이 지원하는 기능만 골라 적용한다 (지원하지 않으면 조용히 건너뛴다) */
 async function tuneTrack(track) {
@@ -206,14 +347,16 @@ function waitReady(video) {
  * @param {HTMLVideoElement} video 미리보기 엘리먼트
  * @param {(code:string) => void} onCode 코드 인식 콜백
  * @returns {{start:Function, stop:Function, isOn:Function,
- *            hasTorch:Function, isTorchOn:Function, toggleTorch:Function}}
+ *            hasTorch:Function, isTorchOn:Function, toggleTorch:Function,
+ *            canZoom:Function, zoomSteps:Function, zoomValue:Function,
+ *            zoomRange:Function, setZoom:Function, setZoomRaw:Function,
+ *            aimRect:Function}}
  */
 export function createScanner(video, onCode) {
     let stream = null;
     let track = null;
-    let timer = null;
-    let frameReq = 0;
-    let turn = 0;
+    let settleTimer = null;
+    let settleDone = null;
     let running = false;
     let torchOn = false;
     let readerP = null;
@@ -225,6 +368,21 @@ export function createScanner(video, onCode) {
     let startedAt = 0;
     /** 디코딩 1회 소요시간(ms) 이동평균 - 기기 속도에 맞춰 중복 판정을 조절한다 */
     let cost = 0;
+    /** 연속 미검출 횟수 - ROI 순서와 전처리 여부를 정한다 */
+    let missStreak = 0;
+    /** 연속 예산 초과 횟수 · 해상도를 이미 낮췄는지 */
+    let overrun = 0;
+    let downgraded = false;
+    /** 같은 값을 연속으로 본 횟수 (TUNE.consensus 가 1 이면 사실상 꺼져 있다) */
+    let agree = 0;
+    let agreeCode = '';
+    /** 지금 줌 배율 */
+    let zoomNow = 1;
+
+    const frame = frameCanvas();
+    const frames = frameSource(video, () => {
+        if (running) tick();
+    });
 
     /* ------------------------------ 토치(플래시) ------------------------------ */
 
@@ -245,6 +403,74 @@ export function createScanner(video, onCode) {
         return torchOn;
     }
 
+    /* ---------------------------------- 줌 ---------------------------------- */
+
+    /** 이 기기가 노출한 줌 능력 (안드로이드 크롬은 대개 있고, iOS·PC 웹캠은 거의 없다) */
+    function zoomCaps() {
+        const z = track?.getCapabilities?.().zoom;
+        return z && Number.isFinite(z.min) && Number.isFinite(z.max) ? z : null;
+    }
+
+    /** 줌 버튼으로 낼 배율 목록 - 비어 있으면 **UI 는 버튼을 숨긴다** */
+    function steps() {
+        return zoomSteps(zoomCaps(), TUNE);
+    }
+
+    function canZoom() {
+        return steps().length > 1;
+    }
+
+    /**
+     * 줌 안정화 기다림을 끝낸다 - 시간이 다 됐거나, 중지·다음 줌이 끊었거나.
+     * 🔑 **끊을 때도 반드시 resolve 한다.** 여기서 멈춰 버리면 부르는 쪽(핀치 UI)의
+     * `zoomBusy` 가 영영 풀리지 않아 다음부터 줌이 먹지 않는다.
+     */
+    function endSettle() {
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = null;
+        const done = settleDone;
+        settleDone = null;
+        if (done) done();
+    }
+
+    /** 줌을 바꾼 뒤 초점이 안정될 때까지 기다린다 (그 사이 stop() 이 오면 세대로 걸러진다) */
+    function settle(ms) {
+        endSettle();            // 앞선 기다림이 남아 있으면 먼저 끊는다 (타이머가 쌓이지 않게)
+        return new Promise((resolve) => {
+            settleDone = resolve;
+            settleTimer = setTimeout(endSettle, ms);
+        });
+    }
+
+    /**
+     * 배율을 직접 지정한다 (핀치 줌이 부른다).
+     * 실패하면 조용히 원래 값을 돌려준다 - 스트림을 다시 열지 않는다.
+     * @param {number} value 원하는 배율
+     * @returns {Promise<number>} 실제로 적용된 배율
+     */
+    async function setZoomRaw(value) {
+        const caps = zoomCaps();
+        const v = clampZoom(value, caps);
+        if (v == null || !track || track.readyState !== 'live' || v === zoomNow) return zoomNow;
+        const mine = gen;
+        try {
+            await track.applyConstraints({ advanced: [{ zoom: v }] });
+            zoomNow = v;
+        } catch (err) {
+            console.warn('줌을 적용하지 못했습니다.', err);
+            return zoomNow;
+        }
+        // 🔑 줌이 바뀌면 초점이 흔들린다 - 안정될 시간을 준 뒤 연속 오토포커스를 다시 건다
+        await settle(TUNE.zoomSettleMs);
+        if (mine === gen && track) await tuneTrack(track);
+        return zoomNow;
+    }
+
+    /** 줌 버튼(1x·2x·3x)이 부른다 - 목록에 없는 값은 그대로 클램프된다 */
+    function setZoom(step) {
+        return setZoomRaw(step);
+    }
+
     /* -------------------------------- 인식 루프 -------------------------------- */
 
     /**
@@ -255,47 +481,39 @@ export function createScanner(video, onCode) {
      * 반대로 너무 쉽게 풀면 **한 파렛트가 2건으로 세어져 실물보다 진행률이 앞선다.**
      * 후자가 훨씬 위험하므로(파렛트 누락 출고) 판정은 보수적으로 둔다.
      *
-     * 다시 받는 조건은 **비어 있던 시간**이고, 그 문턱은 두 값의 큰 쪽이다.
+     * 다시 받는 조건은 **비어 있던 시간**이고, 그 문턱은 두 값의 큰 쪽이다
+     * (`scan-calc.js` 의 `reArmGap`).
      *   ① `reArmMs` (1.5초) - 사람이 파렛트를 옮기는 최소 시간
      *   ② `reArmFrames × 디코딩 1회 소요시간` - 디코딩이 느린 기기일수록 커진다
      * ②가 있어야 "디코딩 실패 몇 번"이 "라벨을 치움"으로 오해되지 않는다.
+     *
+     * ⚠️ 인식 강화(줌·해상도·ROI)는 이 판정을 건드리지 않는다. 두 가지는 독립이어야 한다.
      */
-    function reArmGap() {
-        return Math.max(TUNE.reArmMs, TUNE.reArmFrames * cost);
-    }
-
     function accepts(code, now) {
         if (code !== last) return true;
-        if (now - seenAt >= reArmGap()) return true;        // 정말 비어 있었다 = 다음 파렛트
-        return now - acceptedAt >= TUNE.repeatMs;           // 계속 보이는 중이면 시간으로 막는다
+        if (now - seenAt >= reArmGap(cost, TUNE)) return true;   // 정말 비어 있었다 = 다음 파렛트
+        return now - acceptedAt >= TUNE.repeatMs;                // 계속 보이는 중이면 시간으로 막는다
     }
 
     /**
-     * 다음 프레임을 예약한다. 처리가 끝난 뒤에만 부르므로 **호출이 겹치지 않는다**.
-     * 새 프레임이 올 때 깨우는 `requestVideoFrameCallback` 을 쓰되,
-     * 그 콜백이 오지 않는 상황(백그라운드·숨겨진 프리뷰)에 대비해 예비 타이머를 함께 건다.
+     * ROI 하나를 디코더에 넘긴다.
+     * 내장 인식기에 **전체 프레임**을 줄 때는 비디오를 그대로 넘겨 복사를 아낀다.
+     * @param {object} reader 인식기
+     * @param {{w:number,h:number,wide:boolean,pre:boolean}} roi
      */
-    function schedule(waitMs) {
-        if (!running) return;
-        if (waitMs > 0) {
-            timer = setTimeout(schedule, waitMs, 0);
-            return;
-        }
-        turn += 1;
-        const mine = turn;
-        const run = () => {
-            if (mine !== turn) return;   // 예비 타이머와 프레임 콜백 중 먼저 온 쪽만 실행한다
-            turn += 1;
-            tick();
-        };
-        if (video.requestVideoFrameCallback) {
-            frameReq = video.requestVideoFrameCallback(run);
-            timer = setTimeout(run, TUNE.stallMs);
-        } else {
-            timer = setTimeout(run, 0);
-        }
+    function decodeOnce(reader, roi) {
+        const whole = roi.w >= 1 && roi.h >= 1;
+        if (reader.native && whole && !roi.pre) return reader.decode(video, roi.wide);
+        const canvas = frame.crop(video, roi);
+        if (roi.pre) frame.stretch();
+        return reader.decode(canvas, roi.wide);
     }
 
+    /**
+     * 한 프레임 처리 - 예산 안에서 ROI 계획을 순서대로 보고 **첫 성공에 멈춘다.**
+     * 🔑 `cost` 는 **미검출로 끝난 tick 만** 반영한다 (`nextCost`). 성공 프레임은 첫 ROI 에서
+     * 끝나 싸므로 섞으면 평균이 내려가고, `reArmGap` 이 짧아져 중복 계수가 늘어난다.
+     */
     async function tick() {
         if (!running) return;
         const reader = await readerP;
@@ -307,31 +525,80 @@ export function createScanner(video, onCode) {
         // 🔑 **디코더를 받은 뒤부터** 잰다. 첫 프레임에 ZXing 내려받는 시간(느린 회선에서
         // 수 초)이 섞이면 평균이 오염되어 한동안 중복 판정 문턱이 상한까지 올라간다.
         const began = performance.now();
+        const budget = stepBudget(reader.native, TUNE);
+        const plan = roiPlan(reader.native, missStreak, TUNE);
+        let code = null;
+        let used = 0;
+        let firstSpent = 0;
         try {
-            const code = await reader.read(video);
-            const now = performance.now();
-            // 디코딩이 얼마나 걸리는 기기인지 재 둔다 (중복 판정 문턱에 쓴다)
-            const spent = Math.min(now - began, TUNE.costCapMs);
-            cost = cost ? cost * 0.7 + spent * 0.3 : spent;
-            // 🔑 읽는 동안 화면을 떠났거나 중지했으면 **넘기지 않는다**
-            // (전량 검수 자동 중지 뒤에 1건이 더 들어가는 것을 막는다)
-            if (!running) return;
-            if (code) {
-                if (accepts(code, now)) {
-                    acceptedAt = now;
-                    if (navigator.vibrate) navigator.vibrate(60);
-                    onCode(code);
-                }
-                last = code;
-                seenAt = now;
+            for (let i = 0; i < plan.length; i += 1) {
+                if (i > 0 && used >= budget) break;    // 예산을 넘겼으면 다음 프레임으로 넘긴다
+                const at = performance.now();
+                code = await decodeOnce(reader, plan[i]);
+                // 🔑 읽는 동안 화면을 떠났거나 중지했으면 **넘기지 않는다**
+                // (전량 검수 자동 중지 뒤에 1건이 더 들어가는 것을 막는다)
+                if (!running) return;
+                const done = performance.now();
+                if (i === 0) firstSpent = done - at;
+                used = done - began;
+                if (code) break;
             }
         } catch (err) {
+            // 🔑 예외 경로에도 중지 확인이 필요하다. 중지하면 트랙·캔버스를 놓으므로
+            // 진행 중이던 디코딩이 던질 수 있는데, 여기서 빠져나가지 않으면 아래
+            // `frames.next()` 가 **중지 뒤에 프레임 타이머를 다시 건다**(좀비 루프).
+            if (!running) return;
             console.warn('바코드 인식 실패', err);
+            used = performance.now() - began;
+            code = null;
         }
+
+        const now = performance.now();
+        missStreak = code ? 0 : missStreak + 1;
+        cost = nextCost(cost, used, Boolean(code), TUNE);
+        if (!code) {
+            // 한 번 디코딩하는 것조차 예산을 넘으면 이 해상도를 감당하지 못하는 기기다.
+            // 🔑 성공 tick 은 세지도 풀지도 않는다 - 성공은 첫 ROI 에서 끝나 언제나 싸므로
+            // 넣으면 느린 기기의 초과가 성공 한 번에 지워진다(강등이 영영 안 걸린다).
+            overrun = nextOverrun(overrun, firstSpent, budget);
+            if (shouldDowngrade(overrun, downgraded)) downgrade();
+            // 🔑 합의(consensus)는 **연속** 프레임을 뜻한다 - 미검출이 끼면 처음부터 다시 센다.
+            // (`consensus: 1` 인 기본값에서는 아무 차이가 없고, 2 이상일 때만 뜻이 생긴다)
+            agree = 0;
+            agreeCode = '';
+        }
+
+        if (code) {
+            agree = code === agreeCode ? agree + 1 : 1;
+            agreeCode = code;
+            if (agree >= TUNE.consensus && accepts(code, now)) {
+                acceptedAt = now;
+                if (navigator.vibrate) navigator.vibrate(60);
+                onCode(code);
+            }
+            last = code;
+            seenAt = now;
+        }
+
         // 한동안 아무것도 안 잡히면 간격을 늘린다 (카메라를 켜 둔 채 이동할 때의 발열·배터리)
-        const idle = performance.now() - Math.max(seenAt, startedAt) >= TUNE.idleAfterMs;
-        const want = idle ? TUNE.idleGapMs : TUNE.minGapMs;
-        schedule(want - (performance.now() - began));
+        const want = nextGap(seenAt, startedAt, performance.now(), TUNE);
+        frames.next(want - (performance.now() - began));
+    }
+
+    /** 예산을 연속으로 넘기는 기기는 해상도를 한 단계 낮춘다 (되돌리지 않는다 - 진동 방지) */
+    async function downgrade() {
+        downgraded = true;
+        if (!track) return;
+        try {
+            await track.applyConstraints({
+                width: { ideal: TUNE.downSize.width },
+                height: { ideal: TUNE.downSize.height },
+            });
+            console.warn(`프레임 예산을 넘겨 해상도를 ${TUNE.downSize.width}×`
+                + `${TUNE.downSize.height} 로 낮췄습니다.`);
+        } catch (err) {
+            console.warn('해상도를 낮추지 못했습니다.', err);
+        }
     }
 
     /** 앱을 다시 열었을 때 멈춘 프리뷰를 되살린다 (iOS 는 백그라운드에서 재생을 끊는다) */
@@ -345,10 +612,9 @@ export function createScanner(video, onCode) {
         gen += 1;               // 준비 중인 start() 가 있으면 여기서 무효가 된다
         running = false;
         starting = false;
-        if (timer) clearTimeout(timer);
-        timer = null;
-        if (frameReq && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameReq);
-        frameReq = 0;
+        frames.cancel();
+        endSettle();
+        frame.release();
         document.removeEventListener('visibilitychange', onVisible);
         if (torchOn) setTorch(false);
         torchOn = false;
@@ -380,12 +646,7 @@ export function createScanner(video, onCode) {
         let mineStream = null;
         try {
             mineStream = await navigator.mediaDevices.getUserMedia({
-                video: {
-                    facingMode: { ideal: 'environment' },
-                    // ideal 로만 요청한다 - 못 맞추는 기기도 거절하지 않고 가장 가까운 값을 준다
-                    width: { ideal: size.width },
-                    height: { ideal: size.height },
-                },
+                video: videoConstraints(size),
             });
         } catch (err) {
             if (!canceled()) starting = false;
@@ -434,10 +695,18 @@ export function createScanner(video, onCode) {
         acceptedAt = 0;
         seenAt = 0;
         cost = 0;
+        missStreak = 0;
+        overrun = 0;
+        downgraded = false;
+        agree = 0;
+        agreeCode = '';
+        // 지금 배율은 기기에게 묻는다 (추측하면 첫 줌 버튼이 "같은 값" 으로 무시될 수 있다)
+        const nowZoom = track?.getSettings?.().zoom;
+        zoomNow = Number.isFinite(nowZoom) ? nowZoom : steps()[0] ?? 1;
         startedAt = performance.now();
         running = true;
         document.addEventListener('visibilitychange', onVisible);
-        schedule(0);
+        frames.next(0);
     }
 
     return {
@@ -448,5 +717,17 @@ export function createScanner(video, onCode) {
         isTorchOn: () => torchOn,
         /** 토치를 뒤집는다 - 지원 기기에서만 동작하고, 새 상태를 돌려준다 */
         toggleTorch: () => setTorch(!torchOn),
+        /** 이 기기에서 줌을 쓸 수 있는지 - false 면 UI 는 줌 버튼을 **숨긴다** */
+        canZoom,
+        /** 줌 버튼으로 낼 배율 목록 (예: [1, 2, 3]) */
+        zoomSteps: steps,
+        /** 지금 배율 */
+        zoomValue: () => zoomNow,
+        /** 핀치 줌이 쓸 범위 */
+        zoomRange: () => zoomCaps(),
+        setZoom,
+        setZoomRaw,
+        /** 프리뷰 상자 안에서 조준 밴드가 차지할 영역 (가이드 박스를 ROI 와 맞춘다) */
+        aimRect: (bw, bh) => aimRect(AIM_ROI, video.videoWidth, video.videoHeight, bw, bh),
     };
 }

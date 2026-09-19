@@ -582,6 +582,7 @@ ${t.location
      */
     async function submit(raw) {
         if (!editable || submitting) return;
+        camBox.flash();     // 인식 순간을 프리뷰에서 눈으로 확인한다
         const t = target();
         if (!t) {
             toast('로케이션을 넣을 파렛트가 없습니다.', 'error');
@@ -803,6 +804,7 @@ ${t.location
         window.visualViewport?.removeEventListener('scroll', syncViewport);
         modeSeg?.destroy();
         zoneSeg?.destroy();
+        camBox.destroy();   // 프리뷰가 창(resize)에 건 리스너까지 떼어 낸다
         d?.destroy();
         openSheet?.close();
         unwatch();

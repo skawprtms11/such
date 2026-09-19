@@ -693,6 +693,8 @@ html, body {
     border-radius: var(--m-radius);
     background: #000;
     overflow: hidden;
+    /* 세로 스크롤은 그대로 두고 핀치(브라우저 확대)만 막는다 - 핀치는 카메라 줌에 쓴다 */
+    touch-action: pan-y;
 }
 
 .m-scanbox[hidden] { display: none; }
@@ -704,15 +706,21 @@ html, body {
     object-fit: cover;
 }
 
-/* 조준 밴드 - 이 안쪽만 디코더에 넘긴다(scanner.js 의 TUNE.roi). 가운데 선에 라벨을 맞춘다 */
+/*
+ * 가이드 박스 - 디코더가 보는 조준 밴드와 **같은 자리**에 그린다.
+ * 🔑 크기는 CSS 가 아니라 JS(`scanPreview.fitAim` → `scanner.aimRect`)가 넣는다.
+ * 비디오가 cover 로 잘려 보이므로 CSS 퍼센트와 프레임 퍼센트가 다르기 때문이다.
+ * 여기 값은 프레임이 아직 없을 때의 임시 모습이다.
+ */
 .m-scanbox__aim {
     position: absolute;
     left: 4%;
-    right: 4%;
     top: 27.5%;
+    width: 92%;
     height: 45%;
     border: 1px dashed rgba(255, 255, 255, .6);
     border-radius: 8px;
+    transition: border-color .15s;
 }
 
 .m-scanbox__aim::after {
@@ -723,6 +731,53 @@ html, body {
     top: 50%;
     height: 2px;
     background: rgba(255, 64, 64, .85);
+}
+
+/* 인식 순간 하이라이트 - 소리·진동을 못 쓰는 현장에서도 읽힌 것이 보인다 */
+.m-scanbox__hit {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    background: rgba(46, 190, 110, .35);
+    transition: opacity .35s;
+}
+
+.m-scanbox.is-hit .m-scanbox__hit { opacity: 1; transition: opacity .05s; }
+
+.m-scanbox.is-hit .m-scanbox__aim { border-color: rgba(46, 190, 110, .95); }
+
+/*
+ * 확대 버튼 - 기기가 줌을 지원할 때만 나타난다 (iOS·대부분의 PC 웹캠에는 없다).
+ * 🔑 **위쪽**에 둔다. 프리뷰 아래쪽은 화면 하단에 고정된 독에 가려질 수 있다.
+ */
+.m-scanbox__zoom {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    display: flex;
+    gap: 6px;
+    padding: 4px;
+    border-radius: 999px;
+    background: rgba(16, 32, 48, .55);
+}
+
+.m-scanbox__zoom[hidden] { display: none; }
+
+.m-scanbox__zbtn {
+    min-width: 42px;
+    height: 32px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.m-scanbox__zbtn.is-on {
+    background: #fff;
+    color: #102030;
 }
 
 /* 플래시 - 기기가 지원할 때만 나타난다 (어두운 창고에서 인식률을 크게 좌우한다) */

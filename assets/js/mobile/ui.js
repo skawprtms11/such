@@ -490,16 +490,21 @@ export function menuSheet(items, title = '작업') {
 
 /* ---------------------------------- 스캔 바 ---------------------------------- */
 
+/** 줌 버튼에 쓸 글자 (2 → `2x`, 1.5 → `1.5x`) */
+const zoomLabel = (z) => `${Number.isInteger(z) ? z : z.toFixed(1)}x`;
+
 /**
- * 카메라 프리뷰 상자 - 조준 밴드 + (지원 기기만) 플래시 버튼.
+ * 카메라 프리뷰 상자 - 가이드 박스 + (지원 기기만) 플래시·줌 버튼.
  *
  * 🔑 상자를 **먼저 보이게 한 뒤** 카메라를 켠다. 숨겨진(display:none) 비디오는
  * iOS 에서 프레임이 들어오지 않아 "카메라는 켜졌는데 하나도 안 읽히는" 상태가 된다.
- * 플래시는 기기가 지원할 때만 버튼이 나타난다 (대개 안드로이드 후면 카메라).
+ * 플래시·줌은 기기가 지원할 때만 버튼이 나타난다 (대개 안드로이드 후면 카메라).
+ * 🔑 **가이드 박스는 실제 ROI 에 맞춰 그린다.** 비디오는 `object-fit: cover` 로 잘려
+ * 보이므로 CSS 퍼센트와 프레임 퍼센트가 다르다 - 계산은 `scanner.aimRect()` 가 한다.
  *
  * @param {Element} host 프리뷰를 그릴 자리
  * @returns {{el:Element, video:HTMLVideoElement, bind:Function, show:Function,
- *            hide:Function, sync:Function, destroy:Function}}
+ *            hide:Function, sync:Function, flash:Function, destroy:Function}}
  */
 export function scanPreview(host) {
     const el = document.createElement('div');
@@ -508,18 +513,59 @@ export function scanPreview(host) {
     el.innerHTML = `
 <video class="m-scanbox__video" playsinline muted></video>
 <span class="m-scanbox__aim"></span>
+<span class="m-scanbox__hit"></span>
 <button class="m-scanbox__torch" type="button" hidden aria-label="플래시">
-  ${icon('torch', 'm-icon')}</button>`;
+  ${icon('torch', 'm-icon')}</button>
+<div class="m-scanbox__zoom" role="group" aria-label="확대" hidden></div>`;
     host.appendChild(el);
 
+    const video = el.querySelector('video');
+    const aim = el.querySelector('.m-scanbox__aim');
     const torchBtn = el.querySelector('.m-scanbox__torch');
+    const zoomBox = el.querySelector('.m-scanbox__zoom');
     let scanner = null;
+    let hitTimer = null;
+    let zoomBusy = false;
 
-    /** 플래시 버튼 표시를 지금 상태에 맞춘다 */
+    /** 가이드 박스를 지금 프레임 기준의 ROI 자리에 맞춘다 */
+    function fitAim() {
+        const r = scanner?.aimRect?.(el.clientWidth, el.clientHeight);
+        if (!r?.width || !r.height) return;
+        aim.style.left = `${Math.round(r.left)}px`;
+        aim.style.top = `${Math.round(r.top)}px`;
+        aim.style.width = `${Math.round(r.width)}px`;
+        aim.style.height = `${Math.round(r.height)}px`;
+    }
+
+    /** 줌 버튼 - 기기가 줌을 못 하면 **통째로 숨긴다** (없는 기능을 눌러 실패하지 않게) */
+    function drawZoom() {
+        const steps = scanner?.isOn() && scanner.canZoom?.() ? scanner.zoomSteps() : [];
+        zoomBox.hidden = !steps.length;
+        if (!steps.length) {
+            zoomBox.innerHTML = '';
+            return;
+        }
+        const now = scanner.zoomValue();
+        zoomBox.innerHTML = steps.map((z) => `
+<button class="m-scanbox__zbtn${Math.abs(z - now) < 0.05 ? ' is-on' : ''}"
+  type="button" data-z="${z}">${esc(zoomLabel(z))}</button>`).join('');
+    }
+
+    /** 플래시·줌 버튼 표시와 가이드 박스를 지금 상태에 맞춘다 */
     function sync() {
         const usable = Boolean(scanner?.isOn() && scanner.hasTorch?.());
         torchBtn.hidden = !usable;
         torchBtn.classList.toggle('is-on', Boolean(scanner?.isTorchOn?.()));
+        drawZoom();
+        fitAim();
+    }
+
+    /** 인식 순간을 눈으로 알려준다 (소리·진동을 못 쓰는 창고에서도 보인다) */
+    function flash() {
+        if (el.hidden) return;
+        el.classList.add('is-hit');
+        clearTimeout(hitTimer);
+        hitTimer = setTimeout(() => el.classList.remove('is-hit'), 450);
     }
 
     torchBtn.addEventListener('click', async () => {
@@ -527,9 +573,67 @@ export function scanPreview(host) {
         sync();
     });
 
+    /**
+     * 줌을 적용한다.
+     *
+     * 🔑 `setZoomRaw` 는 초점이 안정될 때까지(300ms) 기다린 뒤에야 끝난다. 그동안 들어온
+     * 요청을 **버리면 손가락을 뗀 자리와 화면 배율이 어긋난다** - 버리지 않고 마지막 값만
+     * 남겨 두었다가 이어서 적용한다(중간 값은 어차피 지나가는 값이라 건너뛴다).
+     */
+    let zoomWant = null;
+    async function applyZoom(value) {
+        zoomWant = value;
+        if (zoomBusy) return;
+        zoomBusy = true;
+        try {
+            while (zoomWant != null) {
+                const v = zoomWant;
+                zoomWant = null;
+                await scanner?.setZoomRaw?.(v);
+                drawZoom();
+            }
+        } finally {
+            zoomBusy = false;   // 어떤 실패에도 잠기지 않는다 (잠기면 줌이 영영 안 먹는다)
+        }
+    }
+
+    zoomBox.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-z]');
+        if (btn) applyZoom(Number(btn.dataset.z));
+    });
+
+    /* 핀치 줌 - 버튼 단계 사이의 값을 손으로 맞춘다 (줌이 없는 기기에서는 아무 일도 없다) */
+    let pinch = 0;
+    let pinchBase = 1;
+    const span = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+
+    el.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 2 || !scanner?.canZoom?.()) return;
+        pinch = span(e.touches);
+        pinchBase = scanner.zoomValue();
+    }, { passive: true });
+
+    el.addEventListener('touchmove', (e) => {
+        if (!pinch || e.touches.length !== 2) return;
+        e.preventDefault();          // 화면 전체가 확대되는 기본 동작을 막는다
+        applyZoom(pinchBase * (span(e.touches) / pinch));
+    }, { passive: false });
+
+    const endPinch = () => {
+        pinch = 0;
+    };
+    el.addEventListener('touchend', endPinch);
+    el.addEventListener('touchcancel', endPinch);
+
+    video.addEventListener('loadedmetadata', fitAim);
+    // 🔑 프레임 크기가 바뀌면 다시 맞춘다 - 예산 초과로 해상도를 강등하면 가로세로비가
+    // 달라질 수 있고(4:3 기기), 그러면 점선이 디코더가 보는 자리와 어긋난다
+    video.addEventListener('resize', fitAim);
+    window.addEventListener('resize', fitAim);
+
     return {
         el,
-        video: el.querySelector('video'),
+        video,
         /** 이 프리뷰를 쓰는 스캐너를 알려준다 */
         bind(sc) {
             scanner = sc;
@@ -543,7 +647,10 @@ export function scanPreview(host) {
             sync();
         },
         sync,
+        flash,
         destroy() {
+            clearTimeout(hitTimer);
+            window.removeEventListener('resize', fitAim);
             el.remove();
         },
     };
@@ -596,6 +703,7 @@ export function scanBar(host, {
     async function handle(code) {
         const v = String(code ?? '').trim();
         if (!v || busy) return;
+        box.flash();        // 인식 순간을 프리뷰에서 눈으로 확인한다
         busy = true;
         try {
             await onSubmit?.(v);

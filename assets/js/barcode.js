@@ -46,12 +46,17 @@ function encode(text) {
 
 /**
  * Code128 바코드를 SVG 문자열로 만든다.
+ *
+ * 🔑 **기본 규격이 곧 라벨 규격이다.** 인식은 가장 가는 바가 카메라 이미지에서 몇
+ * 픽셀인가로 거의 결정되므로(경험칙 2px 이상), 모듈을 굵게 뽑는 것이 거리·작은 라벨
+ * 문제를 가장 확실하게 줄인다. 폭이 정해진 자리(인쇄 라벨·작업지시서)는 호출부에서
+ * `moduleWidth` 를 직접 지정한다 ([docs/testing.md](../../docs/testing.md) 참고).
  * @param {string} text 인코딩할 문자열
  * @param {{height?:number, moduleWidth?:number, showText?:boolean}} opt
  */
 export function code128Svg(text, opt = {}) {
     const height = opt.height ?? 70;
-    const mw = opt.moduleWidth ?? 2;      // 최소 모듈 굵기(px)
+    const mw = opt.moduleWidth ?? 3;      // 최소 모듈 굵기(px)
     const showText = opt.showText ?? true;
     const quiet = 10 * mw;                 // 좌우 여백 (스캔 성공률을 위해 필요)
     const textH = showText ? 18 : 0;
