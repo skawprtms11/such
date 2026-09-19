@@ -42,11 +42,11 @@ export async function drawJobs({ state, body, user, reload }) {
     <span class="field__label">시작예정일(까지)</span>
     <input type="date" id="pj-f-to" value="${esc(state.to)}">
   </label>
-  <label class="field" style="flex:0 0 120px">
+  <label class="field" style="flex:0 0 130px">
     <span class="field__label">진행상태</span>
     <select id="pj-f-status">${statusOptions(state.status)}</select>
   </label>
-  <label class="field" style="flex:1 1 160px;max-width:240px">
+  <label class="field" style="flex:1 1 180px;max-width:240px">
     <span class="field__label">문서번호 / 제품</span>
     <input type="text" id="pj-f-kw" placeholder="검색어 입력" value="${esc(state.keyword)}">
   </label>

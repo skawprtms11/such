@@ -378,8 +378,12 @@ input:focus, select:focus, textarea:focus {
 
 textarea { min-height: 84px; resize: vertical; }
 
-/* 월 선택은 내부 아이콘 때문에 기본 높이가 더 커진다. 텍스트 입력칸과 맞춘다 */
-input[type=month] { height: 38px; }
+/* 월·날짜 선택은 내부 아이콘 때문에 기본 높이가 더 커진다. 텍스트 입력칸·셀렉트와 맞춘다 */
+input[type=month], input[type=date] { height: 38px; }
+
+/* 툴바 안의 버튼은 입력칸(38px)과 같은 높이로 맞춘다 - 조회 버튼과 우측 동작 버튼이
+   날짜칸·셀렉트와 밑선이 어긋나 들쭉날쭉해 보이는 것을 막는다 (btn--sm 은 제외) */
+.toolbar .btn:not(.btn--sm) { height: 38px; padding-top: 0; padding-bottom: 0; }
 
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 12px 0; }
 .check input { width: auto; min-height: auto; }
@@ -2013,7 +2017,7 @@ table.grid.pc-items tr.pc-sum td {
 /* ── 작업캘린더 ── */
 
 .pc-nav { display: flex; align-items: center; gap: 6px; }
-.pc-month { font-size: 15px; min-width: 88px; text-align: center; }
+.pc-month { font-size: 15px; font-weight: 700; min-width: 88px; text-align: center; line-height: 38px; }
 
 .pc-cal {
     border: 1px solid var(--gray-200);
