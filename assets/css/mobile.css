@@ -1612,7 +1612,6 @@ button.m-pallet:disabled { cursor: default; }
 .m-chk:first-child { border-top: none; }
 .m-chk__box { flex: none; color: var(--m-gray-500); }
 .m-chk__text { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.m-chk__path { font-size: 11.5px; color: var(--m-gray-500); }
 .m-chk__title { font-size: 15px; font-weight: 600; }
 .m-chk__meta { font-size: 12px; color: var(--m-gray-500); }
 .m-chk.is-done .m-chk__box { color: var(--m-green); }
@@ -1620,15 +1619,16 @@ button.m-pallet:disabled { cursor: default; }
 .m-chk.is-locked { opacity: .55; }
 .m-chk .m-btn.is-on { color: var(--m-blue); }
 
-/* 일일체크리스트 - 업무구분 머리 → 업무항목 소제목 → 체크 줄 한 열. 완료는 접는다 */
-.m-dl-div { display: flex; align-items: center; gap: 8px; margin: 14px 2px 6px; font-size: 16px; font-weight: 800; }
-.m-dl-div:first-child { margin-top: 4px; }
-.m-dq-grp { margin: 6px 0 2px; font-size: 13px; font-weight: 700; color: var(--m-gray-700); }
+/* 일일체크리스트 - 등록 기준 3구획(일별 · 이번 주 · 이번 달) 카드 목록 */
+.m-cb-sec { display: flex; align-items: center; gap: 8px; margin: 14px 2px 6px; font-size: 16px; font-weight: 800; }
+.m-cb-sec:first-child { margin-top: 4px; }
 .m-chk__late { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--m-red); border-radius: 999px; color: var(--m-red); font-size: 10.5px; font-weight: 700; line-height: 15px; vertical-align: middle; }
-/* 전체 뷰에서 그 날짜의 대상이 아닌 줄 (조회 전용) */
-.m-chk__off { display: inline-block; margin-left: 6px; padding: 0 6px; border: 1px solid var(--m-gray-300); border-radius: 999px; color: var(--m-gray-500); font-size: 10.5px; font-weight: 700; line-height: 15px; vertical-align: middle; }
-.m-chk__path.is-sit { color: var(--m-amber); font-weight: 600; }
-.m-dq-fold { display: block; width: 100%; min-height: 40px; border: none; background: transparent; color: var(--m-gray-500); font: inherit; font-size: 13px; text-align: left; padding: 0 2px; }
+.m-cb__badge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; background: var(--m-green); color: #fff; font-size: 10.5px; font-weight: 700; line-height: 16px; vertical-align: middle; }
+.m-cb__desc { font-size: 12.5px; color: var(--m-gray-700); }
+/* 체크해도 카드는 사라지지 않는다 - 흐리게 남겨 누가 언제 했는지 보인다 */
+.m-cb.is-done { opacity: .6; }
+.m-cb__memo { margin-top: 6px; font-size: 13px; }
+.m-cb__memo.is-dirty { border-color: var(--m-amber); background: var(--m-amber-soft); }
 
 /* 업무프로세스 (보기 전용 스테퍼) */
 .m-fc { padding: 4px 0 12px; }
@@ -1656,32 +1656,6 @@ button.m-pallet:disabled { cursor: default; }
 .m-fc__fork-head { margin: 8px 0 2px; font-size: 12px; font-weight: 700; color: var(--m-blue); }
 .m-fc__fork .m-fc__step { border-width: 1px; border-color: var(--m-blue); padding: 6px 8px; }
 .m-fc__fork .m-fc__no { width: 20px; height: 20px; font-size: 11px; background: #fff; color: var(--m-blue); border: 1.5px dashed var(--m-blue); }
-
-/* 상황 칩 - 발생 전 점선 「발생」, 발생하면 주황 실선(누르면 시트) */
-.m-sits { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 0 8px; }
-.m-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    min-height: 36px;
-    padding: 0 10px;
-    border: 1px dashed var(--m-amber);
-    border-radius: 999px;
-    background: #fff;
-    color: var(--m-amber);
-    font: inherit;
-    font-size: 13px;
-    max-width: 100%;
-}
-.m-chip:disabled { border-color: var(--m-gray-300); color: var(--m-gray-500); }
-.m-chip__act { padding: 1px 7px; border-radius: 999px; background: var(--m-amber); color: #fff; font-size: 11px; }
-.m-chip.is-active { border-style: solid; background: var(--m-amber-soft); font-weight: 700; }
-.m-chip__label { white-space: nowrap; }
-.m-chip__note { flex: 1; min-width: 0; font-weight: 400; color: var(--m-gray-700); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-
-
-/* 상황 시트 안내 문단 (발생 시트 · 발생 해제 시트) */
-.m-sit__desc { margin: 0 0 8px; font-size: 13px; color: var(--m-gray-700); }
 
 /* ===== 유통가공 검수 (#/pcheck) ===== */
 

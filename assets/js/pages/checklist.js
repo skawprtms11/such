@@ -1,30 +1,27 @@
 /**
  * 업무체크리스트 화면 (셸) - 탭 전환 · 공유 상태 · 실시간 구독만 맡는다.
  *
- *   탭1 업무체크리스트 - **오늘 내가 빠뜨리면 안 되는 것**을 훑고 체크하는 목록.
- *                      「일일 | 전체」 세그먼트로 그 날짜 대상만 볼지 확인내용 전부를 볼지 고른다
+ *   탭1 일일체크리스트 - **오늘 내가 빠뜨리면 안 되는 것**을 훑고 체크하는 목록
  *                      (checklist/daily.js)
- *   탭2 업무프로세스   - 좌 업무구분 트리 · 중 흐름 도식 · 우 체크리스트 표의 세 칸 화면
+ *   탭2 업무프로세스   - 좌 업무구분 트리 · 중 흐름 도식 · 우 설명 표의 세 칸 화면
  *                      (checklist/process.js · flowview.js · form.js)
+ *   탭3 체크리스트 등록 - 독립 체크항목을 인라인 표로 등록·수정 (checklist/register.js)
  *
- * 주기·담당자 상속·상황 발생·어제 미체크 판정은 화면이 하지 않는다. db.checklistTable() ·
- * db.canCheckItem() 이 준 결과만 그린다 (docs/checklist.md). 앱(mobile/screens/checklist.js ·
- * process.js)도 같다.
+ * 주기·담당자 상속·상황 발생·미체크 판정은 화면이 하지 않는다. db.js 가
+ * 준 결과만 그린다 (docs/checklist.md). 앱(mobile/screens/checklist.js · process.js)도 같다.
  */
 import { can } from '../auth.js';
 import * as db from '../db.js';
 import { esc, today } from '../util.js';
 import { drawToday } from './checklist/daily.js';
 import { disposeManage, drawManage } from './checklist/process.js';
+import { drawRegister } from './checklist/register.js';
 
 /** 화면 상태 - 다른 화면에 다녀와도 유지한다 */
 const state = {
     tab: 'today',
     date: today(),
-    assignee: 'me',                    // 'me' | 'all' | 사용자 id
-    scope: 'daily',                    // 탭1: 'daily' 그 날짜 대상만 | 'all' 확인내용 전부
-    showDone: false,                   // 탭1: 완료 줄을 펼쳐 보이기 (세그먼트 「전체」)
-    openDone: new Set(),               // 탭1: 「완료 N건 보기」 로 펼쳐 둔 업무항목 id
+    assignee: 'all',                   // 탭1 담당자 필터: 'all' | 'me' | 사용자 id (권한자만)
     division: null,                    // 탭2: 보고 있는 업무구분 id ('' = 미분류)
     group: null,                       // 탭2: 보고 있는 업무항목 id
     edit: false,                       // 탭2: 편집 모드 (도구 표시)
@@ -44,6 +41,7 @@ export async function render(root, { user }) {
     const TABS = [
         { key: 'today', label: '일일체크리스트' },
         ...(canManage ? [{ key: 'manage', label: '업무프로세스' }] : []),
+        { key: 'register', label: '체크리스트 등록' },
     ];
 
     root.innerHTML = `
@@ -78,6 +76,12 @@ export async function render(root, { user }) {
         if (state.tab === 'manage') {
             headSum.textContent = '';
             await drawManage({ state, body, user, users, reload });
+        } else if (state.tab === 'register') {
+            // 🔑 업무프로세스 탭을 떠나면 문서 리스너(연결 모드 Esc·인쇄)를 걷는다
+            state.link = null;
+            disposeManage();
+            headSum.textContent = '';
+            await drawRegister({ state, body, user, users, canManage, reload });
         } else {
             // 🔑 업무프로세스 탭을 떠나면 문서 리스너(연결 모드 Esc·인쇄)를 걷는다
             state.link = null;
@@ -94,8 +98,9 @@ export async function render(root, { user }) {
         const el = document.activeElement;
         if (el && body.contains(el) && el.matches('input, textarea, select')) return;
         if (document.querySelector('.modal-back')) return;
-        // 빠른 추가·단계 입력칸 · 간선 팝오버 · 아직 저장하지 않은 우측 설명 표의 입력값
-        const editing = '.pm-quick__form, .pm-port--form, .pm-epop, .pm-side .is-dirty';
+        // 빠른 추가·단계 입력칸 · 간선 팝오버 · 카드 우클릭 메뉴 · 아직 저장하지 않은 설명 표
+        const editing = '.pm-quick__form, .pm-port--form, .pm-epop, .pm-menu,'
+            + ' .pm-side .is-dirty, .cl-reg .is-dirty, .cb .is-dirty';
         if (body.querySelector(editing)) return;
         reload();
     }

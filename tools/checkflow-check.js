@@ -12,7 +12,8 @@
  *
  *   P1 카드 쌍 교차 0            P2 간선이 카드 내부를 지나지 않음   P3 간선 y 단조 비감소
  *   P4 같은 층 카드의 x 대역 서로소 + 층끼리 y 대역 서로소
- *   P5 x 는 `col * (lane + gapX)` 이산값 (들여쓰기 항이 없다)
+ *   P5 x 는 `col * (lane + gapX)` + **반열 이동**(T자 · 층에 혼자인 카드만) 이산값
+ *       (들여쓰기 항이 없다)
  *   P6 width/height·레인 폭이 실제 최대와 맞는다
  *   P7 노드 수 = 박스 수 · 간선 수 = `edges` 행 수 (그릴 수 있는 행)
  *   P8 부착 - 출발 = 카드 바닥 · 도착 = 카드 천장 · 꺾임은 층 사이 틈 안 · 경로는 `M·V·H` 만
@@ -296,11 +297,21 @@ function checkOne(tag, nodes, edges, opts) {
         if (overlap(a[0], a[1], b[0], b[1]) > 0) note('P4', `${tag} 층 y 대역 겹침 ${a} x ${b}`);
     }));
 
-    /* P5 x 이산값 - 들여쓰기 항이 없다 */
+    /* P5 x 이산값 - 열 좌표 + **반열 이동(T자)** 뿐이다 (들여쓰기 항이 없다)
+       🔑 반열까지 넓힌 이유: 갈래 부모를 자식 열 범위의 **가운데 위**에 놓는 T자 배치가
+       `col * pitch + k * (pitch / 2)` 를 만든다 (checkflow.layoutDag). 그래도 카드 폭·층 천장은
+       그대로여야 하고, 이동은 ① 반열의 정수배 ② 오른쪽으로만 ③ **그 층에 카드가 하나뿐일 때만**
+       허용한다 - 옆에 카드가 있는 층에서 옮기면 x 대역이 겹치거나(P4) 지나가는 선을 삼킨다(P2).
+       세 조건으로 조여 두어 「임의의 들여쓰기」는 여전히 실패로 잡힌다 */
+    const half = Math.max(1, Math.round(pitch / 2));
     layers.forEach((row, L) => row.forEach((id) => {
         const b = boxes[id];
-        if (b.x !== cols[id] * pitch || b.x % pitch !== 0 || b.w !== lane) {
-            note('P5', `${tag} ${id} x${b.x} col${cols[id]} pitch${pitch}`);
+        const moved = b.x - cols[id] * pitch;
+        if (moved < 0 || moved % half !== 0 || b.w !== lane) {
+            note('P5', `${tag} ${id} x${b.x} col${cols[id]} pitch${pitch} 이동${moved}`);
+        }
+        if (moved && row.length > 1) {
+            note('P5', `${tag} ${id} 층${L + 1} 에 카드가 ${row.length}개인데 이동${moved}`);
         }
         if (b.y !== band[L][0]) note('P5', `${tag} ${id} y${b.y} != 층 천장 ${band[L][0]}`);
     }));
@@ -523,6 +534,17 @@ function checkExample() {
         }
     });
     if (dag.dummies !== 2) note('EX', `더미 ${dag.dummies} (기대 2 - p7→p8 이 5·6층을 예약)`);
+    /* 🔑 T자 - 갈래 부모 ③(p3) 은 자식 자리(4.1 열 0 · 4.2 가 내려오는 더미 열 1) 가운데인
+       **반열**로 가고, 그 위 순차 줄기(①②)도 따라 올라온다. 층에 둘인 4.1 은 제자리다 */
+    const halfX = (240 + 40) / 2;
+    ['p1', 'p2', 'p3'].forEach((id) => {
+        if (dag.boxes[id].x !== halfX) {
+            note('EX', `T자 ${id} x${dag.boxes[id].x} (기대 ${halfX} · 자식 열 범위 가운데)`);
+        }
+    });
+    if (dag.boxes.p4.x !== 0) {
+        note('EX', `T자 p4 x${dag.boxes.p4.x} (기대 0 · 층에 둘이라 옮기지 않는다)`);
+    }
     if (dag.width !== 240 * 2 + 40 + DAG_SIZE.pad) note('EX', `폭 ${dag.width} (기대 2열)`);
     const long = dag.edges.find((e) => e.from === 'p7' && e.to === 'p8');
     const px = points(long.path).map((p) => p[0]);

@@ -249,9 +249,12 @@ db.getLoadGroup(id)     // { head, rows, pallets }
 
 업무체크리스트(자세한 내용은 [checklist.md](checklist.md)):
 `listChecklistItems` `checklistTree` `createChecklistItem` `updateChecklistItem`
-`moveChecklistItem` `deleteChecklistItem` / `dueItems` `listChecks` `setCheck`
-`checklistSummary` `canManageChecklist` `canCheckItem`
-(주기 판정은 `dueItems` 한 곳에만 둔다)
+`moveChecklistItem` `deleteChecklistItem` `checklistCategories` /
+`checklistBoard` `listChecks` `setCheck` `setCheckMemo` /
+`periodStart` `prevPeriodStart` `canManageChecklist` `canCheckItem`
+(기간 판정은 `periodStart` · `prevPeriodStart` 두 곳에만 둔다.
+일일체크리스트가 그리는 것은 `checklistBoard` 하나이고, 독립 체크항목은 `daily` 플래그를
+쓰지 않는다 — 보드는 `active` 만 본다)
 
 ### 실시간 갱신
 

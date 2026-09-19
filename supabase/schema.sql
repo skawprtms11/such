@@ -369,7 +369,8 @@ create table if not exists public.checklist_items (
     created_by_name text        not null default '',
     created_at      timestamptz not null default now(),
     updated_at      timestamptz,
-    deleted_at      timestamptz                               -- 삭제 시각 (있으면 목록에서 제외)
+    deleted_at      timestamptz,                              -- 삭제 시각 (있으면 목록에서 제외)
+    legacy_parent_id text                                      -- 독립 체크항목 이행 전 parent_id (롤백용)
 );
 
 comment on table public.checklist_items is '업무체크리스트 흐름 트리(프로세스·상황·체크항목). 등록·수정·삭제는 manageChecklist 권한';
@@ -394,6 +395,8 @@ alter table public.checklist_items add constraint checklist_items_child_flow_che
 alter table public.checklist_items add column if not exists daily boolean not null default false;
 -- 부담당자(여러 명) - 정담당자와 한 묶음으로 상속된다 (db.js effectiveAssignee · 아래 checklist_can_check)
 alter table public.checklist_items add column if not exists sub_assignees jsonb not null default '[]'::jsonb;
+-- 독립 체크항목 이행 전 parent_id 백업 (롤백용). 값이 있으면 이미 이행된 항목이라 이행 블록을 건너뛴다
+alter table public.checklist_items add column if not exists legacy_parent_id text;
 update public.checklist_items set daily = true
  where kind in ('check', 'process') and daily = false and updated_at is null
    and created_at < '2026-09-09T02:00:00Z';
@@ -464,6 +467,159 @@ create or replace function public.checklist_can_check(p_item text)
                     where (s->>'id')::uuid = auth.uid())
 $$;
 
+-- ═══════════════ 이행: 프로세스 아래 체크항목 → 독립 체크항목 (기존 구축분 1회 실행) ═══════════════
+-- 실행은 부장이 결과를 보면서 한다. dev-team 커밋에는 SQL 만 포함하고 여기서 자동 실행하지 않는다.
+-- 대상: kind='check' · parent_id is not null · deleted_at is null · legacy_parent_id is null(멱등 - 이미
+--       이행된 항목은 legacy_parent_id 가 채워져 있어 다시 안 걸린다) ·
+--       **상황(kind='situation')과 그 하위 전체 제외** (상황 발생 시 같이 끼어드는 항목이라 트리에 둔다)
+-- 순서: ⓪ 백업표 → ① 사전 확인 → ② 담당자 bake → ③ category 채우고 parent_id 끊기 → ④ 사후 확인
+--       필요하면 ⑤ 롤백(백업표에서 복원)
+-- 🔑 도우미 함수를 만들지 않는다. 지우는 것을 잊으면 스키마에 남으므로 세션 temp 표로 대상을 고정한다.
+
+-- 상황과 그 하위 전체 - 제외 집합
+create temp table _cl_sit as
+with recursive down as (
+    select id from public.checklist_items where kind = 'situation'
+    union all
+    select i.id from public.checklist_items i join down d on i.parent_id = d.id
+)
+select id from down;
+
+-- 이행 대상 - 한 번 만들어 모든 단계가 같은 집합을 본다 (③ 이 parent_id 를 끊어도 흔들리지 않는다)
+create temp table _cl_tgt as
+select c.id, c.parent_id, c.assignee_id, c.sub_assignees
+  from public.checklist_items c
+ where c.kind = 'check'
+   and c.parent_id is not null
+   and c.deleted_at is null
+   and c.legacy_parent_id is null
+   and c.id not in (select id from _cl_sit);
+
+-- ⓪ 백업표 - bake 전에 만든다. 날짜는 실행일로 바꾼다 (⑤ 롤백이 이 표에서 복원한다)
+create table if not exists public._cl_mig_bak_20260918 as
+select c.id, c.parent_id, c.category, c.assignee_id, c.assignee_name, c.sub_assignees
+  from public.checklist_items c
+  join _cl_tgt t on t.id = c.id;
+
+-- ① 사전 확인 - 대상 · 자기 담당 없음(bake 대상) · 상황 하위라 제외된 건 · group 조상이 없는 건
+select
+    (select count(*) from _cl_tgt)                                                as 대상건수,
+    (select count(*) from _cl_tgt t
+      where t.assignee_id is null
+        and jsonb_array_length(coalesce(t.sub_assignees, '[]'::jsonb)) = 0)       as 자기담당없음,
+    (select count(*) from public.checklist_items c
+      where c.kind = 'check' and c.parent_id is not null and c.deleted_at is null
+        and c.legacy_parent_id is null and c.id in (select id from _cl_sit))      as 상황하위제외,
+    (select count(*) from _cl_tgt t
+      left join lateral (
+          with recursive up as (
+              select i.id, i.parent_id, i.kind, i.title, 0 as depth
+                from public.checklist_items i where i.id = t.parent_id
+              union all
+              select i.id, i.parent_id, i.kind, i.title, up.depth + 1
+                from public.checklist_items i join up on i.id = up.parent_id
+               where up.depth < 50
+          )
+          select title from up where kind = 'group' order by depth limit 1
+      ) g on true
+      where g.title is null)                                                     as group조상없음;
+
+-- ② 담당자 bake 🔑 - **정·부가 모두 비어 있는 항목만** 고친다.
+--    부담당자만 지정된 항목까지 덮어쓰면 그 항목의 sub_assignees 가 상위 값으로 날아간다.
+--    상위 체인에서 정 또는 부가 있는 **가장 가까운** 항목의 담당 묶음(정·부 함께)을 복사한다.
+with recursive up as (
+    select t.id as target_id, i.id, i.parent_id,
+           i.assignee_id, i.assignee_name, i.sub_assignees, 0 as depth
+      from _cl_tgt t
+      join public.checklist_items i on i.id = t.parent_id
+     where t.assignee_id is null
+       and jsonb_array_length(coalesce(t.sub_assignees, '[]'::jsonb)) = 0
+    union all
+    select up.target_id, i.id, i.parent_id,
+           i.assignee_id, i.assignee_name, i.sub_assignees, up.depth + 1
+      from public.checklist_items i
+      join up on i.id = up.parent_id
+     where up.depth < 50
+), picked as (
+    select distinct on (target_id) target_id, assignee_id, assignee_name, sub_assignees
+      from up
+     where assignee_id is not null
+        or jsonb_array_length(coalesce(sub_assignees, '[]'::jsonb)) > 0
+     order by target_id, depth
+)
+update public.checklist_items t
+   set assignee_id = p.assignee_id,
+       assignee_name = p.assignee_name,
+       sub_assignees = coalesce(p.sub_assignees, '[]'::jsonb)
+  from picked p
+ where t.id = p.target_id;
+
+-- ③ category = 가장 가까운 group 조상의 title, legacy_parent_id = 원래 parent_id, parent_id = null
+--    🔑 group 조상이 없어도 이행한다 (없으면 기존 category 를 그대로 둔다). 여기서 빠지면
+--    트리에서 끊기지 않아 보드에도 안 나오고 업무프로세스에도 남는 유령 항목이 된다.
+--    (서버가 lateral 안의 recursive 참조를 거부하면 ① 과 같은 재귀로 group title 을 temp 표에
+--     먼저 담고 left join 으로 바꿔 쓴다 - 결과는 같다)
+update public.checklist_items t
+   set legacy_parent_id = t.parent_id,
+       category = coalesce(g.title, t.category),
+       parent_id = null
+  from _cl_tgt x
+  left join lateral (
+      with recursive up as (
+          select i.id, i.parent_id, i.kind, i.title, 0 as depth
+            from public.checklist_items i where i.id = x.parent_id
+          union all
+          select i.id, i.parent_id, i.kind, i.title, up.depth + 1
+            from public.checklist_items i join up on i.id = up.parent_id
+           where up.depth < 50
+      )
+      select title from up where kind = 'group' order by depth limit 1
+  ) g on true
+ where t.id = x.id;
+
+-- ④ 사후 확인 - 이행된 독립 체크항목 수 · 트리에 남은 체크항목 수(상황 하위 - 남아 있어야 정상)
+select
+    count(*) filter (where kind = 'check' and parent_id is null and legacy_parent_id is not null) as 이행됨,
+    count(*) filter (where kind = 'check' and parent_id is not null)                              as 트리에_남은_체크항목
+  from public.checklist_items where deleted_at is null;
+
+-- ④-2 옛 체크 기록 점검 - 주·월 항목의 기록은 **기간 시작일**(주=월요일, 월=1일)에 있어야 한다.
+--     보드(`checklistBoard`)가 기간 시작일로만 찾으므로 어긋난 기록은 미체크로 보인다.
+select ch.item_id, i.title, i.cycle, ch.check_date
+  from public.checklist_checks ch
+  join public.checklist_items i on i.id = ch.item_id
+ where i.cycle in ('weekly', 'monthly')
+   and ch.check_date <> case i.cycle
+       when 'weekly' then ch.check_date - (extract(isodow from ch.check_date)::int - 1)
+       else date_trunc('month', ch.check_date)::date end
+ order by i.cycle, ch.check_date;
+
+-- ④-3 (어긋난 기록이 있을 때만) 기간 시작일로 정규화.
+--     ⚠️ unique(item_id, check_date) 가 있어 같은 기간에 두 건이 있으면 충돌한다.
+--     먼저 늦게 찍힌 중복을 지우고 나서 옮긴다.
+-- delete from public.checklist_checks ch
+--  using public.checklist_checks o, public.checklist_items i
+--  where i.id = ch.item_id and i.cycle in ('weekly', 'monthly') and o.item_id = ch.item_id
+--    and o.id <> ch.id and ch.checked_at < o.checked_at
+--    and date_trunc('month', o.check_date) = date_trunc('month', ch.check_date);
+-- update public.checklist_checks ch
+--    set check_date = case i.cycle
+--        when 'weekly' then ch.check_date - (extract(isodow from ch.check_date)::int - 1)
+--        else date_trunc('month', ch.check_date)::date end
+--   from public.checklist_items i
+--  where i.id = ch.item_id and i.cycle in ('weekly', 'monthly');
+
+drop table _cl_tgt;
+drop table _cl_sit;
+
+-- ⑤ 롤백 (필요할 때만 실행) - 백업표에서 parent_id·category·담당자를 그대로 되돌린다
+-- update public.checklist_items t
+--    set parent_id = b.parent_id, legacy_parent_id = null, category = b.category,
+--        assignee_id = b.assignee_id, assignee_name = b.assignee_name,
+--        sub_assignees = coalesce(b.sub_assignees, '[]'::jsonb)
+--   from public._cl_mig_bak_20260918 b
+--  where t.id = b.id;
+
 create index if not exists checklist_items_cat_idx
     on public.checklist_items (category, sort_order);
 create index if not exists checklist_items_parent_idx on public.checklist_items (parent_id);
@@ -483,9 +639,13 @@ create table if not exists public.checklist_checks (
     memo            text        not null default '',
     checked_by      uuid        references public.profiles (id),
     checked_by_name text        not null default '',
-    checked_at      timestamptz not null default now(),
+    checked_at      timestamptz,                              -- null = 미체크(메모만 있는 행)
     unique (item_id, check_date)
 );
+
+-- 기존 구축분: 메모만 남기고 체크는 안 한 행을 표현하려면 checked_at 이 비어 있어야 한다
+alter table public.checklist_checks alter column checked_at drop not null;
+alter table public.checklist_checks alter column checked_at drop default;
 
 create index if not exists checklist_checks_date_idx on public.checklist_checks (check_date);
 
@@ -814,15 +974,21 @@ drop policy if exists checklist_checks_select on public.checklist_checks;
 create policy checklist_checks_select on public.checklist_checks for select to authenticated
     using (true);
 
+-- 🔑 checked_by is null 을 함께 허용한다 - 체크는 안 하고 메모만 남긴 행(db.js setCheckMemo)이
+--    checked_by 를 비워 넣는다. 이걸 막으면 운영에서 메모 저장이 RLS 로 거부된다.
 drop policy if exists checklist_checks_insert on public.checklist_checks;
 create policy checklist_checks_insert on public.checklist_checks for insert to authenticated
-    with check (checked_by = auth.uid() and public.checklist_can_check(item_id));
+    with check ((checked_by = auth.uid() or checked_by is null)
+                and public.checklist_can_check(item_id));
 
--- 메모만 고친다 (체크한 사람·날짜는 바꾸지 않는다)
+-- 메모 수정과 **체크 해제**가 지나간다. 체크 해제는 메모가 남은 행의 checked_by 를 null 로 바꾸므로
+-- with check 에서도 checked_by is null 을 허용해야 한다 (권한은 checklist_can_check 가 본다).
 drop policy if exists checklist_checks_update on public.checklist_checks;
 create policy checklist_checks_update on public.checklist_checks for update to authenticated
-    using (checked_by = auth.uid() or public.can_manage_checklist())
-    with check (checked_by = auth.uid() or public.can_manage_checklist());
+    using (public.can_manage_checklist() or checked_by = auth.uid()
+           or (checked_by is null and public.checklist_can_check(item_id)))
+    with check (public.can_manage_checklist() or checked_by = auth.uid()
+                or (checked_by is null and public.checklist_can_check(item_id)));
 
 drop policy if exists checklist_checks_delete on public.checklist_checks;
 create policy checklist_checks_delete on public.checklist_checks for delete to authenticated

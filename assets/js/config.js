@@ -382,6 +382,17 @@ export const CHECK_CYCLES = {
     [CHECK_CYCLE.ADHOC]: '수시',
 };
 
+/**
+ * 등록 기준 표시 문구 🔑 - 독립 체크항목(일일체크리스트·등록 탭)이 쓰는 주기 3종.
+ * 수시(adhoc)는 없다 - 기간 개념이 없어 `db.checklistBoard` 가 다루지 않는다.
+ * 요일·일자를 붙이지 않는 것도 일부러다 - 독립 항목은 그 기간(주·달) 안이면 언제든 체크한다.
+ */
+export const BOARD_CYCLES = {
+    [CHECK_CYCLE.DAILY]: '일별',
+    [CHECK_CYCLE.WEEKLY]: '주차별',
+    [CHECK_CYCLE.MONTHLY]: '월별',
+};
+
 /** 요일 - 배열 순서가 Date.getDay() 값(0=일)과 같다 */
 export const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
@@ -426,7 +437,7 @@ export const CHECK_KINDS = {
 
 /**
  * 종류별로 둘 수 있는 하위 종류. 키 `root` 는 최상위(부모 없음)다.
- *   최상위    : 업무구분만 (사용자가 「업무구분 추가」로 만든다)
+ *   최상위    : 업무구분(트리) · 체크항목(독립 - 일일체크리스트 전용, parent_id null)
  *   업무구분  : 업무항목
  *   업무항목  : 프로세스(업무 흐름) · 체크항목(흐름 없는 단독 업무)
  *   프로세스  : 체크항목 · 상황
@@ -438,7 +449,7 @@ export const CHECK_KINDS = {
  * (상황 아래 대응 프로세스는 그대로 둔다. 상황은 그날 생긴 일이라 흐름과 층이 다르다)
  */
 export const CHECK_KIND_CHILDREN = {
-    root: [CHECK_KIND.DIVISION],
+    root: [CHECK_KIND.DIVISION, CHECK_KIND.CHECK],
     [CHECK_KIND.DIVISION]: [CHECK_KIND.GROUP],
     [CHECK_KIND.GROUP]: [CHECK_KIND.PROCESS, CHECK_KIND.CHECK],
     [CHECK_KIND.PROCESS]: [CHECK_KIND.CHECK, CHECK_KIND.SITUATION],

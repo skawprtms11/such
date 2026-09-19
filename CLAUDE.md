@@ -21,7 +21,7 @@
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |
-| 업무체크리스트 | [docs/checklist.md](docs/checklist.md) | `assets/js/pages/checklist.js` | `#/checklist` | `#/checklist` 일일체크리스트 · `#/process` 업무프로세스 보기 전용 (상단바 메뉴) |
+| 업무체크리스트 | [docs/checklist.md](docs/checklist.md) | `assets/js/pages/checklist.js` | `#/checklist` (탭 3개 — 일일체크리스트 · 업무프로세스 · 체크리스트 등록) | `#/checklist` 일일체크리스트(등록 기준 3구획) · `#/process` 업무프로세스 보기 전용 (상단바 메뉴). **등록 탭은 웹에만 있다** |
 | 사용자관리 | [docs/users.md](docs/users.md) | `assets/js/pages/users.js` | `#/users` | — (앱에 없음) |
 
 **모바일 앱 셸(`m.html`)은 화면 코드를 웹과 공유하지 않는 별도 층이다.**
@@ -145,7 +145,7 @@ thefurerap/
 │     ├─ barcode.js      Code128 바코드 생성 (SVG)
 │     ├─ util.js          날짜·숫자 포맷, 모달, 토스트, CSV 다운로드
 │     ├─ pages/           웹 화면 모듈
-│     │  ├─ checklist/    업무체크리스트 화면 분할 (common·daily·process·flowview·form)
+│     │  ├─ checklist/    업무체크리스트 화면 분할 (common·daily·register·process·flowview·form)
 │     │  └─ processing/   유통가공작업 화면 분할 (common·jobs·jobform·calendar·master·doc)
 │     └─ mobile/          모바일 앱 화면 층 (docs/mobile.md) — pages/ 와 서로 import 하지 않는다
 │        ├─ app.js        앱 셸 · 해시 라우터 · 하단 탭 · 상단바 메뉴(≡)
@@ -341,13 +341,15 @@ db.groupKeyOf(o)   //  o.rep_no || o.base_no || o.order_no   ← 상차 단계 �
 | `createIssue` 이슈 등록 | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `closeOrder` 출고 완료처리 | ✅ | ✅ | ❌ | ❌ | ❌ |
 | `manageNotice` 공지 등록·수정·삭제 | ✅ | ✅ | ❌ | ❌ | ❌ |
-| `manageChecklist` 업무프로세스 편집 | ✅ | ✅ | ✅ | ❌ | ❌ |
+| `manageChecklist` 업무프로세스 편집 · 체크리스트 등록 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `manageProcessing` 유통가공 작업·마스터 등록·문서생성 | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `manageUsers` 사용자 권한 변경 | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 **현장작업자**는 협력사 소속으로 앱만 쓴다. 출고주문처리·상차리스트는 전부 처리하고,
 주문처리현황·이슈등록·공지사항은 조회만 한다 (공지 **댓글은 쓸 수 있다**).
 업무체크리스트는 **본인이 담당(상속 포함)인 항목만** 체크한다 (업무프로세스 편집은 못 한다).
+🔑 **일일체크리스트의 「전체 보기」(담당자 필터)도 `manageChecklist` 권한이 있어야 한다.**
+권한이 없으면 `db.checklistBoard()` 가 본인 담당(정·부) + 공통 항목만 준다.
 🔑 **유통가공은 등록 권한(`manageProcessing`)과 검수 권한(`updateStatus`)이 다른 축이다.**
 화주관리자는 웹에서 작업을 등록하지만 창고에 없어 검수를 하지 않고, 현장작업자는 등록은 못 하지만
 앱에서 사진을 찍는 사람이다. 판정은 `db.canCheckProcessing(user)` 한 곳이다
@@ -422,8 +424,8 @@ pages/*.js  →  db.js  →  store.js  →  localStorage  (VITE_DATA_SOURCE=mock
 | `issue_comments` | 이슈 댓글 | `issue_id` `parent_id`(대댓글) `content` `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제) |
 | `notices` | 공지사항 | `title` `content` `important`(중요공지 - 목록 상단 고정) `created_by` `created_by_name` `updated_at`(수정됨) `deleted_at`(삭제 - soft delete) |
 | `notice_comments` | 공지 댓글 | `issue_comments` 와 같은 구조(`notice_id` 기준). **등록은 모두, 수정·삭제는 본인 또는 관리자** |
-| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(옛 흐름 모델 · **쓰지 않는다**) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order`(소유 순서 · **흐름 순서는 `checklist_edges`**) `active` `daily`(일일체크리스트 포함) `deleted_at`(soft delete) |
-| `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date` `memo` `checked_by` `checked_by_name` `checked_at` · **`unique(item_id, check_date)`** |
+| `checklist_items` | 업무체크리스트 흐름(트리 · 업무구분 → 업무항목 → 프로세스) | `category`(업무항목 이름 · 옛 컬럼) `parent_id`(상위 항목 · **없으면 최상위** — `kind='check'` 이면 일일체크리스트에 나오는 독립 체크항목이다) `kind`(division 업무구분 / group 업무항목 / process 프로세스 / situation 상황 / check 체크항목) `child_flow`(옛 흐름 모델 · **쓰지 않는다**) `title` `description` `cycle`(daily/weekly/monthly/adhoc) `weekday`(0=일) `monthday`(1~31, 말일 보정) `assignee_id` `assignee_name`(정담당자) `sub_assignees`(부담당자 여러 명 `[{id,name}]`) `sort_order`(소유 순서 · **흐름 순서는 `checklist_edges`**) `active` `daily`(옛 플래그 · 독립 체크항목에는 뜻이 없다) `legacy_parent_id`(독립 체크항목으로 옮기기 전 부모 · 되돌리기용) `deleted_at`(soft delete) |
+| `checklist_checks` | 체크 기록 (상황 노드면 발생 기록) | `item_id` `check_date`(**기간 시작일로 정규화** — 주는 월요일, 월은 1일 · `db.periodStart`) `memo`(특이사항) `checked_by` `checked_by_name` `checked_at`(**nullable** — 비어 있으면 체크 없이 특이사항만 적은 줄) · **`unique(item_id, check_date)`** |
 | `checklist_edges` | 업무 흐름 간선 (업무프로세스 단계 순서의 **유일한 출처** · 갈래·합류) | `group_id`(업무항목) `from_id`(null=흐름의 시작) `to_id` `label`(조건) `sort_order`(갈래 좌→우) |
 | `checklist_notes` | 단계 설명 표 (구분·내용·비고) | `item_id`(프로세스·업무항목·상황) `label` `content` `remark` `sort_order` · ⚠️ 하드 삭제 |
 | `process_masters` | 유통가공 작업마스터 (제품별 구성품 BOM · docs/processing.md) | `work_type`(라벨/해체/세트) `product_code` `product_name` `created_by` `created_by_name` `updated_at` `deleted_at`(soft delete) · **`unique(product_code) where deleted_at is null`** |
