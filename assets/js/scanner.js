@@ -45,11 +45,19 @@ export const TUNE = {
     downSize: { width: 1280, height: 720 },
     /**
      * 한 프레임에서 시도할 ROI (가로, 세로 비율) - 순서대로 보고 **첫 성공에 멈춘다**.
-     * ⚠️ 가로는 0.72 아래로 자르지 않는다 - Code128 은 좌우 여백(quiet zone)이 잘리면
-     * 디코딩이 실패한다. 1D 는 스캔라인 하나면 되므로 줄이려면 세로를 줄인다.
+     * ⚠️ `kind` 가 없으면 1D 다. 1D 의 가로는 0.72 아래로 자르지 않는다 - Code128 은 좌우
+     * 여백(quiet zone)이 잘리면 디코딩이 실패한다. 줄이려면 세로를 줄인다.
+     * 🔑 `kind: '2d'` 는 **QR 전용 정사각 ROI** 다 (하이브리드 라벨). 가로 하한을 받지 않아
+     * 화면 가운데만 잘라 볼 수 있고, 그만큼 주변 글자·다른 라벨이 빠진다.
      */
-    roiNative: [{ w: 1, h: 1 }, { w: 1, h: 0.45 }, { w: 0.8, h: 0.6 }],
-    roiZxing: [{ w: 1, h: 0.45 }, { w: 1, h: 0.22 }, { w: 0.8, h: 0.6 }, { w: 1, h: 1 }],
+    roiNative: [
+        { w: 1, h: 1 }, { w: 1, h: 0.45 },
+        { w: 0.6, h: 0.6, kind: '2d' }, { w: 0.8, h: 0.6 },
+    ],
+    roiZxing: [
+        { w: 1, h: 0.45 }, { w: 1, h: 0.22 },
+        { w: 0.6, h: 0.6, kind: '2d' }, { w: 0.8, h: 0.6 }, { w: 1, h: 1 },
+    ],
     /** 내장 인식기 경로의 프레임당 디코딩 예산(ms) - 8fps 이상을 지킨다 */
     budgetNativeMs: 120,
     /** ZXing 경로의 프레임당 디코딩 예산(ms) - iOS 는 1회가 100~400ms 다 */
@@ -105,8 +113,12 @@ export const TUNE = {
 };
 
 const FORMATS = ['code_128', 'code_39', 'ean_13', 'qr_code', 'codabar', 'itf'];
-/** 현장에서 실제로 쓰는 포맷 - 1순위 패스는 이것 하나만 본다 (빠르고 오인식이 적다) */
-const MAIN_FORMAT = 'code_128';
+/**
+ * 현장에서 실제로 쓰는 포맷 - 1순위 패스는 이 둘만 본다 (빠르고 오인식이 적다).
+ * 🔑 우리 라벨은 **하이브리드**다 - 같은 번호를 QR 과 Code128 로 나란히 찍는다.
+ * 휴대폰 카메라는 QR 쪽이 훨씬 잘 붙으므로 **QR 을 앞에** 둔다.
+ */
+const MAIN_FORMATS = ['qr_code', 'code_128'];
 
 /** 내장 BarcodeDetector 를 쓸 수 있는지 */
 export function hasNativeDetector() {
@@ -266,8 +278,8 @@ async function selfTest(detector, canceled) {
 
 /**
  * 내장 BarcodeDetector 인식기.
- * 🔑 디코더를 **둘** 만든다 - 1순위는 CODE_128 전용(포맷을 줄이면 후보 탐색이 줄어 빠르다),
- * 2순위부터 전 포맷. 파렛트·로케이션 라벨은 모두 Code128 이라 1순위에서 거의 끝난다.
+ * 🔑 디코더를 **둘** 만든다 - 1순위는 QR + CODE_128 전용(포맷을 줄이면 후보 탐색이 줄어 빠르다),
+ * 2순위부터 전 포맷. 상차라벨·작업지시서가 이 둘을 함께 찍으므로 1순위에서 거의 끝난다.
  * @param {Function} [canceled] 세대 토큰 (자가 진단 중 이탈을 확인한다)
  * @returns {Promise<{native:boolean, decode:Function}|null>} 지원하지 않으면 null
  */
@@ -279,7 +291,8 @@ async function nativeReader(canceled) {
         const supported = await window.BarcodeDetector.getSupportedFormats?.() ?? FORMATS;
         const all = FORMATS.filter((f) => supported.includes(f));
         if (!all.length) return null;
-        const narrow = all.includes(MAIN_FORMAT) ? [MAIN_FORMAT] : all;
+        const main = MAIN_FORMATS.filter((f) => all.includes(f));
+        const narrow = main.length ? main : all;
         one = new window.BarcodeDetector({ formats: narrow });
         wide = narrow.length === all.length
             ? one
@@ -313,7 +326,7 @@ async function nativeReader(canceled) {
 
 /**
  * ZXing 인식기 (내장 기능이 없는 기기 전용).
- * 내장 경로와 같이 **1순위는 CODE_128 전용**, 2순위부터 전 포맷을 본다.
+ * 내장 경로와 같이 **1순위는 QR + CODE_128 전용**, 2순위부터 전 포맷을 본다.
  * `TRY_HARDER` 는 양쪽 모두 켠다 - 후보 포맷이 하나뿐인 1순위에서는 비용이 크지 않고,
  * 라벨이 기울어졌을 때 이 힌트가 있어야 붙는다.
  */
@@ -327,7 +340,10 @@ async function zxingReader() {
         [DecodeHintType.POSSIBLE_FORMATS, formats],
         [DecodeHintType.TRY_HARDER, true],
     ]);
-    const one = new BrowserMultiFormatReader(hint([BarcodeFormat.CODE_128]));
+    const one = new BrowserMultiFormatReader(hint([
+        BarcodeFormat.QR_CODE,
+        BarcodeFormat.CODE_128,
+    ]));
     const wide = new BrowserMultiFormatReader(hint([
         BarcodeFormat.CODE_128,
         BarcodeFormat.CODE_39,
@@ -724,7 +740,7 @@ export function createScanner(video, onCode) {
      * ROI 하나를 디코더에 넘긴다.
      * 내장 인식기에 **전체 프레임**을 줄 때는 비디오를 그대로 넘겨 복사를 아낀다.
      * @param {object} reader 인식기
-     * @param {{w:number,h:number,wide:boolean,pre:boolean}} roi
+     * @param {{w:number,h:number,kind:string,wide:boolean,pre:boolean}} roi
      */
     function decodeOnce(reader, roi) {
         const whole = roi.w >= 1 && roi.h >= 1;
