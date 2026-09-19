@@ -816,14 +816,18 @@ function fitPt(text, boxW, boxH, maxPt) {
  * 🔑 대표주문번호가 있으면 **바코드·주문번호를 대표주문번호로 찍고**, 묶인 주문번호를 함께 적는다.
  * 파렛트수도 묶음 총량이라 묶음의 어느 주문에서 눌러도 같은 라벨이 나온다.
  */
-function labelHtml(o, g) {
+export function labelHtml(o, g) {
     // 검수 후 합친 묶음은 주문마다 자기 라벨이라 그 주문 기준으로 찍는다
     const rep = Boolean(o.rep_no) && !ownLabels(g);
     const src = rep ? (g?.head ?? o) : o;                  // 라벨에 찍을 주문
     const no = rep ? o.rep_no : o.order_no;                // 바코드 · 주문번호 칸
     const members = rep ? (g?.rows ?? [o]).map((r) => r.order_no) : [];
     const total = labelTotal(o, g);
-    const barcode = code128Svg(no, { height: 120, moduleWidth: 3, showText: false });
+    // 🔑 바코드는 라벨 가로를 꽉 채우고 세로는 표 아래 남는 높이를 전부 쓴다.
+    // preserveAspectRatio="none" 이라 짧은 주문번호도 가로로 늘어나는데, 모든 모듈이 같은
+    // 배율로 늘어나므로 Code128 규격은 그대로다 (세로 높이는 규격과 무관)
+    const barcode = code128Svg(no, { height: 120, moduleWidth: 3, showText: false })
+        .replace('<svg ', '<svg preserveAspectRatio="none" ');
     // 항목명 · 값 · 값의 최대 글자 크기(pt)
     const lines = [
         ['출고일자', src.ship_req_date, 55],
@@ -875,13 +879,16 @@ function labelHtml(o, g) {
   }
   /* 글자 크기는 칸마다 글자수에 맞춰 계산해 style 로 직접 넣는다 (fitPt) */
   td { font-weight: 800; word-break: keep-all; line-height: 1.2; }
-  /* 남는 높이는 바코드가 차지한다 */
+  /* 남는 높이는 바코드가 전부 차지한다 - 가로는 라벨 폭 100%, 세로는 남는 높이 전체 */
   .barcode {
-    flex: 1; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; padding: 3mm 0;
+    flex: 1; min-height: 0; display: flex; flex-direction: column;
+    align-items: stretch; justify-content: center; padding: 3mm 0 0;
   }
-  .barcode svg { width: 100%; height: auto; max-height: 48mm; }
-  .barcode__no { margin-top: 3mm; font-family: monospace; font-size: 20pt; letter-spacing: 4px; }
+  .barcode svg { flex: 1 1 0; min-height: 0; width: 100%; display: block; }
+  .barcode__no {
+    flex: 0 0 auto; margin-top: 2mm; text-align: center;
+    font-family: monospace; font-size: 22pt; font-weight: 700; letter-spacing: 4px;
+  }
   .seq { text-align: right; font-size: 14pt; font-weight: 700; }
   /* 추가건(2차수 이상)임을 라벨 오른쪽 위에 알린다 */
   .add-mark { text-align: right; font-size: 20pt; font-weight: 800; margin-bottom: 3mm; }
