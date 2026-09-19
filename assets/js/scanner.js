@@ -8,6 +8,15 @@
  * iOS 는 모든 브라우저가 WebKit 을 쓰므로 크롬을 써도 BarcodeDetector 가 없다.
  * 그래서 2번 경로가 반드시 필요하다.
  *
+ * 🔑 **1번은 「있다」가 아니라 「동작한다」를 확인하고 쓴다.** 안드로이드 크롬은 Google Play
+ * 바코드 모듈이 없으면 인식기 **생성은 성공하는데** `detect()` 가 매번 던지거나 늘 빈 배열을
+ * 준다 (현장에서 「우리 앱만 안 읽힌다」 로 나타났다). 그래서 폴백이 셋이다.
+ *   ① 시작 자가 진단 - 우리가 그린 Code128 한 장을 먹여 본다 (`selfTest`)
+ *   ② 런타임 - `detect()` 가 던지면 그 자리에서 ZXing 으로 갈아탄다 (`swapEngine`)
+ *   ③ 그림자 디코딩 - 한참 못 잡으면 같은 프레임을 ZXing 으로도 본다 (`shadowDue`)
+ * 한 번이라도 걸러진 기기는 `localStorage.tpl_scan_engine='zxing'` 으로 기억한다
+ * (지우는 곳은 앱 계정 화면의 `스캔 엔진 재검사` 하나뿐이다).
+ *
  * 카메라 API 자체는 HTTPS 또는 localhost 에서만 동작한다.
  *
  * 🔑 인식률에 관계된 값은 전부 아래 `TUNE` 한 곳에 모아 두었다.
@@ -17,7 +26,7 @@
  */
 import {
     AIM_ROI, aimRect, clampZoom, nextCost, nextGap, nextOverrun, reArmGap,
-    roiPlan, shouldDowngrade, stepBudget, zoomSteps,
+    roiPlan, shadowDue, shouldDowngrade, stepBudget, zoomSteps,
 } from './scan-calc.js';
 
 /** 인식률 조정값 - 바꿀 일이 있으면 여기만 본다 */
@@ -79,6 +88,18 @@ export const TUNE = {
     readyMs: 3000,
     /** 프레임 콜백이 오지 않을 때 그래도 한 번 읽어 보는 간격(ms) */
     stallMs: 500,
+    /**
+     * 시작할 때 내장 인식기에 먹여 보는 자가 진단 문자열 🔑
+     * 이 값의 Code128 을 캔버스에 그려 `detect()` 를 한 번 돌린다. 못 읽으면 내장을 버린다
+     * (인식기 **생성은 성공하는데** 동작하지 않는 기기가 있다 - 아래 `selfTest` 참고).
+     */
+    selfTestText: 'SELFTEST-128',
+    /** 내장 인식기가 이만큼(ms) 아무것도 못 잡으면 같은 프레임을 ZXing 으로도 본다 */
+    shadowAfterMs: 4000,
+    /** 그림자 디코딩 주기 - 미검출 이 횟수마다 한 번 (매 프레임 두 번 디코딩하면 뜨겁다) */
+    shadowEveryN: 6,
+    /** ZXing 만 읽은 일이 이만큼 쌓이면 내장을 버리고 ZXing 으로 갈아탄다 */
+    shadowSwitchHits: 2,
 };
 
 const FORMATS = ['code_128', 'code_39', 'ean_13', 'qr_code', 'codabar', 'itf'];
@@ -93,6 +114,50 @@ export function hasNativeDetector() {
 /** 이 브라우저에서 카메라 스캔이 가능한지 (ZXing 대체 경로 포함) */
 export function scanSupported() {
     return Boolean(navigator.mediaDevices?.getUserMedia);
+}
+
+/* ------------------------------ 엔진 기억 (localStorage) ------------------------------ */
+
+/**
+ * 내장 인식기를 못 쓰는 기기로 판명되면 기억해 둔다 🔑
+ * 자가 진단·런타임 전환이 한 번 일어난 기기는 다음 실행부터 진단 없이 ZXing 으로 간다.
+ * 지우는 곳은 **계정 화면의 `스캔 엔진 재검사` 하나뿐**이다.
+ */
+const ENGINE_KEY = 'tpl_scan_engine';
+
+/** 자가 진단용 이미지를 기다리는 한도(ms) - 여기서 막히면 카메라 시작이 늦어진다 */
+const SELFTEST_WAIT_MS = 1000;
+
+function rememberZxing() {
+    try {
+        localStorage.setItem(ENGINE_KEY, 'zxing');
+    } catch (err) {
+        console.warn('스캔 엔진 기억을 저장하지 못했습니다.', err);
+    }
+}
+
+/** 이 기기에서 내장 인식기를 건너뛰기로 기억해 두었는지 */
+export function zxingRemembered() {
+    try {
+        return localStorage.getItem(ENGINE_KEY) === 'zxing';
+    } catch (err) {
+        console.warn('스캔 엔진 기억을 읽지 못했습니다.', err);
+        return false;      // 기억이 없을 뿐이다 - 자가 진단부터 다시 한다
+    }
+}
+
+/** 기억을 지운다 (계정 화면) - 다음 스캔에서 내장 인식기를 다시 진단한다 */
+export function resetScanEngine() {
+    try {
+        localStorage.removeItem(ENGINE_KEY);
+    } catch (err) {
+        console.warn('스캔 엔진 기억을 지우지 못했습니다.', err);
+    }
+}
+
+/** 이번 실행에서 내장 인식기를 시도할지 (기능이 있고 + 못 쓴다고 기억하지 않았다) */
+function useNative() {
+    return hasNativeDetector() && !zxingRemembered();
 }
 
 /* -------------------------------- 인식기 만들기 -------------------------------- */
@@ -116,34 +181,115 @@ function pickCenter(found, img) {
     return [...found].sort((a, b) => dist(a) - dist(b))[0].rawValue || null;
 }
 
+/** SVG 문자열을 이미지로 만든다 (캔버스에 그리려면 한 번 디코딩해야 한다) */
+function svgImage(svg) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+        const img = new Image();
+        const end = (fn, arg) => {
+            clearTimeout(timer);
+            URL.revokeObjectURL(url);
+            fn(arg);
+        };
+        const timer = setTimeout(
+            () => end(reject, new Error('자가 진단 이미지 시간 초과')), SELFTEST_WAIT_MS);
+        img.onload = () => end(resolve, img);
+        img.onerror = () => end(reject, new Error('자가 진단 이미지를 그리지 못했습니다'));
+        img.src = url;
+    });
+}
+
+/** 자가 진단용 캔버스 - 우리 바코드 생성기로 그린 Code128 한 장 (흰 배경 · 여백 넉넉히) */
+async function selfTestCanvas() {
+    // 🔑 지연 로드 - 내장 인식기가 있는 기기에서만, 그것도 시작 시 한 번만 쓴다
+    const { code128Svg } = await import('./barcode.js');
+    const img = await svgImage(code128Svg(TUNE.selfTestText, { moduleWidth: 4, height: 80 }));
+    const pad = 60;                        // 좌우 여백(quiet zone)을 넉넉히 둔다
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width + pad * 2;
+    canvas.height = img.height + pad;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, pad, pad / 2);
+    return canvas;
+}
+
+/**
+ * 내장 인식기 자가 진단 🔑
+ *
+ * **만들 수 있다 ≠ 동작한다.** 안드로이드 크롬은 Google Play 의 바코드 모듈이 없으면
+ * `new BarcodeDetector()` 는 성공하는데 `detect()` 가 매번 던지거나
+ * (`NotSupportedError: Barcode detection service unavailable`) **늘 빈 배열**을 준다.
+ * 그 상태로는 아무리 비춰도 읽히지 않으므로, 시작할 때 **우리가 그린 바코드 한 장**을
+ * 먹여 보고 못 읽으면 내장을 버린다.
+ *
+ * ⚠️ 진단 **자체가 실패한 것**(이미지를 못 그림)으로는 폴백을 걸지 않는다.
+ * 그림에 실패한 것과 인식기 고장은 다르고, 여기서 잘못 버리면 멀쩡한 기기가
+ * 470KB 를 내려받게 된다.
+ *
+ * @param {object} detector 만들어 둔 BarcodeDetector
+ * @param {Function} [canceled] 세대 토큰 - 기다리는 사이 화면을 떠났는지
+ * @returns {Promise<boolean|null>} true=쓸 수 있다 · false=못 쓴다 · null=진단을 못 했다
+ */
+async function selfTest(detector, canceled) {
+    let canvas = null;
+    try {
+        canvas = await selfTestCanvas();
+    } catch (err) {
+        console.warn('내장 인식기 자가 진단용 이미지를 만들지 못해 진단을 건너뜁니다.', err);
+        return null;
+    }
+    if (canceled?.()) return null;
+    try {
+        const found = await detector.detect(canvas);
+        if (canceled?.()) return null;
+        if (found?.some((b) => b.rawValue === TUNE.selfTestText)) return true;
+        console.warn('내장 바코드 인식기가 자가 진단 바코드를 읽지 못했습니다 (빈 결과).');
+        return false;
+    } catch (err) {
+        console.warn('내장 바코드 인식기가 자가 진단에서 예외를 던졌습니다.', err);
+        return false;
+    }
+}
+
 /**
  * 내장 BarcodeDetector 인식기.
  * 🔑 디코더를 **둘** 만든다 - 1순위는 CODE_128 전용(포맷을 줄이면 후보 탐색이 줄어 빠르다),
  * 2순위부터 전 포맷. 파렛트·로케이션 라벨은 모두 Code128 이라 1순위에서 거의 끝난다.
+ * @param {Function} [canceled] 세대 토큰 (자가 진단 중 이탈을 확인한다)
  * @returns {Promise<{native:boolean, decode:Function}|null>} 지원하지 않으면 null
  */
-async function nativeReader() {
-    if (!hasNativeDetector()) return null;
+async function nativeReader(canceled) {
+    if (!useNative()) return null;
+    let one = null;
+    let wide = null;
     try {
         const supported = await window.BarcodeDetector.getSupportedFormats?.() ?? FORMATS;
         const all = FORMATS.filter((f) => supported.includes(f));
         if (!all.length) return null;
         const narrow = all.includes(MAIN_FORMAT) ? [MAIN_FORMAT] : all;
-        const one = new window.BarcodeDetector({ formats: narrow });
-        const wide = narrow.length === all.length
+        one = new window.BarcodeDetector({ formats: narrow });
+        wide = narrow.length === all.length
             ? one
             : new window.BarcodeDetector({ formats: all });
-        return {
-            native: true,
-            async decode(img, useWide) {
-                return pickCenter(await (useWide ? wide : one).detect(img), img);
-            },
-        };
     } catch (err) {
         // 기기가 이 포맷 조합을 못 만드는 경우 - ZXing 으로 넘긴다
         console.warn('내장 바코드 인식기를 쓸 수 없어 ZXing 으로 전환합니다.', err);
         return null;
     }
+
+    // 🔑 여기부터가 자가 진단이다 - 만들어 놓고 동작하지 않는 기기를 걸러낸다
+    if ((await selfTest(one, canceled)) === false) {
+        rememberZxing();
+        return null;
+    }
+    return {
+        native: true,
+        async decode(img, useWide) {
+            return pickCenter(await (useWide ? wide : one).detect(img), img);
+        },
+    };
 }
 
 /**
@@ -186,10 +332,11 @@ async function zxingReader() {
 
 /**
  * 프레임에서 바코드를 읽는 인식기를 만든다.
+ * @param {Function} [canceled] 세대 토큰 (자가 진단 중 이탈을 확인한다)
  * @returns {Promise<{native:boolean, decode:Function}>}
  */
-async function createReader() {
-    return await nativeReader() ?? zxingReader();
+async function createReader(canceled) {
+    return await nativeReader(canceled) ?? zxingReader();
 }
 
 /* ------------------------------ 프레임 공급 (frameSource) ------------------------------ */
@@ -350,7 +497,7 @@ function waitReady(video) {
  *            hasTorch:Function, isTorchOn:Function, toggleTorch:Function,
  *            canZoom:Function, zoomSteps:Function, zoomValue:Function,
  *            zoomRange:Function, setZoom:Function, setZoomRaw:Function,
- *            aimRect:Function}}
+ *            engine:Function, onEngine:Function, aimRect:Function}}
  */
 export function createScanner(video, onCode) {
     let stream = null;
@@ -378,6 +525,19 @@ export function createScanner(video, onCode) {
     let agreeCode = '';
     /** 지금 줌 배율 */
     let zoomNow = 1;
+    /** 지금 쓰는 인식기 - '' | 'native' | 'zxing' (인식기를 받은 뒤에 정해진다) */
+    let engine = '';
+    let engineCb = null;
+    /**
+     * 내장 인식기가 **자기 힘으로** 마지막에 읽은 시각 - 그림자 디코딩 시점의 기준이다.
+     * 🔑 그림자(ZXing)가 읽은 것은 넣지 않는다. 넣으면 내장이 계속 못 잡는데도
+     * 「방금 읽혔으니 괜찮다」 가 되어 전환에 필요한 횟수가 영영 안 쌓인다.
+     */
+    let nativeSeenAt = 0;
+    /** ZXing 만 읽은 횟수 · ZXing 지연 로드 · 전환 진행 여부 */
+    let shadowHits = 0;
+    let shadowP = null;
+    let swapping = false;
 
     const frame = frameCanvas();
     const frames = frameSource(video, () => {
@@ -471,6 +631,49 @@ export function createScanner(video, onCode) {
         return setZoomRaw(step);
     }
 
+    /* -------------------------------- 인식기 전환 -------------------------------- */
+
+    /** 엔진 표시를 갱신한다 (프리뷰 좌하단 태그 - 지원 문의 때 이 값으로 기기를 가른다) */
+    function setEngine(name) {
+        if (engine === name) return;
+        engine = name;
+        engineCb?.(name);
+    }
+
+    /** 그림자 디코딩·전환에 쓸 ZXing - 필요해진 순간 한 번만 내려받는다 (약 470KB) */
+    function shadowReader() {
+        if (!shadowP) {
+            shadowP = zxingReader().catch((err) => {
+                console.warn('ZXing 을 불러오지 못했습니다.', err);
+                return null;
+            });
+        }
+        return shadowP;
+    }
+
+    /**
+     * 내장 인식기를 버리고 ZXing 으로 갈아탄다 (한 세션에 한 번).
+     * 부르는 곳은 둘 - ① `detect()` 가 예외를 던졌을 때 ② ZXing 만 읽은 일이 쌓였을 때.
+     * 🔑 내려받는 사이 화면을 떠났을 수 있으므로 **세대 토큰**을 확인하고 반영한다.
+     * ZXing 마저 못 만들면 종전처럼 중지한다 (프리뷰만 켜 두는 것은 의미가 없다).
+     * @param {string} why 콘솔에 남길 이유
+     */
+    async function swapEngine(why) {
+        if (swapping) return;
+        swapping = true;
+        console.warn(why);
+        const mine = gen;
+        const zx = await shadowReader();
+        if (mine !== gen) return;        // 중지·재시작됐다 - 다음 세션이 알아서 정한다
+        if (!zx) {
+            stop();
+            return;
+        }
+        readerP = Promise.resolve(zx);
+        rememberZxing();
+        setEngine('zxing');
+    }
+
     /* -------------------------------- 인식 루프 -------------------------------- */
 
     /**
@@ -522,6 +725,7 @@ export function createScanner(video, onCode) {
             stop();
             return;
         }
+        setEngine(reader.native ? 'native' : 'zxing');
         // 🔑 **디코더를 받은 뒤부터** 잰다. 첫 프레임에 ZXing 내려받는 시간(느린 회선에서
         // 수 초)이 섞이면 평균이 오염되어 한동안 중복 판정 문턱이 상한까지 올라간다.
         const began = performance.now();
@@ -549,8 +753,42 @@ export function createScanner(video, onCode) {
             // `frames.next()` 가 **중지 뒤에 프레임 타이머를 다시 건다**(좀비 루프).
             if (!running) return;
             console.warn('바코드 인식 실패', err);
+            // 🔑 전환에 걸리는 시간(ZXing 내려받기)은 여기 넣지 않는다 - `cost` 가 오염된다
             used = performance.now() - began;
             code = null;
+            // 🔑 내장 인식기가 던졌으면 **그 자리에서** ZXing 으로 갈아탄다.
+            // 같은 인식기로 계속 돌면 영원히 미검출이다 (안드로이드에서 실제로 난 현상 -
+            // Google Play 바코드 모듈이 없으면 detect() 가 매 프레임 던진다).
+            if (reader.native) await swapEngine('내장 인식기 오류로 ZXing 으로 전환합니다.');
+            if (!running) return;
+        }
+
+        // 내장이 **자기 힘으로** 읽은 시각 (그림자가 읽은 것은 넣지 않는다)
+        if (code && reader.native) nativeSeenAt = performance.now();
+
+        // 🔑 내장이 한참 아무것도 못 잡으면 **같은 프레임**을 ZXing 으로도 본다.
+        // 예외를 던지지 않고 늘 빈 결과만 주는 기기는 이것 말고 전환 신호가 없다.
+        // 예산이 남았을 때만 돌려 「한 tick ≤ 예산 + 1회분」 규칙을 깨지 않는다.
+        let shadowHit = false;
+        if (!code && reader.native && !swapping && used < budget
+            && shadowDue(performance.now() - nativeSeenAt, missStreak + 1, TUNE)) {
+            const zx = await shadowReader();
+            if (!running) return;
+            if (zx) {
+                code = await decodeOnce(zx, roiPlan(false, missStreak, TUNE)[0]);
+                if (!running) return;
+                // 그림자 시간도 **예산에는** 포함한다 (아래 cost 는 여전히 미검출만 본다)
+                used = performance.now() - began;
+                shadowHit = Boolean(code);
+            }
+        }
+        if (shadowHit) {
+            shadowHits += 1;
+            // 사용자 입장에서는 그냥 읽힌 것이다 - 코드는 아래에서 그대로 채택된다
+            if (shadowHits >= TUNE.shadowSwitchHits) {
+                await swapEngine('ZXing 만 읽히는 상태가 이어져 ZXing 으로 전환합니다.');
+                if (!running) return;
+            }
         }
 
         const now = performance.now();
@@ -640,7 +878,7 @@ export function createScanner(video, onCode) {
         // 🔑 **카메라부터 연다.** 디코더를 내려받느라 기다린 뒤에 열면 사파리가 버튼을 누른
         // 동작과 이어지지 않는 것으로 보아 권한 요청을 거절할 수 있다.
         // 내장 인식기가 없는 기기는 ZXing 이 약 470KB 라 이 차이가 크다.
-        const size = hasNativeDetector() ? TUNE.nativeSize : TUNE.zxingSize;
+        const size = useNative() ? TUNE.nativeSize : TUNE.zxingSize;
         // 🔑 스트림은 **내 세대 것으로 확정된 뒤에만** 공유 변수에 넣는다.
         // 취소된 세대가 stream·starting 을 건드리면 그 사이 시작한 세대의 것을 꺼 버린다.
         let mineStream = null;
@@ -662,7 +900,7 @@ export function createScanner(video, onCode) {
 
         // 프리뷰가 뜨는 동안 디코더를 준비한다 (실패해도 직접 입력 경로는 살아 있다)
         if (!readerP) {
-            readerP = createReader().catch((err) => {
+            readerP = createReader(canceled).catch((err) => {
                 console.warn('바코드 디코더를 불러오지 못했습니다.', err);
                 return null;
             });
@@ -700,10 +938,13 @@ export function createScanner(video, onCode) {
         downgraded = false;
         agree = 0;
         agreeCode = '';
+        shadowHits = 0;
+        swapping = false;
         // 지금 배율은 기기에게 묻는다 (추측하면 첫 줌 버튼이 "같은 값" 으로 무시될 수 있다)
         const nowZoom = track?.getSettings?.().zoom;
         zoomNow = Number.isFinite(nowZoom) ? nowZoom : steps()[0] ?? 1;
         startedAt = performance.now();
+        nativeSeenAt = startedAt;
         running = true;
         document.addEventListener('visibilitychange', onVisible);
         frames.next(0);
@@ -727,6 +968,12 @@ export function createScanner(video, onCode) {
         zoomRange: () => zoomCaps(),
         setZoom,
         setZoomRaw,
+        /** 지금 쓰는 인식기 - 'native' | 'zxing' | '' (아직 정해지지 않음) */
+        engine: () => engine,
+        /** 인식기가 바뀌면 알려준다 (프리뷰의 엔진 태그가 즉시 따라간다) */
+        onEngine: (cb) => {
+            engineCb = cb;
+        },
         /** 프리뷰 상자 안에서 조준 밴드가 차지할 영역 (가이드 박스를 ROI 와 맞춘다) */
         aimRect: (bw, bh) => aimRect(AIM_ROI, video.videoWidth, video.videoHeight, bw, bh),
     };

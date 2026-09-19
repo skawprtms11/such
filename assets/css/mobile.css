@@ -780,6 +780,26 @@ html, body {
     color: #102030;
 }
 
+/*
+ * 지금 쓰는 인식기 표시 - 좌하단. 「안 읽힌다」 문의 때 이 값으로 기기 문제를 가른다.
+ * 줌 버튼(좌상단)·플래시(우상단)와 자리가 겹치지 않게 아래에 둔다.
+ */
+.m-scanbox__engine {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(16, 32, 48, .55);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    pointer-events: none;
+}
+
+.m-scanbox__engine[hidden] { display: none; }
+
 /* 플래시 - 기기가 지원할 때만 나타난다 (어두운 창고에서 인식률을 크게 좌우한다) */
 .m-scanbox__torch {
     position: absolute;

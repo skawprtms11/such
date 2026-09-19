@@ -514,6 +514,7 @@ export function scanPreview(host) {
 <video class="m-scanbox__video" playsinline muted></video>
 <span class="m-scanbox__aim"></span>
 <span class="m-scanbox__hit"></span>
+<span class="m-scanbox__engine" hidden></span>
 <button class="m-scanbox__torch" type="button" hidden aria-label="플래시">
   ${icon('torch', 'm-icon')}</button>
 <div class="m-scanbox__zoom" role="group" aria-label="확대" hidden></div>`;
@@ -522,6 +523,7 @@ export function scanPreview(host) {
     const video = el.querySelector('video');
     const aim = el.querySelector('.m-scanbox__aim');
     const torchBtn = el.querySelector('.m-scanbox__torch');
+    const engineTag = el.querySelector('.m-scanbox__engine');
     const zoomBox = el.querySelector('.m-scanbox__zoom');
     let scanner = null;
     let hitTimer = null;
@@ -551,12 +553,24 @@ export function scanPreview(host) {
   type="button" data-z="${z}">${esc(zoomLabel(z))}</button>`).join('');
     }
 
+    /**
+     * 지금 쓰는 인식기를 좌하단에 작게 표시한다.
+     * 🔑 「안 읽힌다」 문의가 오면 이 태그로 기기 문제를 가른다 - `내장` 인데 안 읽히면
+     * 계정 화면의 `스캔 엔진 재검사` 로 다시 진단하게 안내한다 (docs/testing.md).
+     */
+    function drawEngine() {
+        const now = scanner?.isOn() ? scanner.engine?.() : '';
+        engineTag.hidden = !now;
+        if (now) engineTag.innerHTML = esc(now === 'zxing' ? 'ZXing' : '내장');
+    }
+
     /** 플래시·줌 버튼 표시와 가이드 박스를 지금 상태에 맞춘다 */
     function sync() {
         const usable = Boolean(scanner?.isOn() && scanner.hasTorch?.());
         torchBtn.hidden = !usable;
         torchBtn.classList.toggle('is-on', Boolean(scanner?.isTorchOn?.()));
         drawZoom();
+        drawEngine();
         fitAim();
     }
 
@@ -637,6 +651,7 @@ export function scanPreview(host) {
         /** 이 프리뷰를 쓰는 스캐너를 알려준다 */
         bind(sc) {
             scanner = sc;
+            sc?.onEngine?.(drawEngine);   // 인식기를 갈아타면 태그가 즉시 따라간다
         },
         show() {
             el.hidden = false;

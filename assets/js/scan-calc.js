@@ -110,6 +110,24 @@ export function nextGap(seenAt, startedAt, now, tune) {
 }
 
 /**
+ * 이번 tick 에 **그림자 디코딩**(같은 프레임을 ZXing 으로도 본다)을 할지.
+ *
+ * 🔑 내장 인식기가 「예외도 안 던지고 **늘 빈 결과**」인 기기가 있다. 이때는 오류가 없어
+ * 전환 신호가 없으므로 **한참 못 잡는 것 자체**를 신호로 본다.
+ * 매 프레임 두 번 디코딩하면 발열이 크므로 `shadowEveryN` 번에 한 번만 돌린다.
+ *
+ * @param {number} idleMs 내장 인식기가 **자기 힘으로** 마지막에 읽은 뒤 흐른 시간(ms)
+ * @param {number} misses 연속 미검출 횟수 (이번 tick 을 포함한다)
+ * @param {object} tune TUNE
+ */
+export function shadowDue(idleMs, misses, tune) {
+    if (!(idleMs >= tune.shadowAfterMs)) return false;
+    const every = Math.max(1, Math.floor(tune.shadowEveryN) || 1);
+    const n = Math.floor(misses) || 0;
+    return n > 0 && n % every === 0;
+}
+
+/**
  * 기기가 줄 수 있는 줌 배율 버튼 목록.
  * 🔑 **쓸 수 있는 단계가 2개 미만이면 빈 배열**을 준다 - UI 는 이때 버튼을 통째로 숨긴다.
  * (iOS·대부분의 PC 웹캠은 줌 자체가 없어 버튼이 있으면 눌러 놓고 실패한다)

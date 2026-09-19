@@ -22,9 +22,16 @@
  *   S8 줌 - 쓸 수 있는 단계가 2개 미만이면 **빈 배열**(UI 가 버튼을 숨긴다) · 범위 클램프
  *      + 안정화 대기 중에 멈춰도 `setZoomRaw` 가 끝난다 (UI 의 `zoomBusy` 가 풀린다)
  *   S9 합의(consensus)는 **연속** 프레임을 뜻한다 - 미검출이 끼면 처음부터 다시 센다
+ *  S10 내장 인식기가 **예외를 던지면** ZXing 으로 갈아타고 인식이 재개된다 (과다 계수 0)
+ *  S11 내장이 **늘 빈 결과**면 그림자 디코딩으로 읽고, 전환 전후의 계수가 어긋나지 않는다
  *
  * 🔑 **검사기를 믿기 전에 변이로 검사기를 검증한다.** `--mutate=이름` 은 원본을 건드리지 않고
  * 임시 폴더에 고친 사본을 만들어 돌린다 (`--mutate=list` 로 목록).
+ *
+ * 🔑 **ZXing 은 가짜로 갈아끼운다.** 실제 패키지는 브라우저 전용이라 노드에서 돌지 않는다.
+ * 사본을 만들 때 `@zxing/*` 임포트만 아래 `ZXING_FAKE` 로 바꾼다 (변이와 같은 방식이고,
+ * 바꾸는 곳은 **임포트 지정자 두 줄뿐**이다). 시작 자가 진단(`selfTest`)은 `Image`·`Blob`
+ * 가 필요해 노드에서 모사할 수 없으므로 **브라우저에서 확인한다** (docs/testing.md).
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -89,8 +96,20 @@ const MUTATIONS = {
     'throw-stop': {
         why: 'S5 - 디코딩이 예외를 던진 경로에서 running 재확인을 뺀다 (중지 뒤 좀비 타이머)',
         file: 'scanner.js',
-        find: '            if (!running) return;\n            console.warn(\'바코드 인식 실패\'',
-        to: '            console.warn(\'바코드 인식 실패\'',
+        // 🔑 재확인이 **둘**이다 - catch 머리와 ZXing 전환(await) 뒤. 하나만 빼면 나머지가
+        // 막아 주므로 결함이 드러나지 않는다. 같은 불변식을 지키는 짝이라 함께 뺀다
+        edits: [
+            {
+                find: '            if (!running) return;\n'
+                    + '            console.warn(\'바코드 인식 실패\'',
+                to: '            console.warn(\'바코드 인식 실패\'',
+            },
+            {
+                find: "            if (reader.native) await swapEngine('내장 인식기 오류로"
+                    + " ZXing 으로 전환합니다.');\n            if (!running) return;\n",
+                to: '',
+            },
+        ],
     },
     'settle-hang': {
         why: 'S8 - 줌 안정화를 resolve 없이 끊는다 (핀치가 영영 잠긴다)',
@@ -103,6 +122,20 @@ const MUTATIONS = {
         file: 'scanner.js',
         find: '            agree = 0;\n            agreeCode = \'\';\n',
         to: '',
+    },
+    'no-fallback': {
+        why: 'S10 - 내장이 예외를 던져도 ZXing 으로 갈아타지 않는다 (영원히 미검출)',
+        file: 'scanner.js',
+        find: "            if (reader.native) await swapEngine('내장 인식기 오류로 ZXing 으로 전환합니다.');\n",
+        to: '',
+    },
+    'shadow-count': {
+        why: 'S11 - 그림자 디코딩에 든 시간을 tick 소요시간에서 뺀다'
+            + ' (cost 가 실제보다 싸져 문턱이 짧아지고 한 라벨이 2건이 된다)',
+        file: 'scanner.js',
+        find: '                used = performance.now() - began;\n'
+            + '                shadowHit = Boolean(code);',
+        to: '                shadowHit = Boolean(code);',
     },
     'downgrade-again': {
         why: 'S6 - 초과할 때마다 강등한다 (진동)',
@@ -118,23 +151,51 @@ if (MUTATE === 'list') {
     process.exit(0);
 }
 
-/** 변이를 적용한 사본을 임시 폴더에 만들고 그 경로를 돌려준다 (원본은 건드리지 않는다) */
+/**
+ * 가짜 ZXing - 실제 패키지는 `document`·`HTMLCanvasElement` 를 쓰므로 노드에서 못 돌린다.
+ * 디코딩 결과와 소요시간은 검사기가 전역(`__zxing`)으로 정한다.
+ */
+const ZXING_FAKE = `export class BrowserMultiFormatReader {
+    constructor(hints) { this.hints = hints; }
+    decodeFromCanvas() { return globalThis.__zxing(); }
+}
+export const DecodeHintType = { POSSIBLE_FORMATS: 'formats', TRY_HARDER: 'hard' };
+export const BarcodeFormat = {
+    CODE_128: 1, CODE_39: 2, ITF: 3, CODABAR: 4, EAN_13: 5, QR_CODE: 6,
+};
+`;
+
+/**
+ * 돌릴 사본을 임시 폴더에 만들고 그 경로를 돌려준다 (원본은 건드리지 않는다).
+ * 변이가 없어도 사본을 만든다 - ZXing 임포트를 가짜로 바꿔야 하기 때문이다.
+ */
 function sourceDir() {
-    if (!MUTATE) return SRC;
-    const m = MUTATIONS[MUTATE];
-    if (!m) {
+    const m = MUTATE ? MUTATIONS[MUTATE] : null;
+    if (MUTATE && !m) {
         process.stderr.write(`모르는 변이: ${MUTATE} (--mutate=list)\n`);
         process.exit(2);
     }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-check-'));
+    fs.writeFileSync(path.join(dir, 'zxing-fake.js'), ZXING_FAKE);
     ['scanner.js', 'scan-calc.js'].forEach((f) => {
         let code = fs.readFileSync(path.join(SRC, f), 'utf8');
-        if (f === m.file) {
-            if (!code.includes(m.find)) {
-                process.stderr.write(`변이 지점을 찾지 못했다: ${MUTATE} (${f})\n`);
+        if (m && f === m.file) {
+            // 한 결함이 여러 줄에 흩어져 있으면 edits 로 여러 곳을 함께 고친다
+            (m.edits ?? [{ find: m.find, to: m.to }]).forEach((e) => {
+                if (!code.includes(e.find)) {
+                    process.stderr.write(`변이 지점을 찾지 못했다: ${MUTATE} (${f})\n`);
+                    process.exit(2);
+                }
+                code = code.replace(e.find, e.to);
+            });
+        }
+        if (f === 'scanner.js') {
+            const before = code;
+            code = code.replace(/'@zxing\/(browser|library)'/g, "'./zxing-fake.js'");
+            if (code === before) {
+                process.stderr.write('ZXing 임포트를 찾지 못했다 (가짜로 바꿀 수 없다)\n');
                 process.exit(2);
             }
-            code = code.replace(m.find, m.to);
         }
         fs.writeFileSync(path.join(dir, f), code);
     });
@@ -195,18 +256,28 @@ class FakeDetector {
     }
 
     detect() {
-        const label = sim.present(clock);
+        // 🔑 현장 기기 재현 - nativeThrows: Play 바코드 모듈이 없어 매번 던진다 ·
+        // nativeBlind: 던지지도 않고 늘 빈 배열만 준다 (전환 신호가 없는 쪽이 더 고약하다)
+        const label = sim.nativeBlind ? null : sim.present(clock);
         const ok = Boolean(label) && sim.rnd() >= sim.failRate;
         const cost = ok ? sim.hitCost : sim.missCost;
-        const rec = { start: clock, end: clock + cost, hit: ok, after: sim.stopped };
-        sim.decodes.push(rec);
+        sim.decodes.push({ start: clock, end: clock + cost, hit: ok, after: sim.stopped });
         return new Promise((resolve, reject) => {
             // 중지하면 캔버스·트랙을 놓으므로 진행 중이던 디코딩이 던질 수 있다
-            vSetTimeout(() => (sim.throwWhenStopped && sim.stopped
-                ? reject(new Error('캔버스가 사라졌다'))
-                : resolve(ok
+            vSetTimeout(() => {
+                if (sim.nativeThrows) {
+                    reject(Object.assign(new Error('Barcode detection service unavailable'),
+                        { name: 'NotSupportedError' }));
+                    return;
+                }
+                if (sim.throwWhenStopped && sim.stopped) {
+                    reject(new Error('캔버스가 사라졌다'));
+                    return;
+                }
+                resolve(ok
                     ? [{ rawValue: label, boundingBox: { x: 0, y: 0, width: 10, height: 10 } }]
-                    : [])), cost);
+                    : []);
+            }, cost);
         });
     }
 }
@@ -223,6 +294,20 @@ function fakeCanvas() {
     };
 }
 
+/**
+ * 가짜 ZXing 디코딩 - 실제 API 가 **동기**라 기다릴 수 없으므로 가상 시계를 직접 민다.
+ * 내장과 달리 `sim.zxingBlind` 가 아니면 라벨이 보이는 동안 항상 읽는다
+ * (그림자 디코딩·전환이 실제로 인식을 되살리는지 세기 위해서다).
+ */
+function fakeZxing() {
+    const label = sim.zxingBlind ? null : sim.present(clock);
+    const cost = sim.zxingCost;
+    sim.decodes.push({ start: clock, end: clock + cost, hit: Boolean(label), zxing: true });
+    sim.zxingCalls += 1;
+    clock += cost;
+    return label ? { getText: () => label } : null;
+}
+
 function installGlobals() {
     const def = (k, v) => Object.defineProperty(globalThis, k, {
         value: v, writable: true, configurable: true,
@@ -232,6 +317,15 @@ function installGlobals() {
     def('setTimeout', vSetTimeout);
     def('clearTimeout', vClearTimeout);
     def('performance', { now: () => clock });
+    def('__zxing', fakeZxing);
+    // 내장 인식기를 못 쓴다고 기억해 버리면 다음 시나리오가 전부 ZXing 으로 돈다 -
+    // 시나리오마다 초기화한다 (브라우저의 localStorage 자리)
+    def('localStorage', {
+        store: new Map(),
+        getItem(k) { return this.store.has(k) ? this.store.get(k) : null; },
+        setItem(k, v) { this.store.set(k, String(v)); },
+        removeItem(k) { this.store.delete(k); },
+    });
     def('window', { BarcodeDetector: FakeDetector });
     def('document', {
         hidden: false,
@@ -326,6 +420,7 @@ installGlobals();
 async function run(opt) {
     clock = 0;
     timers = [];
+    localStorage.store.clear();     // 엔진 기억은 시나리오마다 처음부터 (기기를 새로 잡는다)
     sim = {
         present: opt.present,
         hitCost: opt.hitCost ?? 30,
@@ -345,6 +440,12 @@ async function run(opt) {
         opened: 0,
         stopped: false,
         throwWhenStopped: opt.throwWhenStopped ?? false,
+        /** 내장 인식기 고장 모드 - 던지거나(throws) 늘 빈 결과(blind) */
+        nativeThrows: opt.nativeThrows ?? false,
+        nativeBlind: opt.nativeBlind ?? false,
+        zxingBlind: opt.zxingBlind ?? false,
+        zxingCost: opt.zxingCost ?? 40,
+        zxingCalls: 0,
     };
     const video = makeVideo(opt.rvfc ?? true);
     const sc = createScanner(video, (code) => sim.codes.push({ at: clock, code }));
@@ -365,11 +466,11 @@ async function run(opt) {
 /* ---------------------------------- 채점 ---------------------------------- */
 
 const fails = {
-    S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S6: 0, S7: 0, S8: 0, S9: 0, EX: 0,
+    S1: 0, S2: 0, S3: 0, S4: 0, S5: 0, S6: 0, S7: 0, S8: 0, S9: 0, S10: 0, S11: 0, EX: 0,
 };
 const cover = {
     hold: 0, gapRuns: 0, slowTick: 0, stopMid: 0, stopThrow: 0,
-    downgrade: 0, zoom1: 0, consensus: 0,
+    downgrade: 0, zoom1: 0, consensus: 0, swap: 0, shadow: 0,
 };
 const first = {};
 function note(k, msg) {
@@ -388,10 +489,14 @@ function ticksOf(decodes) {
     return out;
 }
 
-/** S4 - 예산 검사는 모든 시나리오에서 함께 센다 */
+/**
+ * S4 - 예산 검사는 모든 시나리오에서 함께 센다.
+ * 🔑 예산은 경로마다 다르다 - ZXing 으로만 이뤄진 tick 은 ZXing 예산으로 본다.
+ * (내장 ROI + 그림자 디코딩이 섞인 tick 은 내장 예산이다 - 그림자는 예산이 남을 때만 붙는다)
+ */
 function checkBudget(tag, decodes) {
-    const budget = TUNE.budgetNativeMs;
     ticksOf(decodes).forEach((t) => {
+        const budget = t.every((d) => d.zxing) ? TUNE.budgetZxingMs : TUNE.budgetNativeMs;
         const total = t.reduce((m, d) => m + (d.end - d.start), 0);
         const lastOne = t[t.length - 1].end - t[t.length - 1].start;
         if (t.length > 1) cover.slowTick += 1;
@@ -792,6 +897,116 @@ async function s9() {
     }
 }
 
+/* --------------------------------- S10 · S11 --------------------------------- */
+
+/**
+ * 🔑 내장 인식기가 **예외를 던지는** 기기 (안드로이드 크롬 · Play 바코드 모듈 없음).
+ * 예전에는 `console.warn` 만 찍고 같은 인식기로 계속 돌아 **영원히 미검출**이었다.
+ * 지금은 첫 예외에서 ZXing 으로 갈아타고 인식이 되살아나야 한다.
+ */
+async function s10() {
+    // 라벨을 떼었다 대는 것을 n 번 반복한다 (과다 계수까지 함께 센다)
+    const n = 3;
+    const hold = 900;
+    const gap = 3000;
+    const cycle = hold + gap;
+    const { sim: s, sc } = await run({
+        present: (t) => (t % cycle < hold && t < n * cycle ? 'PO-1' : null),
+        nativeThrows: true,
+        missCost: 30,
+        zxingCost: 40,
+        ms: n * cycle + 1000,
+    });
+    cover.swap += 1;
+    if (!s.zxingCalls) note('S10', '내장이 예외를 던졌는데 ZXing 을 부르지 않았다');
+    if (!s.codes.length) note('S10', `전환 뒤에도 한 건도 못 셌다 (ZXing 호출 ${s.zxingCalls})`);
+    // 🔑 **첫 예외에서 곧바로** 갈아타야 한다. 그림자 디코딩(4초 뒤)이 대신 건져 주는 것에
+    // 기대면 현장에서는 「한참 비춰야 읽힌다」 가 된다
+    if (s.codes[0] && s.codes[0].at >= TUNE.shadowAfterMs) {
+        note('S10', `첫 인식이 ${Math.round(s.codes[0].at)}ms 로 늦다`
+            + ' (예외 직후가 아니라 그림자 디코딩이 건졌다)');
+    }
+    if (s.codes.length > n) note('S10', `${n}장을 찍었는데 ${s.codes.length}건 (과다)`);
+    if (sc.engine() !== 'zxing') note('S10', `전환했는데 engine()=${sc.engine()}`);
+    if (localStorage.getItem('tpl_scan_engine') !== 'zxing') {
+        note('S10', '전환했는데 다음 실행을 위한 기억이 남지 않았다');
+    }
+    checkBudget('S10', s.decodes);
+}
+
+/**
+ * 🔑 내장 인식기가 **던지지도 않고 늘 빈 결과**인 기기.
+ * 오류가 없으니 전환 신호도 없다 - 「한참 못 잡는 것」 자체를 신호로 보고 같은 프레임을
+ * ZXing 으로도 봐서(그림자 디코딩) 읽고, 그것이 쌓이면 갈아탄다.
+ * 세는 것: 그림자가 실제로 붙는가 · 읽히는가 · 갈아탔는가 · **라벨 수보다 많이 세지 않는가**.
+ */
+async function s11() {
+    const n = 6;
+    const hold = 1200;
+    const cycle = hold + 3000;
+    const first = TUNE.shadowAfterMs + cycle;      // 그림자가 붙기 전 구간은 못 읽는다
+    const { sim: s, sc } = await run({
+        present: (t) => (t > first && t % cycle < hold ? 'PO-1' : null),
+        nativeBlind: true,
+        missCost: 5,                 // 빈 결과는 빠르게 온다 (예산이 남아야 그림자가 붙는다)
+        zxingCost: 40,
+        ms: first + n * cycle,
+    });
+    cover.shadow += 1;
+    if (!s.decodes.some((d) => d.zxing)) {
+        note('S11', '내장이 늘 빈 결과인데 그림자 디코딩을 한 번도 안 했다');
+    }
+    if (!s.codes.length) note('S11', '그림자 디코딩으로도 한 건도 못 셌다');
+    if (sc.engine() !== 'zxing') note('S11', `ZXing 만 읽는데 engine()=${sc.engine()}`);
+    // 🔑 전환 전후를 합쳐 라벨 수를 넘지 않아야 한다 (전환이 계수를 흔들지 않는다)
+    if (s.codes.length > n) note('S11', `${n}장을 찍었는데 ${s.codes.length}건 (과다)`);
+    if (s.codes.length < n - 1) {
+        note('S11', `${n}장 중 ${s.codes.length}건만 셌다 (그림자·전환 뒤에도 못 읽는다)`);
+    }
+    checkBudget('S11', s.decodes);
+}
+
+/**
+ * 🔑 그림자 디코딩은 **느리다**. 그 시간이 `cost` 에 들어가야 중복 판정 문턱
+ * (`reArmGap = max(reArmMs, reArmFrames × cost)`)이 함께 커진다.
+ * 빼 버리면 「디코딩이 느려 몇 번 건너뛴 것」이 「라벨을 치웠다」 로 오해되어
+ * **한 파렛트가 2건**이 된다 (2026-09-17 사고와 같은 모양 · 이번엔 ZXing 이 아니라 그림자).
+ *
+ * 라벨을 0.5초 대고 → 1.6초 떼고 → 다시 댄다. 느린 디코더의 올바른 문턱은
+ * 5×500 = 2500ms 라 1.6초 공백은 「치웠다」가 아니다. 공백이 문턱보다 짧으므로
+ * **다음 1건은 `repeatMs`(2.5초)가 열려야만** 나올 수 있다 - 계수 간격으로 센다.
+ */
+async function s11gap() {
+    const keep = {
+        after: TUNE.shadowAfterMs, every: TUNE.shadowEveryN, hits: TUNE.shadowSwitchHits,
+    };
+    // 그림자 구간에 머무르게 둔다 (전환해 버리면 재 볼 것이 없다)
+    TUNE.shadowAfterMs = 0;
+    TUNE.shadowEveryN = 1;
+    TUNE.shadowSwitchHits = 99;
+    try {
+        const { sim: s } = await run({
+            present: (t) => (t < 500 || t >= 2100 ? 'PO-1' : null),
+            nativeBlind: true,
+            missCost: 5,
+            zxingCost: 500,          // 느린 기기 - 문턱이 자동으로 2.5초까지 커져야 한다
+            ms: 6000,
+        });
+        if (!s.codes.length) note('S11', '느린 그림자 시나리오에서 한 건도 못 셌다');
+        for (let k = 1; k < s.codes.length; k += 1) {
+            const gap = s.codes[k].at - s.codes[k - 1].at;
+            if (gap < TUNE.repeatMs - 1) {
+                note('S11', `느린 그림자 디코딩에서 계수 간격이 ${Math.round(gap)}ms`
+                    + ' (공백 1.6초 < 문턱 2.5초라 repeatMs 전에는 셀 수 없다)');
+            }
+        }
+    } finally {
+        TUNE.shadowAfterMs = keep.after;
+        TUNE.shadowEveryN = keep.every;
+        TUNE.shadowSwitchHits = keep.hits;
+    }
+}
+
 /* ---------------------------------- 실행 ---------------------------------- */
 
 try {
@@ -809,6 +1024,9 @@ try {
     s8();
     await s8stop();
     await s9();
+    await s10();
+    await s11();
+    await s11gap();
 } catch (err) {
     note('EX', `${err.message}`);
     process.stderr.write(`${err.stack}\n`);
@@ -823,6 +1041,7 @@ process.stdout.write(`${lines.join('\n')}\n`);
 process.stdout.write(`  커버리지 - 한 장 들기 ${cover.hold} · 떼었다 대기 ${cover.gapRuns} `
     + `· 중간 중지 ${cover.stopMid} · 예외 중지 ${cover.stopThrow} `
     + `· 다중 ROI tick ${cover.slowTick} · 강등 ${cover.downgrade} `
-    + `· 줌 단계 1개 ${cover.zoom1} · 합의 ${cover.consensus}\n`);
+    + `· 줌 단계 1개 ${cover.zoom1} · 합의 ${cover.consensus} `
+    + `· 엔진 전환 ${cover.swap} · 그림자 ${cover.shadow}\n`);
 process.stdout.write(`${bad ? 'FAIL' : 'PASS'}\n`);
 process.exitCode = bad ? 1 : 0;
