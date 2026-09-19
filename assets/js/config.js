@@ -636,9 +636,12 @@ export const APP_TABS = [
  * 속성은 APP_TABS 와 같고 탭바에 나오지 않아 짧은 label 이 필요 없다.
  */
 export const APP_MENU = [
+    // 🔑 유통가공 탭 세트(APP_TAB_SETS.pcheck)에는 출고 탭이 없다. 서랍 첫 줄에 출고작업을 두어
+    // 주문 흐름으로 돌아오는 길을 남긴다 (라우트가 APP_TABS 와 겹치지만 목적지가 같아 무해하다)
+    { key: 'ship', route: '#/ship', title: '출고작업', icon: 'shipping' },
     // 유통가공은 주문 흐름(출고→검수→적치→조정→상차)과 이어지지 않는 독립 업무라 하단 탭이 아니라
     // 상단바 메뉴에 둔다. 앱에서는 **검수(사진 증빙)만** 한다 - 등록·문서생성은 웹이다
-    // (docs/processing.md §17). 화면 안의 세그 3개(작업전 검수·완료 검수·캘린더)가 하위 탭이다
+    // (docs/processing.md §17). 들어가면 하단 탭이 유통가공 전용 4개로 바뀐다 (APP_TAB_SETS)
     { key: 'pcheck', route: '#/pcheck', title: '유통가공작업', icon: 'processing' },
     { key: 'notices', route: '#/notices', title: '공지사항', icon: 'notice' },
     { key: 'checklist', route: '#/checklist', title: '일일체크리스트', icon: 'checklist' },
@@ -649,3 +652,58 @@ export const APP_MENU = [
     { key: 'stock', route: '#/stock', title: '재고실사표', icon: 'sheet', viewPerm: 'download' },
     { key: 'account', route: '#/account', title: '계정', icon: 'account' },
 ];
+
+/**
+ * 유통가공 화면(`#/pcheck/<seg>`)의 하위 탭 키.
+ * 검수 두 단계는 PROCESS_PHASE 를 그대로 쓰고(경로와 단계가 같은 말이어야 한다),
+ * 조회 전용 두 개만 여기서 이름을 붙인다.
+ */
+export const PCHECK_SEG = {
+    PRE: PROCESS_PHASE.PRE,
+    DONE: PROCESS_PHASE.DONE,
+    CAL: 'cal',
+    GUIDE: 'guide',
+};
+
+/**
+ * 모바일 하단 탭 세트 - **라우트에 따라 탭바가 통째로 바뀐다** (대표님 지시 2026-09-19).
+ *
+ * main   : 주문 흐름(출고→검수→적치→조정→상차). 기본 세트다
+ * pcheck : 유통가공 전용. `#/pcheck/*` 안에서만 나오고, 주문 흐름 탭은 숨는다 -
+ *          유통가공은 주문과 이어지지 않는 독립 업무라 현장에서 섞이면 오작동이 난다.
+ *          출고작업으로 돌아가는 길은 서랍(≡) 첫 줄에 있다
+ *
+ * 세트 항목의 속성은 APP_TABS 와 같고, `seg` 가 있으면 **경로가 `#/<key>/<seg>`** 다
+ * (상세는 그 아래 `#/<key>/<seg>/:id`). 셸은 `seg` 로 활성 탭과 상단바 제목을 고른다.
+ */
+export const APP_TAB_SETS = {
+    main: APP_TABS,
+    pcheck: [
+        {
+            key: 'pcheck', seg: PCHECK_SEG.PRE, route: `#/pcheck/${PCHECK_SEG.PRE}`,
+            label: '작업전', title: PROCESS_PHASE_LABEL[PROCESS_PHASE.PRE], icon: 'camera',
+        },
+        {
+            key: 'pcheck', seg: PCHECK_SEG.DONE, route: `#/pcheck/${PCHECK_SEG.DONE}`,
+            label: '완료', title: PROCESS_PHASE_LABEL[PROCESS_PHASE.DONE], icon: 'check',
+        },
+        {
+            key: 'pcheck', seg: PCHECK_SEG.CAL, route: `#/pcheck/${PCHECK_SEG.CAL}`,
+            label: '캘린더', title: '작업캘린더', icon: 'calendar',
+        },
+        {
+            key: 'pcheck', seg: PCHECK_SEG.GUIDE, route: `#/pcheck/${PCHECK_SEG.GUIDE}`,
+            label: '가이드', title: '작업가이드', icon: 'sheet',
+        },
+    ],
+};
+
+/**
+ * 이 라우트 키가 쓸 탭 세트 이름 (세트 이름 = 라우트 키).
+ * 세트가 따로 없는 화면(주문처리현황·공지 등)은 기본 세트를 그대로 쓴다.
+ * ⚠️ 세트를 더할 때 그 키는 `APP_TABS` 나 `APP_MENU` 에도 있어야 한다 -
+ * 셸이 라우트 메타(`ROUTES`)를 먼저 찾고, 없으면 홈으로 튕긴다.
+ */
+export function tabSetOf(key) {
+    return Object.hasOwn(APP_TAB_SETS, key) ? key : 'main';
+}

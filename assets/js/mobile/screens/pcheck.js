@@ -1,9 +1,13 @@
 /**
  * 유통가공 검수 (모바일 앱).
  *
- *   #/pcheck             세그 [ 작업전 검수 | 완료 검수 | 캘린더 ]
+ *   #/pcheck/pre         하단 탭 [ 작업전 | 완료 | 캘린더 | 가이드 ]  ← 유통가공 전용 탭 세트
+ *   #/pcheck/done            (탭 정의는 config.js 의 APP_TAB_SETS.pcheck · 셸이 그린다)
+ *   #/pcheck/cal
+ *   #/pcheck/guide
  *   #/pcheck/pre/:id     구성품 줄마다 사진 1장 → [저장] → [검수완료]  → 작업중
  *   #/pcheck/done/:id    완료 사진 3장          → [저장] → [완료처리]  → 작업완료
+ *   #/pcheck/guide/:id   작업지시서 내용 보기 (읽기 전용)
  *
  * 🔑 **업무 규칙은 db.js 에 있다** (docs/processing.md §17). 화면은 상태를 다시 계산하지 않고
  * 목록이 붙여 준 `status` 만 그리며, 「사진이 다 찼을 때만 검수완료」 도 db 가 같이 막는다.
@@ -12,88 +16,45 @@
  * 촬영분은 **저장 전까지 IndexedDB 초안**으로 남는다 - 화면을 떠났다 돌아와도 복구된다.
  */
 import {
-    PROCESS_DONE_PHOTOS, PROCESS_PHASE, PROCESS_PHASES,
-    PROCESS_PHASE_LABEL, PROCESS_STATUS_TONE, WEEKDAYS,
+    PCHECK_SEG, PROCESS_DONE_PHOTOS, PROCESS_ITEM_KIND, PROCESS_PHASE, PROCESS_PHASES,
+    PROCESS_PHASE_LABEL, PROCESS_STATUS, PROCESS_STATUS_TONE, WEEKDAYS,
 } from '../../config.js';
 import * as db from '../../db.js';
 import { icon } from '../../icons.js';
 import { STORE, idbDel, idbList, idbPut } from '../../idb.js';
 import { compressPhoto } from '../../photo.js';
-import { calendarLanes } from '../../processing-calc.js';
+import { calendarLanes, groupLines, needQty } from '../../processing-calc.js';
 import {
     confirmDialog, esc, fmtDateTime, num, toast, today,
 } from '../../util.js';
 import {
     actionDock, bindPhotoSlots, card, closeAllSheets, dock, emptyState, menuSheet,
-    photoSlot, pollGuard, scanBar, segment, sheet, tag,
+    photoSlot, pollGuard, scanBar, sheet, tag,
 } from '../ui.js';
 
-/** 세그·검색어·달 - 상세를 다녀와도 유지한다 */
+/** 검색어·달 - 다른 탭을 다녀와도 유지한다 (하위 탭은 라우트가 들고 있다) */
 const state = {
-    seg: PROCESS_PHASE.PRE,
     keyword: '',
     month: today().slice(0, 7),
 };
 
-/** 캘린더 세그 키 (검수 단계가 아니라 조회 화면이다) */
-const SEG_CAL = 'cal';
-
 /** 앱은 폭이 좁아 레인을 2개만 그린다 (웹은 3개) */
 const APP_MAX_LANE = 2;
 
+/**
+ * 하위 탭은 **하단 탭바**(config.js 의 `APP_TAB_SETS.pcheck`)가 고르고 셸이 라우트로 넘긴다.
+ * 이 화면은 `params[0]` 이 어떤 탭인지만 보고 그린다 - 세그 UI 를 따로 그리지 않는다.
+ */
 export async function render(root, { user, params }) {
-    const [phase, jobId] = params;
-    if (jobId && PROCESS_PHASES.includes(phase)) {
-        return renderDetail(root, user, phase, jobId);
-    }
-    return renderList(root, user);
+    const [seg, jobId] = params;
+    if (jobId && PROCESS_PHASES.includes(seg)) return renderDetail(root, user, seg, jobId);
+    if (jobId && seg === PCHECK_SEG.GUIDE) return renderGuide(root, user, jobId);
+    if (seg === PCHECK_SEG.CAL) return drawCalendar(root, user);
+    if (seg === PCHECK_SEG.GUIDE) return drawGuideList(root);
+    return drawCheckList(root, PROCESS_PHASES.includes(seg) ? seg : PROCESS_PHASE.PRE);
 }
 
 /* ================================== 목록 ================================== */
-
-async function renderList(root, user) {
-    root.innerHTML = '<div id="seghost"></div><div id="pane"></div>';
-    const paneEl = root.querySelector('#pane');
-    let paneClean = null;
-    // 세그를 연타하면 앞 `openPane` 이 아직 await 중이다. 세대 토큰이 없으면 나중에 끝난
-    // 쪽이 `paneClean` 을 덮어써 **앞 pane 의 독·스캔바·구독이 영영 남는다**
-    let paneGen = 0;
-
-    const seg = segment(root.querySelector('#seghost'), [
-        { key: PROCESS_PHASE.PRE, label: PROCESS_PHASE_LABEL[PROCESS_PHASE.PRE] },
-        { key: PROCESS_PHASE.DONE, label: PROCESS_PHASE_LABEL[PROCESS_PHASE.DONE] },
-        { key: SEG_CAL, label: '캘린더' },
-    ], state.seg, (key) => {
-        state.seg = key;
-        openPane();
-    });
-
-    /** 세그를 바꿀 때 이전 화면(카메라·독·구독)을 반드시 먼저 정리한다 */
-    async function openPane() {
-        const gen = (paneGen += 1);
-        paneClean?.();
-        paneClean = null;
-        paneEl.innerHTML = '';
-        const clean = state.seg === SEG_CAL
-            ? await drawCalendar(paneEl, user)
-            : await drawCheckList(paneEl, state.seg);
-        // 여는 사이에 세그가 또 바뀌었거나 화면을 떠났다 - 방금 만든 것을 바로 정리한다
-        if (gen !== paneGen) {
-            clean?.();
-            return;
-        }
-        paneClean = clean;
-    }
-
-    await openPane();
-    return () => {
-        paneGen += 1;      // 준비 중인 pane 이 있으면 스스로 정리하게 한다
-        closeAllSheets();
-        paneClean?.();
-        paneClean = null;
-        seg.destroy();
-    };
-}
 
 /** 작업전·완료 검수 목록 (스캔 바 + 카드) */
 async function drawCheckList(host, phase) {
@@ -143,6 +104,7 @@ async function drawCheckList(host, phase) {
     await reload();
     const unwatch = db.subscribe(pollGuard(host, reload), 5000);
     return () => {
+        closeAllSheets();
         scan.destroy();
         d.destroy();
         unwatch();
@@ -281,9 +243,9 @@ function weekHtml(week, wi, byId) {
 /** 막대를 눌렀을 때 - 요약 + (단계가 맞으면) 검수 화면으로 가는 버튼 */
 function openJobSheet(job, user) {
     if (!job) return;
-    const editable = db.canCheckProcessing(user);
-    const phase = job.pre_check_at ? PROCESS_PHASE.DONE : PROCESS_PHASE.PRE;
-    const goable = editable && job.doc_no && !job.done_at;
+    // 다음에 할 검수가 무엇인지는 db 가 정한다 (화면은 pre_check_at 을 다시 해석하지 않는다)
+    const phase = db.nextCheckPhase(job);
+    const goable = phase !== null && db.canCheckProcessing(user);
     const s = sheet(job.product_name, `
 <div class="m-kv">
   <div class="m-kv__row"><span class="m-kv__k">문서번호</span>
@@ -324,6 +286,194 @@ function openDaySheet(date, jobs, user) {
     });
 }
 
+/* ================================ 작업가이드 ================================ */
+
+/**
+ * 촬영 절차 안내 - 현장이 「무엇을 언제 찍는가」 를 이 화면에서만 확인한다.
+ * 문구를 여기 한 곳에 두어 작업전·완료 화면과 어긋나지 않게 한다.
+ */
+const GUIDE_STEPS = [
+    {
+        title: '작업전 검수',
+        desc: '구성품 줄마다 실물 사진 1장. 품명·LOT 라벨이 읽히게 찍는다',
+    },
+    {
+        title: '유통가공 작업',
+        desc: '아래 구성품 표의 필요수량·LOT 대로 작업한다',
+    },
+    {
+        title: '완료 검수',
+        desc: `완료품 사진 ${PROCESS_DONE_PHOTOS}장. 전체·라벨·적재 상태가 각각 보이게 찍는다`,
+    },
+];
+
+/** 작업가이드 목록 - 문서번호가 나간 작업만. 완료건은 접어 둔다 */
+async function drawGuideList(host) {
+    host.innerHTML = `
+<div class="m-guide">
+  <p class="m-guide__head">사진 검수 절차</p>
+  <ol class="m-steps">
+    ${GUIDE_STEPS.map((s, i) => `
+    <li class="m-steps__li"><b>${i + 1}. ${esc(s.title)}</b><span>${esc(s.desc)}</span></li>`).join('')}
+  </ol>
+  <p class="m-note">사진은 <b>저장</b>을 눌러야 서버에 올라갑니다.
+    저장 전 촬영분은 화면을 떠나도 남아 있습니다.</p>
+</div>
+<label class="m-search">
+  ${icon('search', 'm-icon')}
+  <input type="search" id="g-kw" placeholder="문서번호 · 제품코드 · 제품명"
+         value="${esc(state.keyword)}" aria-label="검색">
+</label>
+<div id="glist">
+  <p class="m-listtitle">진행 중인 작업지시서</p>
+  <div id="todo"></div>
+  <div id="donewrap"></div>
+</div>`;
+
+    const listEl = host.querySelector('#glist');
+    const todoEl = host.querySelector('#todo');
+    const doneWrap = host.querySelector('#donewrap');
+    let showDone = false;
+
+    /** 시작예정일 ↑ · 같은 날이면 문서번호 순 (검수 목록과 같은 정렬) */
+    const byStart = (a, b) => (a.start_date === b.start_date
+        ? (a.doc_no > b.doc_no ? 1 : -1)
+        : (a.start_date > b.start_date ? 1 : -1));
+
+    async function reload() {
+        const rows = (await db.listProcessJobs({ keyword: state.keyword }))
+            .filter((j) => j.doc_no);
+        const todo = rows.filter((j) => j.status !== PROCESS_STATUS.DONE).sort(byStart);
+        const done = rows.filter((j) => j.status === PROCESS_STATUS.DONE).sort(byStart);
+
+        todoEl.innerHTML = todo.length
+            ? todo.map(guideCard).join('')
+            : emptyState(state.keyword.trim()
+                ? '검색 결과가 없습니다.'
+                : '진행 중인 작업지시서가 없습니다.');
+        doneWrap.innerHTML = done.length ? `
+<button class="m-fold" type="button" data-fold aria-expanded="${showDone}">
+  ${icon(showDone ? 'up' : 'down', 'm-icon')}
+  <span>완료 ${num(done.length)}건 ${showDone ? '접기' : '보기'}</span>
+</button>
+${showDone ? done.map(guideCard).join('') : ''}` : '';
+    }
+
+    host.querySelector('#g-kw').addEventListener('input', (e) => {
+        state.keyword = e.target.value;
+        reload();
+    });
+    // 🔑 위임은 목록 컨테이너에만 건다. `host` 는 셸의 `#view` 라 화면을 떠나도 살아남아,
+    // 여기에 걸면 다음 화면의 카드 탭까지 이 핸들러가 가로챈다 (정리 함수로도 지우지 않는다)
+    listEl.addEventListener('click', (e) => {
+        if (e.target.closest('[data-fold]')) {
+            showDone = !showDone;
+            reload();
+            return;
+        }
+        const row = e.target.closest('.m-card[data-id]');
+        if (row) location.hash = `#/pcheck/${PCHECK_SEG.GUIDE}/${row.dataset.id}`;
+    });
+
+    await reload();
+    const unwatch = db.subscribe(pollGuard(host, reload), 10000);
+    return () => unwatch();
+}
+
+/** 가이드 목록 카드 - 검수 목록과 달리 사진 장수 대신 기간을 앞세운다 */
+function guideCard(j) {
+    const body = `
+<span class="m-card__cust">${esc(j.product_name)}</span>
+<span class="m-card__meta">${esc(j.work_type)} · ${esc(j.product_code)}
+  · ${num(j.qty)}개 · ${esc(j.start_date)} ~ ${esc(j.due_date)}</span>`;
+    return card(`<b>${esc(j.doc_no)}</b>`, body, {
+        status: tag(j.status, PROCESS_STATUS_TONE[j.status]),
+        attrs: { id: j.id },
+        tap: true,
+    });
+}
+
+/**
+ * 작업가이드 상세 - 웹 작업지시서(`pages/processing/doc.js`)와 **같은 내용을 읽기 전용**으로.
+ * 구성품 줄 묶기는 웹과 같은 `groupLines` 를 쓴다 (표가 갈라지지 않게).
+ */
+async function renderGuide(root, user, jobId) {
+    const back = { label: '작업가이드 목록으로', href: `#/pcheck/${PCHECK_SEG.GUIDE}` };
+    const found = await db.getProcessJob(jobId);
+    if (!found) {
+        root.innerHTML = emptyState('작업을 찾을 수 없습니다.', back);
+        return null;
+    }
+
+    const { job, items } = found;
+    // 다음에 할 검수 한 가지만 안내한다 (권한이 없거나 완료된 작업이면 버튼이 없다)
+    const phase = db.nextCheckPhase(job);
+    const goable = phase !== null && db.canCheckProcessing(user);
+    const info = [
+        ['문서번호', job.doc_no || '미발행'],
+        ['작업구분', job.work_type],
+        ['제품코드', job.product_code],
+        ['제품명', job.product_name],
+        ['작업수량', `${num(job.qty)}개`],
+        ['시작예정일', job.start_date],
+        ['완료요청일', job.due_date],
+    ];
+
+    root.innerHTML = `
+<div class="m-ohead">
+  <div class="m-ohead__row">
+    <h2 class="m-ohead__no">${esc(job.doc_no || '미발행')}</h2>
+    ${tag(job.status, PROCESS_STATUS_TONE[job.status])}
+  </div>
+  <p class="m-ohead__meta">${esc(job.product_name)} · ${esc(job.work_type)}</p>
+</div>
+<div class="m-kv">
+  ${info.map(([k, v]) => `
+  <div class="m-kv__row"><span class="m-kv__k">${esc(k)}</span>
+    <span class="m-kv__v">${esc(v ?? '')}</span></div>`).join('')}
+</div>
+<p class="m-listtitle">구성품 (사진은 줄마다 1장)</p>
+<table class="m-itab">
+  <thead>
+    <tr><th>구분</th><th>코드</th><th>품명</th><th>필요</th><th>LOT</th><th>수량</th></tr>
+  </thead>
+  <tbody>${itemRows(items, job.qty)}</tbody>
+</table>
+<div class="m-kv">
+  <div class="m-kv__row"><span class="m-kv__k">작업전 검수</span>
+    <span class="m-kv__v">${job.pre_check_at
+        ? `${esc(job.pre_check_by_name)} · ${esc(fmtDateTime(job.pre_check_at))}` : '-'}</span></div>
+  <div class="m-kv__row"><span class="m-kv__k">완료 검수</span>
+    <span class="m-kv__v">${job.done_at
+        ? `${esc(job.done_by_name)} · ${esc(fmtDateTime(job.done_at))}` : '-'}</span></div>
+</div>
+${goable ? `
+<a class="m-btn m-btn--primary m-btn--block" href="#/pcheck/${esc(phase)}/${esc(job.id)}"
+  >${esc(PROCESS_PHASE_LABEL[phase])}로</a>` : ''}
+<p class="m-note">보기 전용 화면입니다. 작업지시서 인쇄는 웹에서 합니다.</p>`;
+
+    return null;
+}
+
+/** 구성품 표의 행 - 같은 줄의 두 번째 LOT 행부터는 앞 칸을 비운다 (웹 작업지시서와 같다) */
+function itemRows(items, jobQty) {
+    const lines = groupLines(items);
+    if (!lines.length) return '<tr><td class="m-itab__empty" colspan="6">구성품이 없습니다.</td></tr>';
+    return lines.map((line) => line.rows.map((r, i) => {
+        const head = i === 0;
+        const lot = line.kind === PROCESS_ITEM_KIND.PRODUCT ? (r.lot || '-') : '—';
+        return `
+<tr>
+  <td>${head ? esc(line.kind) : ''}</td>
+  <td>${head ? esc(line.code ?? '') : ''}</td>
+  <td>${head ? esc(line.name) : ''}</td>
+  <td class="m-itab__num">${head ? num(needQty(line.qty_per, jobQty)) : ''}</td>
+  <td>${esc(lot)}</td>
+  <td class="m-itab__num">${num(r.qty)}</td>
+</tr>`;
+    }).join('')).join('');
+}
+
 /* ================================== 상세 ================================== */
 
 /** 초안 키 - `${작업}:${단계}:${슬롯}` (같은 자리를 다시 찍으면 덮어쓴다) */
@@ -340,18 +490,13 @@ function slotsOf(phase, items) {
             note: '',
         }));
     }
-    // 작업전은 **구성품 줄**마다 1장이다 (LOT 을 나눠도 실물은 한 품목)
-    const seen = new Map();
-    (items ?? []).forEach((it) => {
-        if (!seen.has(it.line_no)) seen.set(it.line_no, it);
-    });
-    return [...seen.values()]
-        .sort((a, b) => a.line_no - b.line_no)
-        .map((it) => ({
-            key: String(it.line_no),
-            label: `${it.line_no}. ${it.name}`,
-            note: `${it.kind}${it.code ? ` · ${it.code}` : ''}`,
-        }));
+    // 작업전은 **구성품 줄**마다 1장이다 (LOT 을 나눠도 실물은 한 품목).
+    // 줄 묶기는 작업가이드 표·웹 작업지시서와 같은 groupLines 를 쓴다
+    return groupLines(items).map((line) => ({
+        key: String(line.line_no),
+        label: `${line.line_no}. ${line.name}`,
+        note: `${line.kind}${line.code ? ` · ${line.code}` : ''}`,
+    }));
 }
 
 /**
@@ -361,7 +506,7 @@ function slotsOf(phase, items) {
  */
 async function renderDetail(root, user, phase, jobId) {
     const editable = db.canCheckProcessing(user);
-    const back = { label: `${PROCESS_PHASE_LABEL[phase]} 목록으로`, href: '#/pcheck' };
+    const back = { label: `${PROCESS_PHASE_LABEL[phase]} 목록으로`, href: `#/pcheck/${phase}` };
 
     let found = await db.getProcessJob(jobId);
     if (!found) {
@@ -480,12 +625,14 @@ async function renderDetail(root, user, phase, jobId) {
 ${blocked ? `
 <div class="m-guide">
   <p>작업전 검수를 먼저 마쳐야 합니다.</p>
-  <a class="m-btn m-btn--primary" href="#/pcheck/pre/${esc(job.id)}">작업전 검수로</a>
+  <a class="m-btn m-btn--primary" href="#/pcheck/${PROCESS_PHASE.PRE}/${esc(job.id)}"
+    >${esc(PROCESS_PHASE_LABEL[PROCESS_PHASE.PRE])}로</a>
 </div>` : ''}
 ${phase === PROCESS_PHASE.PRE && pre && !done ? `
 <div class="m-guide">
   <p>작업전 검수를 마친 작업입니다. 사진은 다시 볼 수 있고, 되돌리려면 위 ··· 메뉴를 쓰세요.</p>
-  <a class="m-btn m-btn--primary" href="#/pcheck/done/${esc(job.id)}">완료 검수로</a>
+  <a class="m-btn m-btn--primary" href="#/pcheck/${PROCESS_PHASE.DONE}/${esc(job.id)}"
+    >${esc(PROCESS_PHASE_LABEL[PROCESS_PHASE.DONE])}로</a>
 </div>` : ''}
 ${done ? `
 <div class="m-guide"><p>완료된 작업입니다. 조회만 가능합니다.</p></div>` : ''}
@@ -582,7 +729,7 @@ ${editable ? '' : '<p class="m-note">검수 권한이 없어 조회만 가능합
             toast(phase === PROCESS_PHASE.PRE
                 ? '작업전 검수를 완료했습니다. 작업중으로 바뀝니다.'
                 : '작업을 완료했습니다.', 'success');
-            location.hash = '#/pcheck';
+            location.hash = `#/pcheck/${phase}`;
             return;
         } catch (err) {
             toast(err.message, 'error');

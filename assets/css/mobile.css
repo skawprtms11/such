@@ -1832,3 +1832,91 @@ button.m-pallet:disabled { cursor: default; }
 .m-cal__legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 2px; font-size: 12px; color: var(--m-gray-700); }
 .m-cal__key { display: inline-flex; align-items: center; gap: 5px; }
 .m-cal__key i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* ===== 유통가공 작업가이드 (#/pcheck/guide) ===== */
+
+/* `.m-guide p` 보다 뒤에 오는 선택자여야 글자색·여백이 먹는다 */
+.m-guide .m-guide__head {
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--m-gray-900);
+}
+
+/* 절차 3단계 - 번호는 문구에 직접 넣으므로 목록 표지는 지운다 */
+.m-steps {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 8px;
+}
+
+.m-steps__li {
+    display: grid;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--m-card);
+    font-size: 13px;
+    color: var(--m-gray-700);
+}
+
+.m-steps__li b { color: var(--m-gray-900); }
+
+/* 완료건 접기 줄 */
+.m-fold {
+    width: 100%;
+    min-height: var(--tap-min);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 4px;
+    margin: 4px 0;
+    border: none;
+    background: none;
+    color: var(--m-gray-500);
+    font: inherit;
+    font-size: 13px;
+}
+
+/*
+ * 구성품 표 - 웹 작업지시서와 같은 6칸이다.
+ * 좁은 폭에서도 가로 스크롤이 생기지 않게 글자를 줄이고 칸 너비를 고정한다.
+ */
+.m-itab {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    background: var(--m-card);
+    border: 1px solid var(--m-gray-200);
+    border-radius: var(--m-radius);
+    overflow: hidden;
+    font-size: 12px;
+}
+
+.m-itab th,
+.m-itab td {
+    padding: 6px 4px;
+    border-top: 1px solid var(--m-gray-200);
+    text-align: left;
+    vertical-align: top;
+    word-break: break-all;
+}
+
+.m-itab thead th {
+    border-top: 0;
+    background: var(--m-gray-100);
+    color: var(--m-gray-700);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.m-itab th:nth-child(1), .m-itab td:nth-child(1) { width: 44px; }
+.m-itab th:nth-child(2), .m-itab td:nth-child(2) { width: 54px; }
+.m-itab th:nth-child(4), .m-itab td:nth-child(4) { width: 38px; }
+.m-itab th:nth-child(5), .m-itab td:nth-child(5) { width: 68px; }
+.m-itab th:nth-child(6), .m-itab td:nth-child(6) { width: 36px; }
+
+.m-itab__num { text-align: right; }
+.m-itab__empty { text-align: center; color: var(--m-gray-500); }
