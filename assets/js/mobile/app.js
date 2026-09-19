@@ -5,7 +5,7 @@
  * 여기서 부르는 화면은 assets/js/mobile/screens/** 뿐이며,
  * 업무 규칙은 그대로 db.js · steps.js 에 둔다.
  */
-import { APP_TABS, APP_MENU } from '../config.js';
+import { APP_TAB_SETS, APP_MENU, tabSetOf } from '../config.js';
 import { requireLogin, signOut, roleLabel, can } from '../auth.js';
 import { icon } from '../icons.js';
 import { esc } from '../util.js';
@@ -39,12 +39,30 @@ if (shellUrl(user) === WEB_SHELL) {
  */
 const allowed = (m) => !m.viewPerm || can(user, m.viewPerm);
 
-/** 이 사용자가 쓸 수 있는 탭·메뉴 */
-const TABS = APP_TABS.filter(allowed);
+/** 이 사용자가 쓸 수 있는 탭 세트·메뉴 (세트는 라우트에 따라 갈아 끼운다) */
+const TAB_SETS = Object.fromEntries(
+    Object.entries(APP_TAB_SETS).map(([name, tabs]) => [name, tabs.filter(allowed)]),
+);
 const MENU = APP_MENU.filter(allowed);
 
-/** 라우트 메타 - 허용된 하단 탭 + 상단바 메뉴 항목 */
-const ROUTES = [...TABS, ...MENU];
+/** 라우트 메타 - 허용된 기본 탭 + 상단바 메뉴 항목 (유통가공은 서랍에 있다) */
+const ROUTES = [...TAB_SETS.main, ...MENU];
+
+/**
+ * 이 라우트가 켤 탭 세트와 하위 탭 - 라우터와 뒤로가기가 **같은 판정 하나**를 쓴다.
+ *
+ * `tab` 의 값은 둘뿐이다 - 세그 세트가 아니면 `null`, 세그 세트면 **언제나 탭 하나**다
+ * (세그가 없거나(`#/pcheck`) 틀리면(`#/pcheck/xxx`) 첫 탭). 주소를 옮겨야 하는지는
+ * 부른 쪽이 `tab.seg !== params[0]` 로 본다 - 「없는 값」을 세 번째 뜻으로 쓰지 않는다.
+ */
+function tabStateOf(key, params) {
+    let set = tabSetOf(key);
+    // 권한 필터로 세트가 통째로 비면 기본 세트로 돌아간다 (탭 없는 탭바를 그리지 않게)
+    if (!TAB_SETS[set]?.length) set = 'main';
+    const segs = TAB_SETS[set].filter((t) => t.seg);
+    const tab = segs.length ? (segs.find((t) => t.seg === params[0]) ?? segs[0]) : null;
+    return { set, tab };
+}
 
 /** 홈은 첫 번째 탭(출고작업)이다. 앱을 열면 바로 스캔할 수 있어야 한다 */
 const HOME = ROUTES[0]?.key ?? null;
@@ -105,13 +123,24 @@ function stampHistory() {
 let prevRoute = null;
 let curRoute = null;
 
-/** 하단 탭바 · 상단바 메뉴 · 사용자 정보를 한 번만 그린다 */
-function renderShell() {
-    tabbar.innerHTML = TABS.map((t) => `
-<a class="m-tab" data-key="${t.key}" href="${t.route}">
+/** 지금 그려 둔 탭 세트 이름 - 바뀔 때만 다시 그린다 */
+let tabSet = null;
+
+/**
+ * 하단 탭바를 그린다. 세트가 그대로면 손대지 않는다
+ * (같은 세트 안에서 화면만 옮길 때 탭이 깜빡이지 않게).
+ */
+function renderTabbar(name) {
+    if (tabSet === name) return;
+    tabSet = name;
+    tabbar.innerHTML = (TAB_SETS[name] ?? []).map((t) => `
+<a class="m-tab" data-key="${t.key}"${t.seg ? ` data-seg="${t.seg}"` : ''} href="${t.route}">
   ${icon(t.icon, 'm-icon m-tab__icon')}<span class="m-tab__label">${esc(t.label)}</span>
 </a>`).join('');
+}
 
+/** 상단바 메뉴 · 사용자 정보를 한 번만 그린다 */
+function renderShell() {
     document.getElementById('m-drawer-nav').innerHTML = MENU.map((m) => `
 <a class="m-drawer__item" data-key="${m.key}" href="${m.route}">
   ${icon(m.icon, 'm-icon')}<span>${esc(m.title)}</span>
@@ -159,15 +188,27 @@ async function route() {
         return;
     }
 
+    // 🔑 유통가공처럼 하위 탭을 가진 세트는 params[0] 이 세그다 (`#/pcheck/pre`).
+    // 세그가 없거나 틀리면 첫 탭으로 옮긴다 - `#/pcheck` 로 들어와도 탭 하나가 반드시 켜진다
+    const { set, tab } = tabStateOf(key, params);
+    if (tab && tab.seg !== params[0]) {
+        location.replace(tab.route);
+        return;
+    }
+
     stampHistory();
     prevRoute = curRoute;
     curRoute = location.hash;
     const seq = ++renderSeq;
 
-    titleEl.textContent = meta.title;
-    backBtn.hidden = params.length === 0;
+    renderTabbar(set);
+    titleEl.textContent = tab?.title ?? meta.title;
+    // 세그 세트는 목록도 params 를 하나 쓴다 - 상세(그 아래 :id)일 때만 뒤로가기를 보인다
+    backBtn.hidden = params.length <= (tab ? 1 : 0);
     tabbar.querySelectorAll('[data-key]').forEach((el) => {
-        el.classList.toggle('is-active', el.dataset.key === key);
+        el.classList.toggle('is-active', tab
+            ? el.dataset.seg === tab.seg
+            : el.dataset.key === key);
     });
     drawer.querySelectorAll('[data-key]').forEach((el) => {
         el.classList.toggle('is-active', el.dataset.key === key);
@@ -223,8 +264,10 @@ async function route() {
  * 뒤가 같은 탭의 목록일 때만 뒤로 가고, 아니면 그 탭의 목록으로 바꿔 넣는다.
  */
 backBtn.addEventListener('click', () => {
-    const [key] = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-    const list = `#/${key ?? HOME}`;
+    const [key, ...params] = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+    // 세그 세트는 목록이 `#/<키>/<세그>` 다 - 완료 검수 상세에서 작업전 목록으로 새지 않게 한다
+    const { tab } = tabStateOf(key, params);
+    const list = tab ? tab.route : `#/${key ?? HOME}`;
     if (history.state?.m > 0 && prevRoute === list) history.back();
     else location.replace(list);
 });

@@ -17,7 +17,7 @@
 | 주문처리현황 | [docs/status.md](docs/status.md) | `assets/js/pages/status.js` | `#/status` | `#/status` (상단바 메뉴) |
 | 출고주문처리 | [docs/shipping.md](docs/shipping.md) | `assets/js/pages/shipping.js` | `#/shipping` | `#/ship` `#/inspect` `#/stow` `#/adjust` (탭 4개로 분리) |
 | 상차리스트 | [docs/loading.md](docs/loading.md) | `assets/js/pages/loading.js` | `#/loading` | `#/load` |
-| 유통가공작업 | [docs/processing.md](docs/processing.md) | `assets/js/pages/processing.js` | `#/processing` | `#/pcheck` (상단바 메뉴 · 세그 3개 — 작업전 검수 · 완료 검수 · 캘린더). **앱은 사진 검수만** 한다 |
+| 유통가공작업 | [docs/processing.md](docs/processing.md) | `assets/js/pages/processing.js` | `#/processing` | `#/pcheck/pre` · `done` · `cal` · `guide` (상단바 메뉴로 들어가고 **하단 탭이 유통가공 전용 4개로 바뀐다** — 작업전·완료·캘린더·가이드). **앱은 사진 검수와 작업지시서 보기만** 한다 |
 | 검수 (바코드) | [docs/inspect.md](docs/inspect.md) | `assets/js/pages/inspect.js` | `#/inspect/:id` | `#/load/:id` (세그 `상차검수`) |
 | 이슈등록 | [docs/issues.md](docs/issues.md) | `assets/js/pages/issues.js` | `#/issues` | `#/issues` (상단바 메뉴) |
 | 공지사항 | [docs/notices.md](docs/notices.md) | `assets/js/pages/notices.js` | `#/notices` | `#/notices` (상단바 메뉴) |

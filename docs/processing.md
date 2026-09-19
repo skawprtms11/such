@@ -30,7 +30,7 @@
 | 작업마스터 | `master` | 제품별 구성품(BOM) 등록 | 이번에 구현 |
 
 **웹의 이 4개 탭은 사무 등록 업무라 앱에 넣지 않는다** (`MENUS` 의 `mobile: false`).
-대신 **현장 검수만** 앱 탭으로 따로 낸다 — 작업전 검수 · 완료 검수 · 캘린더 3개 세그먼트다.
+대신 **현장 검수만** 앱으로 따로 낸다 — 유통가공 전용 하단 탭 4개(작업전 검수 · 완료 검수 · 캘린더 · 작업가이드)다.
 등록·문서생성은 웹, 사진 증빙은 앱이다 ([§17 모바일 검수](#17-모바일-검수-pcheck-) 참고).
 
 ### 파일 구성
@@ -1006,14 +1006,23 @@ function guarded() {
 [mobile.md §3-8](mobile.md#3-8-유통가공-pcheck) 에, **업무 규칙은 여기**에 둔다.
 
 ```
-앱 탭 「가공」  #/pcheck
-   세그 [ 작업전 검수 | 완료 검수 | 캘린더 ]
+서랍(≡) 「유통가공작업」  #/pcheck  →  #/pcheck/pre
+   하단 탭 [ 작업전 | 완료 | 캘린더 | 가이드 ]   ← 유통가공 전용 탭 세트 (mobile.md §2)
       │
       │ 진입 3가지 : ① 목록 카드 탭  ② 문서번호 직접 입력  ③ 작업지시서 바코드 스캔
       ▼
    #/pcheck/pre/:id     구성품 줄마다 사진 1장 → [저장] → [검수완료]  → pre_check_at
    #/pcheck/done/:id    완료 제품 사진 3장     → [저장] → [완료처리]  → done_at
+   #/pcheck/guide/:id   작업지시서 내용 보기 (읽기 전용 · 검수 화면으로 가는 버튼 1개)
 ```
+
+| 라우트 | 화면 | 상단바 제목 |
+|---|---|---|
+| `#/pcheck` | → `#/pcheck/pre` 로 옮긴다 (세그가 틀린 주소도 같다) | — |
+| `#/pcheck/pre` · `#/pcheck/pre/:id` | 작업전 검수 목록 · 상세 | 작업전 검수 |
+| `#/pcheck/done` · `#/pcheck/done/:id` | 완료 검수 목록 · 상세 | 완료 검수 |
+| `#/pcheck/cal` | 작업캘린더 (조회) | 작업캘린더 |
+| `#/pcheck/guide` · `#/pcheck/guide/:id` | 작업가이드 목록 · 작업지시서 보기 | 작업가이드 |
 
 ### 17-1. 진입 규칙
 
@@ -1023,7 +1032,8 @@ function guarded() {
 | 작업전 검수 목록 | `pre_check_at` 없는 건. 시작예정일 ↑ |
 | 완료 검수 목록 | `pre_check_at` 있고 `done_at` 없는 건 |
 | 이미 끝난 건 | 목록에는 없지만 **문서번호 입력·스캔으로는 열린다** — 사진을 다시 보고 `···` 로 취소하기 위해서다. 열면 읽기 전용 |
-| 단계가 다른 건 | 안내 + 해당 세그로 옮기는 버튼 (`ship.js` `inspect.js` 의 관례와 같다) |
+| 단계가 다른 건 | 안내 + 해당 탭으로 옮기는 버튼 (`ship.js` `inspect.js` 의 관례와 같다) |
+| 다음에 할 검수 | `db.nextCheckPhase(job)` 🔑 **유일한 출처** — 문서번호 전이거나 완료면 `null`. 캘린더 시트·작업가이드의 「…검수로」 버튼이 이 값으로 갈린다 (화면이 `pre_check_at` 을 다시 해석하지 않는다) |
 
 🔑 **문서번호가 없는 작업을 목록에만 넣지 않는다 (판단 근거).** 진입 경로 2개(입력·스캔)가
 문서번호 기반이라 목록만 예외를 두면 **같은 작업이 경로에 따라 열리거나 안 열린다.**
@@ -1098,7 +1108,7 @@ export async function compressPhoto(file, opt = {}) // → { blob, width, height
 - 업로드 성공 · 메타 저장 실패면 `invalidate()` 후 오류를 던진다
   ([학습로그 2026-09-19](AGENT_LEARNING_LOG.md) — 되돌릴 수 없는 값의 실패 경로)
 
-### 17-5. 캘린더 세그
+### 17-5. 캘린더 탭
 
 - 웹과 **같은 순수 함수** `processing-calc.js` 의 `calendarLanes()` `calendarGrid()` 를 쓴다.
   앱 화면이 `pages/**` 를 import 하지 않는다는 규칙은 지켜진다 — 계산 모듈은 공용이다
@@ -1106,14 +1116,14 @@ export async function compressPhoto(file, opt = {}) // → { blob, width, height
 - 앱은 폭이 좁아 `maxLane = 2` 로 부른다. 넘친 것은 웹과 같이 `+N`
 - 막대 색 = `PROCESS_STATUS_TONE[job.status]` — **웹 `.pc-bar--*` 와 같은 토큰**,
   클래스 이름만 `m-cal-bar--*` 다 (앱 CSS 는 `m-` 접두, 웹 클래스를 재사용하지 않는다)
-- 막대를 누르면 그 작업의 상세 시트가 뜬다. 현재 세그와 단계가 맞으면 검수 화면으로 가는
+- 막대를 누르면 그 작업의 상세 시트가 뜬다. 단계가 맞으면 검수 화면으로 가는
   버튼이 함께 나온다
 
 ### 17-6. 파일 구성
 
 | 파일 | 책임 |
 |---|---|
-| `assets/js/mobile/screens/pcheck.js` | 앱 화면 1개 — 세그 3개 · 목록 · 스캔 · 상세(작업전/완료) |
+| `assets/js/mobile/screens/pcheck.js` | 앱 화면 1개 — 하단 탭 4개(작업전·완료·캘린더·가이드) · 목록 · 스캔 · 상세(작업전/완료/가이드) |
 | `assets/js/mobile/ui.js` (추가) | `photoSlot()` / `bindPhotoSlots()` — 촬영 칸·썸네일·재촬영. **작업전과 완료가 같은 조각을 쓴다**(2회 반복 = 공통화 기준) |
 | `assets/js/photo.js` (신규) | 압축 (순수 계산 + canvas) |
 | `assets/js/idb.js` (신규) | IndexedDB 래퍼 — mock 파일 저장소(`files`) + 초안 보관(`drafts`) |
@@ -1121,7 +1131,7 @@ export async function compressPhoto(file, opt = {}) // → { blob, width, height
 | `assets/js/auth.js` (추가) | `signOut()` 이 IndexedDB 초안(과 mock 사진)을 함께 지운다 |
 | `assets/js/db.js` (추가) | §6 「모바일 검수」 함수들 |
 
-**화면을 한 파일로 두는 이유**: 세 세그가 같은 목록·스캔 바·상세 시트를 공유한다.
+**화면을 한 파일로 두는 이유**: 네 하위 탭이 같은 목록·스캔 바·상세 시트를 공유한다.
 나누면 그 공유 조각을 또 다른 파일로 빼야 해서 파일이 5개가 된다. 앱 화면 층의 관례도
 `화면 = 파일 1개`(`stow.js` 810줄 · `load.js` 477줄)다. **700줄을 넘으면** 웹
 `pages/checklist/*` 처럼 `screens/pcheck/` 로 나눈다.
@@ -1286,8 +1296,9 @@ SQL 은 문법·의미를 눈으로 검토했을 뿐이고 **실 Supabase 적용
 | A20 | 완료 사진은 **정확히 3장** (더도 덜도 안 된다) | `PROCESS_DONE_PHOTOS` 상수 1곳 |
 | A21 | 사진은 **JPEG · 긴 변 1280px · 목표 200KB · 상한 1MB**. 원본은 보관하지 않는다 | `photo.js` 의 `PHOTO` 상수 · 버킷 `file_size_limit` |
 | A22 | 검수·완료를 **취소해도 사진은 지우지 않는다** (다시 찍으면 덮어쓴다) | `revokePreCheck` · Storage 정리 배치 필요 여부 |
-| A23 | ~~앱 탭 6번째~~ → **상단바 메뉴(`APP_MENU`) 첫 항목 「유통가공작업」** (대표님 지시 2026-09-19 · 하단 탭은 5개 유지) | `APP_MENU` 순서 1줄 |
+| A23 | ~~앱 탭 6번째~~ → **서랍(`APP_MENU`) 「유통가공작업」 으로 들어가고, 들어가면 하단 탭이 유통가공 전용 4개(작업전·완료·캘린더·가이드)로 바뀐다** (대표님 지시 2026-09-19 · `APP_TAB_SETS`) | `config.js` 의 탭 세트 + `mobile/app.js` 의 탭바 재렌더 |
 | A24 | mock 모드 사진은 **IndexedDB** 에 둔다 (localStorage 아님) | `store.js` 파일 API · `idb.js` |
+| A25 | **작업가이드 탭의 내용은 개발팀이 정했다** — 촬영 절차 3단계 + 작업지시서 읽기 전용 보기 (대표님이 항목을 지정하지 않았다) | 현장이 다른 것을 원하면 `GUIDE_STEPS` 와 상세 구성 |
 
 ### 개발팀 주의사항 5가지 🔑
 

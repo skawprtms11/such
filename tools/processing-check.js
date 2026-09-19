@@ -24,13 +24,17 @@
  *   사진   P1 작업전 슬롯 = 구성품 줄 집합 (LOT 행이 몇 개든 줄마다 1장)
  *         P2 missingSlots 는 **찍지 않은 것만** 돌려준다 · 비면 전부 찍힌 것이다
  *         P3 문자열·중복·없는 줄이 섞여도 결과가 같다 (앱 슬롯 키는 문자열이다)
+ *   구성품 B1 모든 입력 행이 **정확히 한 번** 어느 줄에 들어간다 (rows 합 = 입력 개수)
+ *         B2 줄은 `line_no` 오름차순이고 줄 번호가 겹치지 않는다
+ *         B3 줄 대표값(kind·code·name·qty_per)은 **그 줄 첫 입력 행**과 같고 rows 는 입력 순서다
+ *            (웹 작업지시서와 앱 작업가이드가 같은 표를 그리는 근거 - docs/mobile.md §3-8)
  *   문서   D1 `parseDocNo(formatDocNo(d, n))` 이 원래 값과 같다 (세 자리 이상 포함)
  *         D2 `nextDocSeq` 는 그 날짜의 모든 순번보다 크다 (**숫자 비교** - 자릿수가 달라도)
  */
 import process from 'node:process';
 import {
-    CAL_CELLS, calendarGrid, calendarLanes, formatDocNo, missingSlots, needQty, nextDocSeq,
-    normalizeLots, parseDocNo, photoLines, validateLots,
+    CAL_CELLS, calendarGrid, calendarLanes, formatDocNo, groupLines, missingSlots, needQty,
+    nextDocSeq, normalizeLots, parseDocNo, photoLines, validateLots,
 } from '../assets/js/processing-calc.js';
 
 /** 시드 고정 난수 - 깨진 입력을 다시 만들어 볼 수 있어야 한다 (2번째 인자로 시드 교체) */
@@ -43,7 +47,7 @@ const pick = (n) => Math.floor(rnd() * n);
 
 const fails = {
     C1: 0, C2: 0, C3: 0, C4: 0, C5: 0, G1: 0, L1: 0, L2: 0, L3: 0, L4: 0, D1: 0, D2: 0,
-    P1: 0, P2: 0, P3: 0,
+    P1: 0, P2: 0, P3: 0, B1: 0, B2: 0, B3: 0,
 };
 const first = {};
 function note(key, msg) {
@@ -277,6 +281,60 @@ function checkPhotos(t) {
     }
 }
 
+/* ------------------------------- 구성품 줄 묶기 ------------------------------- */
+
+/**
+ * `groupLines` 는 웹 상세·작업지시서와 앱 작업가이드가 **함께** 쓴다.
+ * 여기가 틀리면 같은 작업의 구성품 표가 화면마다 다르게 보인다.
+ */
+function checkGroup(t) {
+    // 줄 번호는 일부러 뒤섞어 넣는다 - 입력 순서와 무관하게 오름차순으로 나와야 한다
+    const nos = [...new Set(Array.from({ length: 1 + pick(6) }, () => 1 + pick(9)))];
+    const items = [];
+    nos.forEach((no) => {
+        const rows = 1 + pick(3);
+        for (let r = 0; r < rows; r += 1) {
+            items.push({
+                line_no: no,
+                kind: r === 0 ? '제품' : '부자재',      // 대표값은 첫 행에서만 와야 한다
+                code: `C${no}-${r}`,
+                name: `N${no}-${r}`,
+                qty_per: 1 + pick(5),
+                lot: `L${no}-${r}`,
+            });
+        }
+    });
+    // 입력 순서를 흔든다 (같은 줄의 행 순서는 유지된 채로 줄끼리만 섞이도록 하지 않는다 -
+    // 실제 데이터도 sort_order 가 뒤섞여 들어올 수 있다)
+    for (let i = items.length - 1; i > 0; i -= 1) {
+        const j = pick(i + 1);
+        [items[i], items[j]] = [items[j], items[i]];
+    }
+
+    const lines = groupLines(items);
+    const flat = lines.flatMap((l) => l.rows);
+    if (flat.length !== items.length || items.some((it) => !flat.includes(it))) {
+        note('B1', `t${t} 행이 빠지거나 늘었다 ${flat.length} != ${items.length}`);
+    }
+    if (lines.some((l, i) => i > 0 && l.line_no <= lines[i - 1].line_no)) {
+        note('B2', `t${t} 줄 순서가 오름차순이 아니다 ${JSON.stringify(lines.map((l) => l.line_no))}`);
+    }
+    lines.forEach((l) => {
+        const own = items.filter((it) => it.line_no === l.line_no);
+        const head = own[0];
+        if (l.kind !== head.kind || l.code !== head.code
+            || l.name !== head.name || l.qty_per !== head.qty_per) {
+            note('B3', `t${t} 줄 ${l.line_no} 대표값이 첫 행과 다르다`);
+        }
+        if (l.rows.length !== own.length || l.rows.some((r, i) => r !== own[i])) {
+            note('B3', `t${t} 줄 ${l.line_no} 의 행 순서가 입력과 다르다`);
+        }
+    });
+    if (groupLines(null).length || groupLines([]).length) {
+        note('B1', `t${t} 빈 입력이 빈 배열을 주지 않는다`);
+    }
+}
+
 /* --------------------------------- 실행 --------------------------------- */
 
 const total = Number(process.argv[2] ?? 3000);
@@ -285,6 +343,7 @@ for (let t = 0; t < total; t += 1) {
     checkLots(t);
     checkDocNo(t);
     checkPhotos(t);
+    checkGroup(t);
 }
 
 const bad = Object.values(fails).some(Boolean);

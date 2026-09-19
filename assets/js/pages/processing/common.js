@@ -11,6 +11,13 @@ import {
 import { esc, toast } from '../../util.js';
 
 /**
+ * 작업 구성품 행을 구성품 줄(`line_no`)로 묶는다 (상세 팝업·작업지시서가 함께 쓴다).
+ * 🔑 구현은 `processing-calc.js` 에 있다 - 앱 작업가이드(`mobile/screens/pcheck.js`)도
+ * 같은 묶음을 쓰는데 앱 화면은 `pages/**` 를 import 하지 않기 때문이다.
+ */
+export { groupLines } from '../../processing-calc.js';
+
+/**
  * `await` 없이 부르는 비동기 팝업을 감싼다 🔑
  *
  * 목록·캘린더의 클릭 핸들러는 팝업을 열어 두고 바로 끝난다. 팝업 안에서 조회가 실패하면
@@ -62,26 +69,4 @@ export function statusOptions(cur) {
 /** 빈 목록 한 줄 */
 export function emptyRow(cols, msg) {
     return `<tr><td colspan="${cols}" class="empty">${esc(msg)}</td></tr>`;
-}
-
-/**
- * 작업 구성품 행을 **구성품 줄(`line_no`)로 묶는다.**
- * 한 줄 안의 LOT 행들이 `rows` 에 순서대로 들어간다 (상세 팝업·작업지시서가 함께 쓴다).
- */
-export function groupLines(items) {
-    const byLine = new Map();
-    (items ?? []).forEach((it) => {
-        if (!byLine.has(it.line_no)) {
-            byLine.set(it.line_no, {
-                line_no: it.line_no,
-                kind: it.kind,
-                code: it.code,
-                name: it.name,
-                qty_per: it.qty_per,
-                rows: [],
-            });
-        }
-        byLine.get(it.line_no).rows.push(it);
-    });
-    return [...byLine.values()].sort((a, b) => a.line_no - b.line_no);
 }

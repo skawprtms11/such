@@ -3802,6 +3802,18 @@ export function processStatus(job) {
     return PROCESS_STATUS.WAIT;
 }
 
+/**
+ * 다음에 할 검수 단계 🔑 **유일한 출처**. 더 할 검수가 없으면 `null` 이다
+ * (작업지시서 전이거나 이미 완료). 앱의 「작업전/완료 검수로」 버튼이 이 값으로 갈린다.
+ *
+ * 화면이 `pre_check_at` 을 직접 해석하면 화면마다 기준이 갈린다
+ * (학습로그 2026-09-16 - 같은 판정을 화면마다 다시 짜서 모집단이 갈렸다).
+ */
+export function nextCheckPhase(job) {
+    if (!job?.doc_no || job.done_at) return null;
+    return job.pre_check_at ? PROCESS_PHASE.DONE : PROCESS_PHASE.PRE;
+}
+
 /* --------------------------------- 작업마스터 --------------------------------- */
 
 /** 살아 있는 마스터만 (soft delete 제외) */

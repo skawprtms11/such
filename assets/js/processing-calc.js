@@ -44,6 +44,30 @@ export function expandMasterItems(items, jobQty) {
     }));
 }
 
+/**
+ * 작업 구성품 행을 **구성품 줄(`line_no`)로 묶는다.**
+ * 한 줄 안의 LOT 행들이 `rows` 에 순서대로 들어간다.
+ * 🔑 웹 상세·작업지시서와 앱 작업가이드가 **같은 묶음**을 써야 표가 갈라지지 않아
+ * 계산 모듈에 둔다 (앱 화면은 `pages/**` 를 import 하지 않는다).
+ */
+export function groupLines(items) {
+    const byLine = new Map();
+    (items ?? []).forEach((it) => {
+        if (!byLine.has(it.line_no)) {
+            byLine.set(it.line_no, {
+                line_no: it.line_no,
+                kind: it.kind,
+                code: it.code,
+                name: it.name,
+                qty_per: it.qty_per,
+                rows: [],
+            });
+        }
+        byLine.get(it.line_no).rows.push(it);
+    });
+    return [...byLine.values()].sort((a, b) => a.line_no - b.line_no);
+}
+
 /* --------------------------------- LOT 분할 --------------------------------- */
 
 /** 1 이상 정수만 수량으로 인정한다 (그 밖은 0 으로 세고 오류는 validateLots 가 낸다) */
