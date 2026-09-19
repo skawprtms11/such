@@ -1552,3 +1552,125 @@ begin
         alter publication supabase_realtime add table public.process_photos;
     end if;
 end $$;
+
+-- ─────────── 유통가공 작업가이드 파일 (docs/processing.md §13 · §15) · 멱등 ───────────
+-- 작업마스터에 붙이는 작업 안내 파일(사진·PDF). 작업지시서를 인쇄하면 이미지가 뒤에 이어 붙고,
+-- 앱 작업가이드 탭에서도 같은 파일을 본다.
+-- 🔑 검수 사진(process_photos)과 **주체가 다르다.** 사진은 현장(updateStatus)이 찍고,
+-- 가이드는 작업을 지시하는 쪽(manageProcessing)이 올린다. 그래서 버킷·정책을 따로 둔다.
+-- ⚠️ 이 블록은 마이그레이션 초안(20260919_process_guides.sql)과 **글자까지 같아야 한다.**
+
+create table if not exists public.process_master_files (
+    id              text        primary key,
+    master_id       text        not null references public.process_masters (id) on delete cascade,
+    name            text        not null,           -- 올린 사람이 보던 원본 파일명
+    path            text        not null,           -- guides/{master_id}/{seq}.{jpg|pdf}
+    mime            text        not null,
+    size            integer     not null default 0,
+    sort_order      integer     not null default 0, -- 인쇄 순서 (경로의 seq 와 같다)
+    created_by      uuid        references public.profiles (id),
+    created_by_name text        not null default '',
+    created_at      timestamptz not null default now()
+);
+
+comment on table public.process_master_files is '유통가공 작업가이드 메타. 파일은 Storage 버킷 process-guides 에 있다';
+
+create index if not exists process_master_files_master_idx
+    on public.process_master_files (master_id, sort_order);
+
+alter table public.process_master_files enable row level security;
+
+-- 🔑 조회는 **활성 로그인 사용자**다 (사진과 같은 기준). 가이드에는 현장 사진·거래처 자료가
+-- 섞여 들어오므로 중지된 계정의 토큰이 남아 있어도 보이지 않게 한다.
+drop policy if exists process_master_files_select on public.process_master_files;
+create policy process_master_files_select on public.process_master_files
+    for select to authenticated using (public.my_role() is not null);
+
+drop policy if exists process_master_files_insert on public.process_master_files;
+create policy process_master_files_insert on public.process_master_files
+    for insert to authenticated
+    with check (public.can_manage_processing() and created_by = auth.uid());
+
+drop policy if exists process_master_files_update on public.process_master_files;
+create policy process_master_files_update on public.process_master_files
+    for update to authenticated
+    using (public.can_manage_processing())
+    with check (public.can_manage_processing());
+
+-- ⚠️ 가이드는 화면에 삭제 버튼이 있어 **등록 권한자가 지운다** (마스터·작업의 하드 삭제가
+-- 관리자 전용인 것과 다르다 - 여기서 지우는 것은 첨부 파일 1건이지 업무 기록이 아니다).
+drop policy if exists process_master_files_delete on public.process_master_files;
+create policy process_master_files_delete on public.process_master_files
+    for delete to authenticated using (public.can_manage_processing());
+
+-- ── Storage 버킷 (private · 5MB · JPEG/PNG/PDF) ──
+-- ⚠️ 검수 사진 버킷(1MB · JPEG)과 제한이 다르다. 가이드는 현장이 확대해 읽는 설명 자료라
+-- 긴 변 1600px 로 크게 압축하고 PDF 원본도 그대로 받는다.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('process-guides', 'process-guides', false, 5242880,
+        array['image/jpeg', 'image/png', 'application/pdf'])
+on conflict (id) do update
+    set public = false, file_size_limit = 5242880,
+        allowed_mime_types = array['image/jpeg', 'image/png', 'application/pdf'];
+
+-- ── storage.objects 정책 (이 버킷 한정) ──
+-- ⚠️ storage.objects 는 supabase_storage_admin 소유다. 소유자 오류가 나면
+--    Dashboard → Storage → Policies 에서 같은 이름·같은 식으로 만든다.
+drop policy if exists process_guides_obj_select on storage.objects;
+create policy process_guides_obj_select on storage.objects for select to authenticated
+    using (bucket_id = 'process-guides' and public.my_role() is not null);
+
+-- 🔑 쓰기는 **경로까지** 강제한다 (검수 사진과 같은 이유 - 권한만 보면 버킷이 개인 저장소가 된다).
+-- 경로를 만드는 곳은 db.js 의 guidePath 하나뿐이다 - guides/{master_id}/{seq}.{ext}.
+-- storage.foldername(name) 은 파일명을 뺀 폴더 배열이다 - [1]='guides' · [2]=마스터 id (1부터).
+drop policy if exists process_guides_obj_insert on storage.objects;
+create policy process_guides_obj_insert on storage.objects for insert to authenticated
+    with check (
+        bucket_id = 'process-guides'
+        and public.can_manage_processing()
+        and (storage.foldername(name))[1] = 'guides'
+        and exists (
+            select 1 from public.process_masters m
+            where m.id = (storage.foldername(name))[2] and m.deleted_at is null
+        )
+    );
+
+-- 🔑 같은 경로에 다시 올리는 길(upsert)이 UPDATE 를 타므로 update 정책도 함께 둔다.
+drop policy if exists process_guides_obj_update on storage.objects;
+create policy process_guides_obj_update on storage.objects for update to authenticated
+    using (bucket_id = 'process-guides' and public.can_manage_processing())
+    with check (
+        bucket_id = 'process-guides'
+        and public.can_manage_processing()
+        and (storage.foldername(name))[1] = 'guides'
+        and exists (
+            select 1 from public.process_masters m
+            where m.id = (storage.foldername(name))[2] and m.deleted_at is null
+        )
+    );
+
+-- 메타를 지우면 파일도 지운다 (db.removeProcessMasterFile). 메타 삭제와 같은 권한이어야
+-- 「목록에서는 사라졌는데 버킷에 남는」 고아 파일이 생기지 않는다.
+drop policy if exists process_guides_obj_delete on storage.objects;
+create policy process_guides_obj_delete on storage.objects for delete to authenticated
+    using (bucket_id = 'process-guides' and public.can_manage_processing());
+
+-- ── 실시간 갱신 (멱등 가드 - alter publication 은 재실행 시 42710 으로 죽는다) ──
+do $$
+begin
+    if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime publication 이 없어 건너뜁니다.';
+        return;
+    end if;
+    if (select puballtables from pg_publication where pubname = 'supabase_realtime') then
+        raise notice 'supabase_realtime 이 FOR ALL TABLES 라 추가할 것이 없습니다.';
+        return;
+    end if;
+    if not exists (
+        select 1 from pg_publication_tables
+        where pubname = 'supabase_realtime' and schemaname = 'public'
+          and tablename = 'process_master_files'
+    ) then
+        alter publication supabase_realtime add table public.process_master_files;
+    end if;
+end $$;

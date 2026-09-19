@@ -13,7 +13,7 @@ import * as db from '../db.js';
 import { esc, today } from '../util.js';
 import { drawCalendar } from './processing/calendar.js';
 import { drawJobs } from './processing/jobs.js';
-import { drawMaster } from './processing/master.js';
+import { drawMaster, releaseMasterThumbs } from './processing/master.js';
 
 /** 화면 상태 - 다른 화면에 다녀와도 유지한다 */
 const state = {
@@ -81,5 +81,10 @@ export async function render(root, { user }) {
     }
 
     await reload();
-    return db.subscribe(guarded);
+    const unwatch = db.subscribe(guarded);
+    // 🔑 작업마스터 목록의 가이드 썸네일 주소도 함께 놓는다 (mock 의 objectURL 은 샌다)
+    return () => {
+        unwatch();
+        releaseMasterThumbs();
+    };
 }

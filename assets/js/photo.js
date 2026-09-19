@@ -23,6 +23,24 @@ export const PHOTO = {
     ],
 };
 
+/**
+ * 작업가이드 이미지 기준값 (docs/processing.md §13).
+ *
+ * 검수 사진(`PHOTO`)과 **따로 둔다.** 가이드는 현장이 확대해 읽는 설명 이미지라
+ * 글자가 뭉개지면 쓸모가 없어 긴 변을 1600px 로 크게 잡고, 대신 한 파일 상한을
+ * 버킷과 같은 5MB 로 둔다 (검수 사진은 1MB · 목표 200KB).
+ */
+export const GUIDE_PHOTO = {
+    targetBytes: 600 * 1024,
+    maxBytes: 5 * 1024 * 1024,
+    steps: [
+        { edge: 1600, q: 0.8 },
+        { edge: 1600, q: 0.65 },
+        { edge: 1280, q: 0.65 },
+        { edge: 1280, q: 0.5 },
+    ],
+};
+
 /** 사진을 못 읽었을 때의 안내 - 화면·db 가 같은 말을 쓴다 */
 export const PHOTO_READ_ERROR = '사진을 읽지 못했습니다. 다시 촬영해 주세요.';
 

@@ -42,8 +42,8 @@
 | `assets/js/pages/processing/jobs.js` | 작업현황 탭 — 필터·목록 표·다중 선택·삭제·문서생성 버튼 |
 | `assets/js/pages/processing/jobform.js` | 작업 등록·수정 팝업 — 기본정보 + 구성품 표 + LOT 행 편집·검증 |
 | `assets/js/pages/processing/calendar.js` | 작업캘린더 탭 — 월 이동·그리드 렌더 (배치는 `processing-calc.js`) |
-| `assets/js/pages/processing/master.js` | 작업마스터 탭 — 목록 + 등록·수정 팝업(구성품 표) |
-| `assets/js/pages/processing/doc.js` | 작업지시서 인쇄 문서 HTML 생성 + 인쇄창 열기 |
+| `assets/js/pages/processing/master.js` | 작업마스터 탭 — 목록(가이드 칸) + 등록·수정 팝업(구성품 표 · **작업가이드 첨부**) |
+| `assets/js/pages/processing/doc.js` | 작업지시서 인쇄 문서 HTML 생성(+ **작업가이드 페이지**) + 인쇄창 열기 |
 | `assets/js/processing-calc.js` | **순수 함수** — 구성품 전개 · LOT 분할 · 문서번호 · 캘린더 레인 |
 
 분할 기준은 업무체크리스트(`pages/checklist/*`)와 같다 — 셸은 탭만 알고,
@@ -192,6 +192,32 @@ mock(localStorage)과 Supabase가 **같은 필드명**을 쓴다. 정식 정의�
 (`db.savePreCheck` 가 기존 행을 먼저 찾는 이유다). `line_no` 가 null 이라 `coalesce` 를 쓴다 —
 null 이 섞인 unique 는 중복을 막지 못한다.
 
+### `process_master_files` — 작업가이드 파일 (§13 · §15)
+
+작업마스터에 붙이는 **작업 안내 파일**(사진·PDF)이다. 파일은 Storage 버킷 `process-guides`,
+메타만 이 테이블에 둔다 (검수 사진과 같은 구조).
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| `id` | text | pk | `uid('pmf')` |
+| `master_id` | text | not null, fk → masters, on delete cascade | |
+| `name` | text | not null | 올린 사람이 보던 **원본 파일명** (화면·인쇄물에 그대로 쓴다) |
+| `path` | text | not null | `guides/{master_id}/{seq}.{jpg\|pdf}` |
+| `mime` | text | not null | `image/jpeg` · `application/pdf` (이미지는 올릴 때 JPEG 로 압축한다) |
+| `size` | integer | not null default 0 | 압축 후 바이트 |
+| `sort_order` | integer | not null default 0 | 인쇄·표시 순서. **경로의 `seq` 와 같은 값** |
+| `created_by` / `_name` | uuid / text | | 올린 사람 |
+| `created_at` | timestamptz | not null default now() | |
+
+- 🔑 **주체가 검수 사진과 다르다.** 사진은 현장(`updateStatus`)이 찍고, 가이드는 작업을
+  지시하는 쪽(`manageProcessing`)이 올린다. 그래서 버킷·RLS 를 따로 둔다
+  (가이드 5MB · JPEG/PNG/PDF · 검수 사진 1MB · JPEG)
+- 🔑 **순번은 `max(sort_order) + 1`** 이다. 지운 자리의 번호를 되쓰지 않아, 삭제 직후에
+  올린 파일이 남아 있던 파일을 덮어쓰지 않는다
+- ⚠️ **작업에 스냅샷하지 않는다** (A26). 구성품과 달리 가이드는 「지금 이렇게 작업하라」는
+  안내라 인쇄·조회 모두 **그때의 최신본**을 본다. 마스터를 지워도(soft delete) 파일 행은
+  남아 이미 등록된 작업에서 계속 열린다
+
 #### 스냅샷을 두는 이유 🔑
 
 마스터는 언제든 바뀐다(라벨 규격 변경·부자재 교체). 작업에 구성품을 **복사해 두지 않으면**
@@ -305,19 +331,25 @@ export const PROCESS_DONE_PHOTOS = 3;
 },
 ```
 
-### 파일 저장 API 🔑 (§17 에서 추가)
+### 파일 저장 API 🔑 (§17 에서 추가 · §13 에서 버킷 인자)
 
-사진 **바이너리는 행 diff 엔진을 타지 않는다.** `store.js` 에 파일 전용 API 3개를 둔다 —
+파일 **바이너리는 행 diff 엔진을 타지 않는다.** `store.js` 에 파일 전용 API 3개를 둔다 —
 `db.js` 만 이것을 부르고, 화면은 여전히 `db.*` 만 부른다.
 
 | 함수 | mock | supabase |
 |---|---|---|
-| `putFile(path, blob)` | IndexedDB `tpl_files/files` 에 Blob 저장 | `storage.from('process-photos').upload(path, blob, { upsert: true })` |
-| `fileUrls(paths)` → `{ urls: Map, release() }` | `URL.createObjectURL` · `release()` 가 revoke | `createSignedUrls(paths, 600)` · `release()` 는 no-op |
+| `putFile(path, blob, {bucket, contentType})` | IndexedDB `tpl_files/files` 에 **`버킷/경로`** 키로 Blob 저장 | `storage.from(bucket).upload(path, blob, { upsert: true })` |
+| `fileUrls(paths, {bucket})` → `{ urls: Map, release() }` | `URL.createObjectURL` · `release()` 가 revoke | `createSignedUrls(paths, 600)` · `release()` 는 no-op |
+| `removeFile(path, {bucket})` | IndexedDB 키 삭제 | `storage.from(bucket).remove([path])` |
 
-- 🔑 **지우는 API 는 두지 않는다.** 검수 취소도 사진을 남기고(A22) 경로가 결정적이라 재촬영이
-  덮어쓰므로 부를 곳이 없었다. 쓰는 곳 없는 삭제 API 는 「언젠가 쓰겠지」 로 남았다가
-  권한 검사 없이 불리는 자리가 된다. 고아 파일 정리는 아래 [열린 이슈](#열린-이슈-사진) 참고
+- 🔑 **버킷은 인자로 받고 기본값은 검수 사진(`BUCKET.PHOTOS`)이다.** 이름을 쓰는 곳은
+  `store.js` 의 `BUCKET` 한 곳뿐이고, 기본값 덕에 사진 쪽 호출부는 손대지 않았다.
+  ⚠️ mock 은 **버킷을 키 접두어**로 붙여 한 IndexedDB 안에서 가른다 — 이 규칙이 생기기 전에
+  저장된 로컬 사진은 키가 달라 보이지 않는다 (mock 은 개발용이라 그대로 두었다)
+- 🔑 **삭제 API 는 부를 곳이 생겨서 되살렸다** (작업가이드의 삭제 버튼). 검수 사진에는
+  여전히 부를 곳이 없다 — 취소해도 사진을 남기고(A22) 경로가 결정적이라 재촬영이 덮어쓴다.
+  권한 검사는 부르는 `db.js` 쪽에 있다. 사진의 고아 파일 정리는
+  아래 [열린 이슈](#열린-이슈-사진) 참고
 
 - ⚠️ **mock 모드에서 사진을 localStorage 에 넣지 않는다.** 압축해도 장당 150~200KB 라
   한도(5MB)가 작업 5~6건이면 찬다. 그때 `setItem` 이 `QuotaExceededError` 를 던지는데
@@ -541,6 +573,26 @@ and exists (select 1 from public.process_jobs j
   `supabase_storage_admin` 소유라 소유자 오류가 나고, Supabase 가 이미 켜 두었다.
   정책 생성에서도 소유자 오류가 나면 Dashboard → Storage → Policies 에서 같은 식으로 만든다
 
+### 5-2. 작업가이드 파일 마이그레이션 (§13) — **멱등**
+
+`schema.sql` 의 「유통가공 작업가이드 파일」 블록 하나가 원본이고, 실행용 초안은 그 블록을
+**글자까지 그대로** 복사한 `20260919_process_guides.sql` 이다 (고칠 때는 schema.sql 을 먼저
+고치고 초안을 다시 만든 뒤 `diff` 로 0 을 확인한다 · §5-1 과 같은 규칙).
+
+| # | 하는 일 | 왜 |
+|---|---|---|
+| 1 | `process_master_files` 테이블 + `(master_id, sort_order)` 인덱스 | 가이드 메타 |
+| 2 | RLS 4정책 — select `my_role() is not null` · 나머지 `can_manage_processing()` | 조회는 활성 로그인 사용자, 쓰기는 등록 권한 |
+| 3 | Storage 버킷 `process-guides` (private · 5MB · JPEG/PNG/PDF) | 파일 |
+| 4 | `storage.objects` 정책 4개 (**경로까지 강제** — `guides/{살아 있는 master_id}/…`) | 권한만 보면 버킷이 개인 저장소가 된다 (§5-1 과 같은 자리) |
+| 5 | Realtime publication 등록 (멱등 가드) | 실시간 갱신 |
+
+- ⚠️ **삭제 정책이 사진과 다르다.** 사진·마스터·작업의 하드 삭제는 관리자 전용인데
+  가이드 파일은 `can_manage_processing()` 이다 — 여기서 지우는 것은 **첨부 파일 1건**이지
+  업무 기록이 아니고, 화면에 삭제 버튼이 있어 같은 권한으로 열어야 앞뒤가 맞는다
+- 🔑 메타(`process_master_files`)와 파일(storage)의 **삭제 권한을 같게** 두었다.
+  한쪽만 좁으면 「목록에서는 사라졌는데 버킷에 남는」 고아 파일이 생긴다
+
 ### 문서번호 동시성 🔑
 
 채번은 `db.js` 가 한다 — `그 날짜 prefix 의 doc_no 중 최대 순번 + 1`.
@@ -571,6 +623,19 @@ DB 함수(`next_process_doc_no()`)나 시퀀스를 쓰지 않는 이유: 업무 
 | `createProcessMaster(payload, user)` | `payload {work_type, product_code, product_name, items:[{kind, code, name, qty_per}]}`. 제품코드 중복·구성품 0건·`qty_per ≤ 0` 을 거부 |
 | `updateProcessMaster(id, patch, user)` | 구성품은 **통째로 교체**(기존 행 삭제 후 재생성). 이미 만들어진 작업에는 영향 없다(스냅샷) |
 | `deleteProcessMaster(id, user)` | soft delete. 이 마스터로 만든 작업이 있어도 막지 않는다 |
+
+### 작업가이드 파일 (§13 · §15)
+
+| 함수 | 설명 |
+|---|---|
+| `listProcessMasterFiles(masterId)` | 이 마스터의 가이드 파일 (`sort_order` 순). `masterId` 가 없으면 빈 배열 |
+| `addProcessMasterFiles(masterId, files, user)` | 첨부. **이미지는 긴 변 1600px·JPEG 로 압축**(`photo.js` 의 `GUIDE_PHOTO`), PDF 는 그대로. 5MB 초과·다른 형식은 **업로드 전에** 거부한다. 일부만 올라가면 성공분만 메타에 남기고 오류를 던진다 |
+| `removeProcessMasterFile(fileId, user)` | 메타 삭제 → Storage 삭제. **메타를 먼저** 지운다(열 수 없는 칸을 남기지 않는다) |
+| `processGuideUrls(paths)` | → `{ urls, release() }` — `processPhotoUrls` 와 **같은 계약** |
+| `processGuideDataUrls(paths)` | → `Map<path, dataURL>` — **인쇄 문서 전용** (아래 §15) |
+| `isGuideImage(file)` | 이미지인가 🔑 **판정의 유일한 출처** (인쇄 페이지·썸네일 대상) |
+
+권한은 전부 `manageProcessing` 이다(§7). 조회는 로그인 사용자 모두.
 
 ### 작업
 
@@ -677,6 +742,10 @@ DB 함수(`next_process_doc_no()`)나 시퀀스를 쓰지 않는 이유: 업무 
   일반 경로에서는 쓰지 않는다 — `process_masters` · `process_jobs` 의 delete 정책은
   `my_role() = 'admin'` 이다. 자식 테이블(`process_master_items` · `process_job_items`)은
   구성품을 통째로 교체할 때 DELETE 를 타므로 `can_manage_processing()` 그대로 둔다
+- 🔑 **작업가이드 파일 첨부·삭제는 `manageProcessing`** (A29). 가이드는 「이렇게 작업하라」는
+  지시라 등록 권한과 같은 축이다 — 사진(현장 증빙 · `updateStatus`)과 반대다.
+  조회는 다른 유통가공 데이터와 같이 로그인 사용자 모두이고, 서버는 사진과 같은 기준
+  (`my_role() is not null`)으로 **중지된 계정**만 막는다
 - 소속(company)은 보지 않는다. 주문정보등록처럼 `ORDER_POLICY` 를 따로 두지 않는다
 
 ---
@@ -882,7 +951,14 @@ export function processStatus(job) {
 
 | 컬럼 | 비고 |
 |---|---|
-| 연번 · 작업구분 · 제품코드 · 제품명 · 구성품 수 · 등록자 · 등록일 | 행 클릭 시 수정 팝업 |
+| 연번 · 작업구분 · 제품코드 · 제품명 · 구성품 수 · 등록자 · **작업가이드** · 등록일 | 행 클릭 시 수정 팝업 |
+
+**작업가이드 칸**은 파일 수(`3개`)와 **첫 이미지 썸네일**이고, 파일이 없으면 `-` 다
+(대표님 지시 2026-09-19 — 「등록자 우측에 작업가이드 컬럼」).
+
+- 🔑 썸네일 주소는 **다시 그리기 전에 놓는다**(`releaseMasterThumbs`). 이 탭은 실시간 갱신으로
+  5초마다 다시 그려져, 놓지 않으면 mock 의 objectURL 이 그 주기로 쌓인다. 화면을 떠날 때는
+  셸(`processing.js`)의 정리 함수가 같은 함수를 부른다
 
 상단: 검색어 · 작업구분 필터 · **마스터 등록** 버튼.
 
@@ -902,6 +978,23 @@ export function processStatus(job) {
 - 품목명 필수 · `qty_per` 는 1 이상 정수
 - 코드는 부자재만 비울 수 있다. **제품 구분은 코드 필수**
 - 제품코드 중복(살아 있는 마스터) 거부 — 서버 unique 와 화면 검증 두 겹
+
+**아래 — 작업가이드** (`process_master_files` · §3)
+
+| 조각 | 내용 |
+|---|---|
+| 안내 | 「이미지·PDF (한 파일 5MB). 작업지시서를 인쇄하면 이미지가 뒤에 함께 나온다.」 |
+| `파일 첨부` 버튼 | `<input type="file" multiple accept="image/*,application/pdf">` (권한 있을 때만) |
+| 파일 칸 | 썸네일(이미지) 또는 `PDF` 글자 · 원본 파일명 · 크기 · 삭제 버튼. **누르면** 이미지는 팝업, PDF 는 새 탭 |
+
+- 🔑 **새로 등록할 때는 저장한 뒤에 첨부한다.** 경로가 `guides/{master_id}/…` 라 마스터 id 가
+  없으면 올릴 곳이 정해지지 않는다. 그래서 등록 저장이 끝나면 **같은 팝업을 수정 모드로 다시
+  열어** 그 자리에서 이어 붙이게 한다(토스트: `작업마스터를 등록했습니다. 이어서 작업가이드를
+  첨부할 수 있습니다.`). 저장 전에는 구획에 안내만 나온다
+- 파일은 **고르는 즉시 올라간다**(팝업의 `저장` 과 무관하다). 첨부·삭제가 마스터 본문 수정과
+  섞이면 「저장을 눌러야 하나」가 헷갈리고, 취소로 되돌릴 수 없는 업로드를 되돌린 것처럼 보인다
+- 첨부·삭제가 있었으면 팝업을 닫을 때 목록을 다시 그린다(가이드 칸의 개수·썸네일)
+- 권한이 없으면 첨부 버튼·삭제 버튼이 렌더되지 않고, `db.js` 도 같은 조건으로 거부한다
 
 ---
 
@@ -983,6 +1076,25 @@ win.document.close();
 │ 작업자 서명            확인자 서명                 │
 └──────────────────────────────────────────────┘
 ```
+
+### 작업가이드 페이지 병합 🔑 (2026-09-19)
+
+작업지시서 **뒤에** 마스터의 작업가이드가 이어 붙는다 (대표님 지시 — 「문서생성 시 업로드한
+작업가이드도 같이 보이고 인쇄될 것」).
+
+| 파일 | 인쇄물 | 문서생성·보기 때 |
+|---|---|---|
+| 이미지 | **A4 한 장씩** (`page-break-before` · 제목 `작업가이드 (n/총)` + 원본 파일명 + 그림) | — |
+| PDF | 마지막에 **한 장**에 파일명만 모아 적는다 (`작업가이드 PDF N건`) | **새 탭으로 함께 연다** |
+
+- 🔑 **그림은 data URL 로 문서 안에 박는다** (`db.processGuideDataUrls`). 인쇄 창은 이 문서와
+  수명이 달라, objectURL 은 돌려주는 순간 미리보기가 비고 서명 URL 은 10분 뒤 만료된다.
+  박아 두면 창을 얼마나 오래 열어 두든 그림이 살아 있고 **뒷정리할 주소도 남지 않는다**
+- ⚠️ **PDF 는 인쇄 페이지에 합칠 수 없다** (A27). 브라우저 인쇄는 다른 문서를 페이지로 끼워
+  넣지 못한다. 종이에 서명 URL 을 찍어도 쓸모가 없어 **링크 대신 파일명만** 적고, 실물은
+  새 탭으로 연다(팝업이 막히면 토스트로 알리고 상세 팝업에서 열 수 있다고 안내한다)
+- 붙이는 것은 **현재 마스터의 파일**이다 (A26 — 구성품처럼 스냅샷하지 않는다).
+  마스터가 지워졌거나 파일이 없으면 가이드 페이지 자체가 나오지 않는다
 
 ---
 
@@ -1211,6 +1323,16 @@ export async function compressPhoto(file, opt = {}) // → { blob, width, height
 | ㉖ | **`signOut()` 이 IndexedDB 초안(mock 이면 사진 파일도)을 지운다. `store.js` 의 `removeFile` 과 `listProcessJobsForCheck` 의 `f.date` 는 호출자가 없어 제거했다** | 초안·사진은 세션 저장소가 아니라 IndexedDB 라 로그아웃해도 남아 **공용 단말에서 다음 사용자가 앞사람의 현장 사진을 본다.** 저장소를 못 열어도 로그아웃은 진행한다. 쓰는 곳 없는 삭제 API 는 나중에 권한 검사 없이 불리는 자리가 된다 |
 | ㉗ | `process_photos_job_idx`(job_id, phase) 를 **만들지 않는다** (`drop index if exists`) | 슬롯 unique 의 선두 두 컬럼과 겹쳐 읽기에 보탬이 없고 쓰기만 느려진다 |
 
+#### 작업가이드 파일(§13 · §15)에서 바꾼 것
+
+| # | 바꾼 것 | 근거 |
+|---|---|---|
+| ㉘ | **인쇄 문서의 가이드 이미지를 data URL 로 박았다** (서명 URL·objectURL 이 아니라) | 인쇄 창은 이 문서와 수명이 다르다. 주소를 돌려주면 미리보기가 비고, 안 돌려주면 mock 의 objectURL 이 샌다. 박아 넣으면 둘 다 없다 |
+| ㉙ | **인쇄물의 PDF 페이지에 링크를 넣지 않았다** (설계안은 「새 탭에서 열기」 링크) | 종이에 찍힌 서명 URL 은 쓸 수 없고(10분 만료·길이), 화면에서 눌러야 할 사람은 이미 새 탭으로 열려 있다. 파일명만 적어 **무엇이 더 있는지**만 알린다 |
+| ㉚ | **새 마스터는 저장 뒤 같은 팝업을 수정 모드로 다시 연다** | 경로에 `master_id` 가 들어가 저장 전에는 올릴 곳이 없다. 「안내만 하고 닫기」 보다 그 자리에서 이어 붙이는 쪽이 한 단계 짧다 |
+| ㉛ | **`store.js` 의 `removeFile` 을 되살렸다** (㉖ 에서 지운 API) | 이번에는 **부르는 곳이 있다**(가이드 삭제 버튼). 메타만 지우면 버킷에 고아가 쌓인다. 권한 검사는 `db.js` 쪽에 둔다 |
+| ㉜ | 파일 크기 표기 `fmtBytes` 를 **`util.js`** 에 두었다 | 웹 팝업과 앱 상세가 같은 말을 써야 한다. 앱은 `pages/**` 를 import 하지 않으므로 공용 유틸이 자리다 |
+
 ### 열린 이슈 (사진)
 
 확인을 받아야 하거나 이번 범위 밖이라 **문서에만 적어 둔** 것이다.
@@ -1266,6 +1388,19 @@ SQL 은 문법·의미를 눈으로 검토했을 뿐이고 **실 Supabase 적용
 5. `active = false` 계정의 토큰으로 사진 조회 → 0행 (㉕)
 6. 마이그레이션을 **두 번** 돌려도 같은 결과인가 (멱등)
 
+### 작업가이드 파일까지 확인한 것 (mock · 관리자 계정 · 2026-09-19)
+
+마스터 등록 → (수정 모드로 다시 열린 팝업에서) JPG 2장 + PDF 1개 첨부 → 목록 「작업가이드」 칸
+`3개` + 썸네일 → 작업 등록 → 문서생성(`20260919-01`) → 인쇄 HTML 에 **가이드 이미지 2페이지
+(`작업가이드 (1/2)` `(2/2)` · data URL 로 로드됨) + PDF 1건 페이지**가 붙고 **PDF 는 새 탭으로**
+열리는 것, 상세 팝업의 가이드 구획(썸네일 2 + PDF 칸)·썸네일 팝업, 파일 1건 삭제 시 메타와
+IndexedDB 파일이 함께 사라지고 목록이 `2개` 로 바뀌는 것, 앱 `#/pcheck/guide/:id` 의 가이드
+칸·전체 보기 시트, 화면을 떠날 때 주소(objectURL)가 해제되는 것까지 확인했다. 콘솔 오류 0.
+
+⚠️ **mock 모드는 RLS·Storage 정책을 타지 않는다.** §5-2 의 서버 잠금은 실 Supabase 적용·검증이
+남아 있다 (§17-8 과 같은 방식으로 확인한다 — 경로 밖 업로드 거부 · 권한 없는 계정의 첨부/삭제
+거부 · 마이그레이션 2회 실행).
+
 ### 구현하며 확인한 것 (mock 모드 브라우저)
 
 마스터 등록(제품 + 부자재) → 작업 등록(LOT 2행 분할 · 잔량 자동 채움 30/70) → 문서생성
@@ -1310,6 +1445,16 @@ SQL 은 문법·의미를 눈으로 검토했을 뿐이고 **실 Supabase 적용
 | A23 | ~~앱 탭 6번째~~ → **서랍(`APP_MENU`) 「유통가공작업」 으로 들어가고, 들어가면 하단 탭이 유통가공 전용 4개(작업전·완료·캘린더·가이드)로 바뀐다** (대표님 지시 2026-09-19 · `APP_TAB_SETS`) | `config.js` 의 탭 세트 + `mobile/app.js` 의 탭바 재렌더 |
 | A24 | mock 모드 사진은 **IndexedDB** 에 둔다 (localStorage 아님) | `store.js` 파일 API · `idb.js` |
 | A25 | **작업가이드 탭의 내용은 개발팀이 정했다** — 촬영 절차 3단계 + 작업지시서 읽기 전용 보기 (대표님이 항목을 지정하지 않았다) | 현장이 다른 것을 원하면 `GUIDE_STEPS` 와 상세 구성 |
+
+### 작업가이드 파일(§13 · §15)에서 더해진 가정
+
+| # | 가정 | 바뀌면 영향 |
+|---|---|---|
+| A26 | **가이드 파일은 스냅샷하지 않는다** — 인쇄·조회 모두 그때의 **현재 마스터 파일**을 본다 | 스냅샷으로 바꾸면 `process_job_files` 가 필요하고 작업 등록 때 파일을 복사해야 한다 |
+| A27 | **PDF 가이드는 인쇄물에 합치지 않는다** — 파일명만 적고 실물은 새 탭으로 연다 | 합치려면 서버에서 PDF 를 병합해야 한다(Edge Function) |
+| A28 | 가이드 이미지는 **긴 변 1600px · JPEG · 목표 600KB · 상한 5MB**. 원본은 보관하지 않는다 | `photo.js` 의 `GUIDE_PHOTO` · 버킷 `file_size_limit` |
+| A29 | 첨부·삭제 권한은 **`manageProcessing`** (조회는 로그인 사용자 모두). 현장은 보기만 한다 | `db.js` 3함수 + RLS·storage 정책 |
+| A30 | 파일은 **고르는 즉시 올라간다** (팝업의 `저장` 과 무관) | 팝업 저장에 묶으려면 첨부분을 메모리에 들고 있어야 한다 |
 
 ### 개발팀 주의사항 5가지 🔑
 

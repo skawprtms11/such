@@ -11,7 +11,7 @@
  */
 import { DATA_SOURCE } from './config.js';
 import { supabase } from './supabase.js';
-import { STORE, idbGet, idbPut } from './idb.js';
+import { STORE, idbDel, idbGet, idbPut } from './idb.js';
 
 const KEY = 'tpl_order_db_v1';
 
@@ -188,6 +188,15 @@ const TABLES = [
             'qty_per', 'lot', 'qty', 'sort_order',
         ],
     },
+    // 작업가이드 파일도 **메타만** 둔다. 파일은 Storage 버킷(process-guides)이다
+    {
+        key: 'processMasterFiles',
+        name: 'process_master_files',
+        cols: [
+            'id', 'master_id', 'name', 'path', 'mime', 'size', 'sort_order',
+            'created_by', 'created_by_name', 'created_at',
+        ],
+    },
     // 검수 사진은 **메타만** 이 테이블에 둔다. 파일은 Storage 버킷(process-photos)이다
     {
         key: 'processPhotos',
@@ -199,8 +208,14 @@ const TABLES = [
     },
 ];
 
-/** 검수 사진 Storage 버킷 (private · JPEG 만 · 1MB) */
-const PHOTO_BUCKET = 'process-photos';
+/**
+ * Storage 버킷 🔑 **이름을 쓰는 곳은 여기 한 곳뿐이다.**
+ *   PHOTOS : 검수 사진 (private · JPEG · 1MB)
+ *   GUIDES : 작업마스터의 작업가이드 (private · JPEG/PNG/PDF · 5MB)
+ * 용도가 다르면 버킷을 나눈다 - 크기 제한·허용 형식·보존 기간이 서로 다르고,
+ * 한 버킷에 섞으면 정책 하나를 넓히는 순간 다른 쪽까지 함께 넓어진다.
+ */
+export const BUCKET = { PHOTOS: 'process-photos', GUIDES: 'process-guides' };
 
 /* ------------------------------- 값 다듬기 ------------------------------- */
 
@@ -248,7 +263,7 @@ function mockLoad() {
         notices: [], noticeComments: [], checklistItems: [], checklistChecks: [],
         checklistEdges: [], checklistNotes: [],
         processMasters: [], processMasterItems: [], processJobs: [], processJobItems: [],
-        processPhotos: [],
+        processPhotos: [], processMasterFiles: [],
     };
     localStorage.setItem(KEY, JSON.stringify(empty));
     return empty;
@@ -381,33 +396,49 @@ export async function saveDb(db) {
 
 /* -------------------------------- 파일 저장 -------------------------------- */
 /**
- * 사진 **바이너리**는 행 diff 엔진(pushChanges)을 타지 않는다.
- * 파일 전용 API 둘만 두고 `db.js` 가 부른다 - 화면은 여전히 `db.*` 만 본다.
- * **지우는 API 는 두지 않는다.** 검수 취소도 사진을 남기고(A22) 경로가 결정적이라 재촬영이
- * 덮어쓰므로 부를 곳이 없었다. 고아 파일 정리가 필요해지면 그때 서버 쪽 일괄 작업으로 만든다.
+ * 파일 **바이너리**는 행 diff 엔진(pushChanges)을 타지 않는다.
+ * 파일 전용 API 셋만 두고 `db.js` 가 부른다 - 화면은 여전히 `db.*` 만 본다.
  *
- *   mock     : IndexedDB (localStorage 한도를 사진이 채우면 주문 저장까지 막힌다)
- *   supabase : Storage 버킷 `process-photos` (private · 서명 URL 로만 본다)
+ *   mock     : IndexedDB (localStorage 한도를 파일이 채우면 주문 저장까지 막힌다)
+ *   supabase : Storage 버킷 (private · 서명 URL 로만 본다)
+ *
+ * 🔑 **버킷은 인자로 받는다** (기본값은 검수 사진). 검수 사진과 작업가이드는 허용 형식·
+ * 크기 제한이 달라 버킷이 다르고, 여기서 이름을 고정하면 호출부가 버킷을 고를 수 없다.
+ * ⚠️ mock 은 버킷을 **키 접두어**로 붙여 한 IndexedDB 안에서 가른다 (`버킷/경로`).
  */
 
-/** 파일 저장 - 같은 경로면 덮어쓴다 (경로가 결정적이라 재촬영이 고아를 남기지 않는다) */
-export async function putFile(path, blob) {
+/** mock 의 파일 키 - 버킷이 다르면 같은 경로라도 다른 파일이다 */
+function fileKey(bucket, path) {
+    return `${bucket}/${path}`;
+}
+
+/**
+ * 파일 저장 - 같은 경로면 덮어쓴다 (경로가 결정적이라 재촬영이 고아를 남기지 않는다).
+ * @param {{bucket?:string, contentType?:string}} [opt]
+ */
+export async function putFile(path, blob, opt = {}) {
+    const bucket = opt.bucket ?? BUCKET.PHOTOS;
     if (!isSupabase) {
-        await idbPut(STORE.FILES, path, blob);
+        await idbPut(STORE.FILES, fileKey(bucket, path), blob);
         return;
     }
-    const { error } = await supabase().storage.from(PHOTO_BUCKET)
-        .upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
-    if (error) throw new Error(`사진 업로드 실패: ${error.message}`);
+    const { error } = await supabase().storage.from(bucket)
+        .upload(path, blob, {
+            upsert: true,
+            contentType: opt.contentType ?? blob.type ?? 'application/octet-stream',
+        });
+    if (error) throw new Error(`파일 업로드 실패: ${error.message}`);
 }
 
 /**
  * 경로 → 보여줄 수 있는 주소.
  * 🔑 **Map 과 `release()` 를 함께** 돌려준다. mock 의 objectURL 은 화면을 떠날 때 revoke
  * 하지 않으면 새므로, 두 모드의 뒷정리 모양을 같게 해 화면이 저장소를 알지 못하게 한다.
+ * @param {{bucket?:string}} [opt]
  * @returns {Promise<{urls:Map<string,string>, release:Function}>}
  */
-export async function fileUrls(paths) {
+export async function fileUrls(paths, opt = {}) {
+    const bucket = opt.bucket ?? BUCKET.PHOTOS;
     const list = [...new Set(paths ?? [])].filter(Boolean);
     const urls = new Map();
     if (!list.length) return { urls, release() {} };
@@ -416,7 +447,7 @@ export async function fileUrls(paths) {
         const made = [];
         for (const p of list) {
             // IndexedDB 는 건별 조회뿐이다
-            const blob = await idbGet(STORE.FILES, p);
+            const blob = await idbGet(STORE.FILES, fileKey(bucket, p));
             if (!blob) continue;
             const url = URL.createObjectURL(blob);
             urls.set(p, url);
@@ -430,13 +461,30 @@ export async function fileUrls(paths) {
         };
     }
 
-    const { data, error } = await supabase().storage.from(PHOTO_BUCKET)
+    const { data, error } = await supabase().storage.from(bucket)
         .createSignedUrls(list, 600);
-    if (error) throw new Error(`사진 주소 발급 실패: ${error.message}`);
+    if (error) throw new Error(`파일 주소 발급 실패: ${error.message}`);
     (data ?? []).forEach((d) => {
         if (d.signedUrl) urls.set(d.path, d.signedUrl);
     });
     return { urls, release() {} };
+}
+
+/**
+ * 파일 삭제.
+ * 🔑 검수 사진에는 **부를 곳이 없어 두지 않았던** API 다(A22 - 취소해도 사진을 남긴다).
+ * 작업가이드는 화면에 삭제 버튼이 있어 되살렸다 - 메타만 지우면 버킷에 고아가 쌓인다.
+ * 권한 검사는 부르는 `db.js` 쪽에 있다 (업무 규칙은 저장소가 아니라 db 의 몫이다).
+ * @param {{bucket?:string}} [opt]
+ */
+export async function removeFile(path, opt = {}) {
+    const bucket = opt.bucket ?? BUCKET.PHOTOS;
+    if (!isSupabase) {
+        await idbDel(STORE.FILES, fileKey(bucket, path));
+        return;
+    }
+    const { error } = await supabase().storage.from(bucket).remove([path]);
+    if (error) throw new Error(`파일 삭제 실패: ${error.message}`);
 }
 
 /** 저장 데이터를 시드 상태로 되돌린다 (개발용) */

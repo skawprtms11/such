@@ -15,11 +15,11 @@ import { flowNos } from './checkflow.js';
 import {
     expandMasterItems, formatDocNo, missingSlots, nextDocSeq, photoLines, validateLots,
 } from './processing-calc.js';
-import { PHOTO, PHOTO_READ_ERROR } from './photo.js';
+import { GUIDE_PHOTO, PHOTO, PHOTO_READ_ERROR, compressPhoto } from './photo.js';
 import { readyToLoad, loadDone, visibleSteps } from './steps.js';
 import {
-    loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
-    fileUrls, putFile,
+    BUCKET, loadDb, saveDb, resetDb as storeReset, subscribeStore, isSupabase, invalidate,
+    fileUrls, putFile, removeFile,
 } from './store.js';
 import { supabase } from './supabase.js';
 import { uid, today, toDateStr, addDays } from './util.js';
@@ -42,6 +42,7 @@ function normalize(db) {
     db.processJobs = db.processJobs ?? [];
     db.processJobItems = db.processJobItems ?? [];
     db.processPhotos = db.processPhotos ?? [];
+    db.processMasterFiles = db.processMasterFiles ?? [];
     // 모바일 검수 도입 전에 등록된 작업 - 검수 시각이 없으면 작업대기다
     db.processJobs.forEach((j) => {
         j.pre_check_at = j.pre_check_at ?? null;
@@ -3881,7 +3882,16 @@ export async function listProcessMasters(f = {}) {
         rows = rows.filter((m) => `${m.product_code} ${m.product_name}`.toLowerCase().includes(k));
     }
     return rows
-        .map((m) => ({ ...m, item_count: masterItemsOf(db, m.id).length }))
+        .map((m) => {
+            const files = guideFilesOf(db, m.id);
+            return {
+                ...m,
+                item_count: masterItemsOf(db, m.id).length,
+                // 목록의 「작업가이드」 컬럼 - 파일 수와 첫 이미지 1장만 있으면 그린다
+                file_count: files.length,
+                guide_thumb: files.find(isGuideImage)?.path ?? '',
+            };
+        })
         .sort((a, b) => (a.product_code > b.product_code ? 1 : -1));
 }
 
@@ -3968,6 +3978,200 @@ export async function deleteProcessMaster(id, user) {
     if (!master) throw new Error('작업마스터를 찾을 수 없습니다.');
     master.deleted_at = new Date().toISOString();
     await save(db);
+}
+
+/* ------------------------------ 작업가이드 파일 ------------------------------ */
+/**
+ * 작업마스터에 붙이는 **작업가이드 파일** (docs/processing.md §13).
+ * 파일은 Storage 버킷 `process-guides`, 메타만 `process_master_files` 에 둔다.
+ *
+ * 🔑 검수 사진과 **주체가 다르다.** 사진은 현장(`updateStatus`)이 찍고, 가이드는
+ * 작업을 지시하는 쪽(`manageProcessing`)이 올린다. 그래서 버킷·정책을 따로 둔다.
+ * 🔑 작업지시서에 이어 붙는 것은 **현재 마스터의 파일**이다(구성품처럼 스냅샷하지 않는다).
+ * 가이드는 「지금 이렇게 작업하라」는 안내라 최신본이 나가는 쪽이 맞다.
+ */
+
+/** 가이드로 받는 PDF 형식 - 버킷의 allowed_mime_types 와 같아야 한다 */
+const GUIDE_PDF_MIME = 'application/pdf';
+
+/** 이 마스터의 가이드 파일 (sort_order 순) */
+function guideFilesOf(db, masterId) {
+    return db.processMasterFiles
+        .filter((f) => f.master_id === masterId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+}
+
+/**
+ * 이미지 가이드인지 🔑 **판정의 유일한 출처.**
+ * 인쇄 페이지·썸네일은 이미지만 만들고, 나머지(PDF)는 링크로 낸다.
+ */
+export function isGuideImage(file) {
+    return String(file?.mime ?? '').startsWith('image/');
+}
+
+/** 가이드 파일 Storage 경로 🔑 **만드는 곳은 여기 한 곳뿐이다** (서버 정책도 이 모양을 요구한다) */
+function guidePath(masterId, seq, ext) {
+    return `guides/${masterId}/${seq}.${ext}`;
+}
+
+/**
+ * 업로드 전 파일 다듬기 - 이미지는 압축(긴 변 1600px · JPEG), PDF 는 그대로.
+ * 크기·형식 거부를 **업로드 전에 모두** 끝낸다 (반쯤 올라간 뒤 거부하지 않게).
+ */
+async function prepareGuideFile(file) {
+    const name = String(file?.name ?? '').trim() || '작업가이드';
+    const type = String(file?.type ?? '');
+    const over = `'${name}' 은 5MB 를 넘어 첨부할 수 없습니다.`;
+    if (type === GUIDE_PDF_MIME) {
+        if (file.size > GUIDE_PHOTO.maxBytes) throw new Error(over);
+        return { name, blob: file, mime: GUIDE_PDF_MIME, ext: 'pdf', size: file.size };
+    }
+    if (!type.startsWith('image/')) {
+        throw new Error(`'${name}' 은 이미지 또는 PDF 파일이 아닙니다.`);
+    }
+    const shot = await compressPhoto(file, GUIDE_PHOTO);
+    if (shot.size > GUIDE_PHOTO.maxBytes) throw new Error(over);
+    return { name, blob: shot.blob, mime: 'image/jpeg', ext: 'jpg', size: shot.size };
+}
+
+/** 마스터의 작업가이드 파일 목록 (마스터가 없으면 빈 배열) */
+export async function listProcessMasterFiles(masterId) {
+    if (!masterId) return [];
+    const db = (await load());
+    return guideFilesOf(db, masterId);
+}
+
+/**
+ * 작업가이드 파일 첨부.
+ * 일부만 올라가면 **성공한 것만 메타에 남기고 오류를 던진다** (검수 사진과 같은 계약).
+ * @param {Array<File>} files 이번에 고른 것만
+ */
+export async function addProcessMasterFiles(masterId, files, user) {
+    assertProcessing(user, '작업가이드 등록');
+    const list = [...(files ?? [])];
+    if (!list.length) return listProcessMasterFiles(masterId);
+
+    const db = (await load());
+    const master = aliveMasters(db).find((m) => m.id === masterId);
+    if (!master) throw new Error('작업마스터를 찾을 수 없습니다.');
+
+    const prepared = [];
+    for (const f of list) prepared.push(await prepareGuideFile(f));
+
+    // 순번은 지우고 다시 올려도 앞 번호를 되쓰지 않게 **최대값 + 1** 로 매긴다
+    let seq = guideFilesOf(db, masterId)
+        .reduce((mx, f) => Math.max(mx, Number(f.sort_order) || 0), 0);
+    const saved = [];
+    let failed = null;
+    for (const p of prepared) {
+        seq += 1;
+        const path = guidePath(masterId, seq, p.ext);
+        try {
+            await putFile(path, p.blob, { bucket: BUCKET.GUIDES, contentType: p.mime });
+            saved.push({ ...p, path, sort_order: seq });
+        } catch (err) {
+            failed = err;
+            break;
+        }
+    }
+    if (!saved.length) {
+        invalidate();
+        throw failed;
+    }
+
+    // 업로드가 도는 동안 캐시가 낡는다. 메타는 **다시 읽은** 값 위에 얹는다
+    invalidate();
+    const fresh = (await load());
+    const now = new Date().toISOString();
+    saved.forEach((r) => {
+        fresh.processMasterFiles.push({
+            id: uid('pmf'),
+            master_id: masterId,
+            name: r.name,
+            path: r.path,
+            mime: r.mime,
+            size: r.size,
+            sort_order: r.sort_order,
+            created_by: user.id,
+            created_by_name: user.name,
+            created_at: now,
+        });
+    });
+    try {
+        await save(fresh);
+    } catch (err) {
+        invalidate();
+        throw err;
+    }
+    if (failed) throw failed;
+    return guideFilesOf(fresh, masterId);
+}
+
+/**
+ * 작업가이드 파일 삭제 (메타 + Storage).
+ * 🔑 **메타를 먼저 지운다.** 파일만 지우고 메타가 남으면 화면에 열 수 없는 칸이 남는다.
+ */
+export async function removeProcessMasterFile(fileId, user) {
+    assertProcessing(user, '작업가이드 삭제');
+    const db = (await load());
+    const file = db.processMasterFiles.find((f) => f.id === fileId);
+    if (!file) throw new Error('작업가이드 파일을 찾을 수 없습니다.');
+
+    const masterId = file.master_id;
+    db.processMasterFiles = db.processMasterFiles.filter((f) => f.id !== fileId);
+    await save(db);
+    try {
+        await removeFile(file.path, { bucket: BUCKET.GUIDES });
+    } catch (err) {
+        // 목록에서는 이미 사라졌다. 여기서 오류를 던지면 「삭제 실패」로 보이지만
+        // 사용자가 다시 할 수 있는 일이 없다 - 남은 파일은 버킷 정리 대상으로 넘긴다
+        console.warn('작업가이드 파일을 버킷에서 지우지 못했습니다(메타는 지웠다).', err);
+    }
+    return guideFilesOf(db, masterId);
+}
+
+/**
+ * 작업가이드 파일 주소 발급 (화면 썸네일·새 탭 열기).
+ * 검수 사진(`processPhotoUrls`)과 **같은 계약**이다 - 화면은 정리 함수에서 `release()`.
+ */
+export function processGuideUrls(paths) {
+    return fileUrls(paths, { bucket: BUCKET.GUIDES });
+}
+
+/**
+ * 작업지시서 인쇄용 가이드 이미지 → **data URL**.
+ *
+ * 🔑 인쇄 창은 이 문서와 수명이 다르다. objectURL 은 여기서 revoke 하는 순간 인쇄
+ * 미리보기의 그림이 깨지고, 서명 URL 은 10분 뒤 만료된다. 문서에 **박아 넣으면**
+ * 창을 얼마나 오래 열어 두든 그림이 살아 있고 뒷정리할 주소도 남지 않는다.
+ * @returns {Promise<Map<string,string>>} 경로 → data URL (못 읽은 파일은 빠진다)
+ */
+export async function processGuideDataUrls(paths) {
+    const out = new Map();
+    const list = [...new Set(paths ?? [])].filter(Boolean);
+    if (!list.length) return out;
+
+    const pack = await processGuideUrls(list);
+    try {
+        for (const [path, url] of pack.urls) {
+            const res = await fetch(url);
+            if (!res.ok) continue;
+            out.set(path, await blobToDataUrl(await res.blob()));
+        }
+    } finally {
+        pack.release();
+    }
+    return out;
+}
+
+/** Blob → data URL (FileReader 는 콜백이라 감싼다) */
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(new Error('작업가이드 파일을 읽지 못했습니다.'));
+        fr.readAsDataURL(blob);
+    });
 }
 
 /* ---------------------------------- 작업 ---------------------------------- */

@@ -406,6 +406,9 @@ async function renderGuide(root, user, jobId) {
     }
 
     const { job, items } = found;
+    // 작업가이드 파일은 **현재 마스터**의 것을 본다 (웹 작업지시서에 붙는 것과 같은 파일)
+    const guides = await db.listProcessMasterFiles(job.master_id);
+    const guidePack = await db.processGuideUrls(guides.map((f) => f.path));
     // 다음에 할 검수 한 가지만 안내한다 (권한이 없거나 완료된 작업이면 버튼이 없다)
     const phase = db.nextCheckPhase(job);
     const goable = phase !== null && db.canCheckProcessing(user);
@@ -432,6 +435,11 @@ async function renderGuide(root, user, jobId) {
   <div class="m-kv__row"><span class="m-kv__k">${esc(k)}</span>
     <span class="m-kv__v">${esc(v ?? '')}</span></div>`).join('')}
 </div>
+${guides.length ? `
+<p class="m-listtitle">작업가이드 (${num(guides.length)}건)</p>
+<div class="m-guides">
+  ${guides.map((f) => guideTile(f, guidePack.urls.get(f.path))).join('')}
+</div>` : ''}
 <p class="m-listtitle">구성품 (사진은 줄마다 1장)</p>
 <table class="m-itab">
   <thead>
@@ -452,7 +460,38 @@ ${goable ? `
   >${esc(PROCESS_PHASE_LABEL[phase])}로</a>` : ''}
 <p class="m-note">보기 전용 화면입니다. 작업지시서 인쇄는 웹에서 합니다.</p>`;
 
-    return null;
+    root.querySelectorAll('[data-gpath]').forEach((el) => {
+        el.addEventListener('click', () => {
+            const url = guidePack.urls.get(el.dataset.gpath);
+            if (!url) {
+                toast('작업가이드를 불러오지 못했습니다.', 'error');
+                return;
+            }
+            // 이미지는 시트로 크게, PDF 는 새 탭 (뷰어는 OS 에 맡긴다)
+            if (el.dataset.gmime.startsWith('image/')) {
+                sheet(el.dataset.gname,
+                    `<img class="m-guide__full" src="${esc(url)}" alt="${esc(el.dataset.gname)}">`);
+            } else window.open(url, '_blank', 'noopener');
+        });
+    });
+
+    // 🔑 사진 주소는 화면을 떠날 때 반드시 놓는다 (mock 의 objectURL 은 안 놓으면 샌다)
+    return () => {
+        closeAllSheets();
+        guidePack.release();
+    };
+}
+
+/** 작업가이드 파일 한 칸 - 이미지는 썸네일, PDF 는 글자 칸 */
+function guideTile(f, url) {
+    const image = db.isGuideImage(f);
+    const body = image && url
+        ? `<img src="${esc(url)}" alt="${esc(f.name)}">`
+        : `<span class="m-guide__ext">${image ? '이미지' : 'PDF'}</span>`;
+    return `
+<button class="m-guide" type="button" data-gpath="${esc(f.path)}"
+        data-gmime="${esc(f.mime)}" data-gname="${esc(f.name)}">
+  ${body}<span class="m-guide__name">${esc(f.name)}</span></button>`;
 }
 
 /** 구성품 표의 행 - 같은 줄의 두 번째 LOT 행부터는 앞 칸을 비운다 (웹 작업지시서와 같다) */
