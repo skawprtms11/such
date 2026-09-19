@@ -43,8 +43,8 @@ function itemRows(items, jobQty) {
     }).join('')).join('');
 }
 
-/** 작업지시서 A4 인쇄용 HTML */
-function docHtml(job, items) {
+/** 작업지시서 A4 인쇄용 HTML (export 는 검사 스크립트용) */
+export function docHtml(job, items) {
     const info = [
         ['작업구분', job.work_type, '제품코드', job.product_code],
         ['제품명', job.product_name, '작업수량', `${num(job.qty)} 개`],
@@ -60,12 +60,19 @@ function docHtml(job, items) {
     margin: 0; color: #000; font-size: 11pt; line-height: 1.5;
     font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
   }
+  /* 🔑 문서 맨 위의 바코드 띠 - 현장이 앱에서 스캔해 검수 화면을 여는 바코드다
+     (docs/processing.md §17-1). 접힌 문서에서도 바로 보이게 제목보다 위에 크게 둔다 */
+  .bcband {
+    display: flex; flex-direction: column; align-items: center; gap: 1mm;
+    padding: 3mm 0 4mm; border-bottom: 1px solid #000; margin-bottom: 5mm;
+  }
+  .bcband svg { display: block; max-width: 100%; height: auto; }
+  .bcband .no { font-size: 16pt; font-weight: 700; letter-spacing: 3px; font-family: monospace; }
+  .bcband .cap { font-size: 9pt; color: #444; }
   .head { display: flex; align-items: flex-end; justify-content: space-between; }
   .head h1 { margin: 0; font-size: 20pt; letter-spacing: 2px; }
   .head .meta { text-align: right; font-size: 11pt; }
   .head .meta b { font-size: 14pt; letter-spacing: 1px; }
-  /* 현장이 앱에서 스캔해 검수 화면을 여는 바코드다 (docs/processing.md §17-1) */
-  .head .bc { margin-top: 2mm; }
   hr { border: none; border-top: 2px solid #000; margin: 6mm 0; }
   table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   th, td { border: 1px solid #000; padding: 2.5mm 3mm; word-break: break-all; }
@@ -79,14 +86,16 @@ function docHtml(job, items) {
   .sign th { width: 28mm; vertical-align: middle; }
 </style></head>
 <body onload="window.print()">
+  ${job.doc_no ? `<div class="bcband">
+    ${code128Svg(job.doc_no, { height: 60, moduleWidth: 2.2, showText: false })}
+    <div class="no">${esc(job.doc_no)}</div>
+    <div class="cap">앱 「유통가공작업」에서 이 바코드를 스캔하면 검수 화면이 열립니다</div>
+  </div>` : ''}
   <div class="head">
     <h1>유통가공 작업지시서</h1>
     <div class="meta">
       문서번호 <b>${esc(job.doc_no ?? '-')}</b><br>
       출력일 ${esc(today())}
-      ${job.doc_no ? `<div class="bc">${code128Svg(job.doc_no, {
-        height: 40, moduleWidth: 1.4, showText: false,
-    })}</div>` : ''}
     </div>
   </div>
   <hr>
